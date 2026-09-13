@@ -210,6 +210,57 @@ class TestNonRationalNonOpen1D:
         f_prime = f.derivative()
         assert f_prime.space.spaces[0].degree == 2
 
+    def test_the_unclamped_degree_preserving_derivative_is_refused(self) -> None:
+        """``keep_degree=True`` refuses an unclamped direction; ``False`` still serves it.
+
+        ``keep_degree=True`` re-elevates through Piegl and Tiller A5.9, which assumes a
+        clamped knot vector, and the differentiated vector ``knots[1:-1]`` of an
+        unclamped one is unclamped too.  What that used to return was a *different
+        function*: no exception, no warning, a well-formed :class:`~pantr.bspline.Bspline`
+        whose disagreement with the finite difference was of order one where the
+        difference's own floor is around ``1e-10``.
+
+        The **clamped row is the control**, and it is what isolates the cause from its
+        confound.  Same degree, same coefficient draw, same probe layout: there both
+        settings agree with the finite difference, so what separates them is the
+        unclamped vector and not ``keep_degree``.
+
+        ``keep_degree=False`` is the other half of the rule and the one an over-broad
+        condition would break.  The difference quotient is elementwise and assumes
+        nothing about the ends, so it serves an unclamped direction correctly and must
+        keep doing so.
+        """
+        rng = np.random.default_rng(7)
+        degree = 2
+        for knots, clamped in (
+            (np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]), False),
+            (np.array([0.2, 0.2, 0.2, 0.3, 0.4, 0.4, 0.4]), True),
+        ):
+            space_1d = BsplineSpace1D(knots, degree)
+            space = BsplineSpace([space_1d])
+            f = Bspline(space, rng.uniform(-1.0, 1.0, size=space.num_total_basis))
+            assert space_1d.has_open_knots() is clamped
+            assert not space_1d.periodic
+
+            # Inside the domain by more than the difference's own step, and clear of the
+            # single interior breakpoint for the reason `_interior_probe_points` gives.
+            a, b = (float(x) for x in space_1d.domain)
+            pts = np.linspace(a + 0.02, b - 0.02, 50)
+
+            # `atol` is the finite difference's floor rather than the hodograph's: at
+            # h = 1e-6 the cancellation in `(f(x+h) - f(x-h)) / 2h` costs eps/(2h), about
+            # 1e-10 times the coefficient scale, and this file's usual 1e-8 sits two
+            # decades above it.
+            _assert_derivative_matches_central_difference(f, 0, pts, keep_degree=False, atol=1e-8)
+
+            if clamped:
+                _assert_derivative_matches_central_difference(
+                    f, 0, pts, keep_degree=True, atol=1e-8
+                )
+            else:
+                with pytest.raises(ValueError, match="needs a clamped knot vector"):
+                    f.derivative(keep_degree=True)
+
 
 # ---------------------------------------------------------------------------
 # Non-rational 1D periodic tests

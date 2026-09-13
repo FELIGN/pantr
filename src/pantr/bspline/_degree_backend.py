@@ -41,13 +41,16 @@ reason :mod:`pantr.bspline._refinement_backend` closes its own.
 **A rational field, or a ``keep_degree=True`` request, always runs the oracle.**
 ``cpp/include/pantr/bspline/degree.hpp`` gives ``derivative`` no ``keep_degree``
 parameter at all and refuses a rational field outright, and says why: both of the
-oracle's corresponding paths currently have an open defect --
-``derivative(keep_degree=True)`` on an unclamped, non-periodic direction returns a
-wrong function, and the rational derivative raises whenever the differentiated
-direction is periodic -- so there is nothing stable for a C++ side to be at parity
-with yet. :func:`_the_cpp_backend_can_differentiate` keeps both cases on the Python
-path rather than letting a caller meet that refusal or, worse, a silently absent
-parameter.
+oracle's corresponding paths had an open defect when it was written, so there was
+nothing stable for a C++ side to be at parity with. One of the two is now closed --
+``derivative(keep_degree=True)`` on an unclamped, non-periodic direction re-elevates
+through A5.9 and is refused rather than answered wrongly, which is the subject of the
+unclamped section below -- while the rational derivative still raises a multiplicity
+error whenever the differentiated direction is periodic. Closing the second one would
+not by itself move this branch: ``keep_degree`` is absent from the C++ *signature*, so
+there is no door to send a caller to. :func:`_the_cpp_backend_can_differentiate` keeps
+both cases on the Python path rather than letting a caller meet that refusal or, worse,
+a silently absent parameter.
 
 **A periodic direction to be elevated always runs the oracle.** Elevating one
 round-trips through ``_to_periodic_bspline_1d_impl``, which
@@ -58,20 +61,24 @@ than porting that conversion under cover of this one. It is the same declared bo
 knots. A direction with a zero increment is not
 affected: C++ carries its space handle into the result untouched.
 
-**An unclamped direction to be elevated also always runs the oracle, and that one is
-not a missing port -- it is a defect in the oracle that this port deliberately does
-not reproduce.** A5.9 walks past the end of the coefficient array on an unclamped
-knot vector, and the C++ core refuses the read rather than perform it, because in C++
-an out-of-bounds read is undefined behaviour rather than a wrong number; the same
-header explains the read is silently wrong in the oracle itself, under numba, and
-raises ``IndexError`` only when JIT is disabled. **What the library accepts must not
-change with ``PANTR_BACKEND``, so an unclamped direction is routed to the oracle here
-rather than refused**, and whatever the oracle does with it is what a caller gets on
-either backend, unchanged. On the shapes exercised so far that is a ``ValueError`` from
-``Bspline``'s own constructor about the coefficient count, which is the out-of-bounds
-walk surfacing one step later rather than a diagnosis of it;
-``tests/parity/test_bspline_degree.py`` pins that behaviour on purpose, so that fixing
-the oracle is a visible change rather than a silent one.
+**An unclamped direction to be elevated also always runs the oracle, and both sides
+now refuse it.** A5.9 assumes a clamped knot vector at each end and the oracle used to
+assume it silently: without the closing run the segment walk steps past the coefficient
+array, and without the opening run it stays in bounds and returns a different function.
+``cpp/include/pantr/bspline/degree.hpp`` refused the direction from the start, because
+in C++ that read is undefined behaviour rather than a wrong number, and the oracle now
+refuses it too, in
+:func:`~pantr.bspline._bspline_degree_core._check_clamped_knots` -- a Layer 2 check
+placed on the two vectors that reach the kernel, so degree elevation and
+``derivative(keep_degree=True)`` inherit it together.
+
+What the library accepts must not change with ``PANTR_BACKEND``, and neither should the
+wording of a refusal, so an unclamped direction is still routed to the oracle here
+rather than handed to a C++ side that would refuse it in its own words. The routing
+predicate is :func:`_is_clamped_bit_exactly`, which is the oracle's precondition asked
+as a question, so C++ is handed a direction exactly when the oracle would have elevated
+it as well. ``tests/parity/test_bspline_degree.py`` pins the refusal and pins that the
+two backends give it in the same words.
 
 Cross-backend fields
 --------------------
@@ -89,10 +96,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypeAlias
 
-import numpy as np
-
 from .._backend import Backend, active_backend, available_backends
 from ._bspline_degree import _degree_elevate_bspline
+from ._bspline_degree_core import _clamped_ends
 from ._bspline_derivative import _derivative_bspline
 
 if TYPE_CHECKING:
@@ -186,35 +192,39 @@ def _the_cpp_backend_can_elevate(bspline: Bspline, degree_increments: tuple[int,
         return False
     spaces = bspline.space.spaces
     return all(
-        not spaces[direction].periodic and _closes_bit_exactly(spaces[direction])
+        not spaces[direction].periodic and _is_clamped_bit_exactly(spaces[direction])
         for direction, increment in enumerate(degree_increments)
         if increment > 0
     )
 
 
-def _closes_bit_exactly(space: BsplineSpace1D) -> bool:
-    """Report whether a direction's last ``degree + 1`` knots are bit-identical.
+def _is_clamped_bit_exactly(space: BsplineSpace1D) -> bool:
+    """Report whether a direction's two end runs of ``degree + 1`` knots are bit-identical.
 
-    This is deliberately **not** :meth:`~pantr.bspline.BsplineSpace1D.has_open_knots`, which
-    compares the closing run within the space's tolerance.  The C++ elevation refuses a knot
-    vector whose closing run is not bit-identical, because A5.9 walks segments until a run of
-    equal knots reaches the last index and steps past its coefficients without one.  Routing
-    on the looser predicate would hand C++ a vector it then refuses in its own words, while
-    the oracle refuses the same vector in different words diagnosing a different cause -- so
-    the error a caller sees would depend on ``PANTR_BACKEND``, which this module promises it
-    does not.  Mirroring the refusal here sends every such vector to the oracle instead.
+    This is the oracle's own precondition asked as a question -- the predicate
+    :func:`~pantr.bspline._bspline_degree_core._check_clamped_knots` raises on -- which is
+    what makes the routing exact: C++ is handed a direction exactly when the oracle would
+    have elevated it too, and every other direction goes to the oracle to be refused
+    there, in one wording, on either backend.
 
-    A direction that closes within tolerance but not bit-exactly needs ``snap_knots=False``
-    to build, since snapping collapses the near-tie.
+    It is deliberately **not** :meth:`~pantr.bspline.BsplineSpace1D.has_open_knots`, which
+    compares both end runs within the space's tolerance.  A run that ties only within a
+    tolerance is no run to A5.9, which compares knots with ``==``; ``degree_elevate_1d`` in
+    ``cpp/include/pantr/bspline/degree.hpp`` refuses such a closing run for that reason, and
+    routing on the looser predicate would hand C++ a vector it then refuses in its own words
+    while the oracle refuses it in different ones, so the error a caller sees would depend on
+    ``PANTR_BACKEND``, which this module promises it does not.
+
+    A direction that ties within tolerance but not bit-exactly needs ``snap_knots=False`` to
+    build, since snapping collapses the near-tie.
 
     Args:
         space (~pantr.bspline.BsplineSpace1D): The direction to test.
 
     Returns:
-        bool: True when the closing run is bit-identical, so C++ will accept it.
+        bool: True when both end runs are bit-identical, so both sides will accept it.
     """
-    knots = space.knots
-    return bool(np.all(knots[-space.degree - 1 :] == knots[-1]))
+    return all(_clamped_ends(space.knots, space.degree))
 
 
 def _cpp_derivative(bspline: Bspline, direction: int) -> Bspline:

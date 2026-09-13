@@ -22,11 +22,15 @@ each, so a policy that fails names the site that is load-bearing -- and the true
 matching is only evidence because the others do not. Everything coincides at
 ``float64``, which is exactly Rule 9's warning, so the table is reported per dtype.
 
-**Three, the reason ``elevate_degree`` refuses an unclamped direction in C++.** A5.9
-walks segments until a run of equal knots reaches the last index of the vector, and an
-unclamped vector has no such run, so the walk reads past the control array. Numba does
-not bounds check in ``nopython`` mode: compiled, the call returns uninitialised memory;
-interpreted, the same call raises ``IndexError``. Both halves are printed.
+**Three, the reason ``elevate_degree`` refuses an unclamped direction on either
+backend.** A5.9 walks segments until a run of equal knots reaches the last index of the
+vector, and an unclamped vector has no such run, so the walk reads past the control
+array. Numba does not bounds check in ``nopython`` mode: compiled, the call returns
+uninitialised memory; interpreted, the same call raises ``IndexError``. Both halves are
+printed. What is exercised below is the **kernel**, called directly, so it still walks;
+the refusal lives one layer up in
+``pantr.bspline._bspline_degree_core._check_clamped_knots``, and this section is what
+that check exists to prevent.
 """
 
 from __future__ import annotations

@@ -125,6 +125,47 @@ def test_degree_elevation_invalid_inputs() -> None:
         bspline.elevate_degree(-1)
 
 
+def test_degree_elevation_unclamped_raises() -> None:
+    """Test that an unclamped, non-periodic direction is refused.
+
+    Elevation is Piegl and Tiller A5.9 and it assumes a clamped knot vector.  This is
+    the second surface of the reproduction pinned by
+    ``TestNonRationalNonOpen1D.test_the_unclamped_degree_preserving_derivative_is_refused``
+    in ``tests/test_bspline_derivative.py``: the same walk, reached by asking for the
+    elevation directly.  Before the precondition landed it produced a coefficient-count
+    complaint from ``Bspline``'s own constructor with the JIT on, and an ``IndexError``
+    from the read itself with it off.
+    """
+    knots = np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+    space = BsplineSpace([BsplineSpace1D(knots, 2)])
+    bspline = Bspline(space, np.arange(space.num_total_basis, dtype=np.float64))
+
+    with pytest.raises(ValueError, match="needs a clamped knot vector"):
+        bspline.elevate_degree(1)
+
+
+def test_degree_elevation_unclamped_at_a_single_end_raises() -> None:
+    """Test that a direction clamped at only one end is refused as well.
+
+    The two ends fail differently and only one of them is loud.  Without the **closing**
+    run the segment walk never terminates on a run of equal knots and reads past the
+    control array.  Without the **opening** run it stays in bounds: the first
+    ``degree + 1`` control points are not the first Bézier segment, so the elevated curve
+    is a different function over a domain widened to the whole knot vector, with nothing
+    raised anywhere.  That silent half is why the precondition covers both ends and not
+    only the one the out-of-bounds walk needs.
+    """
+    for knots in (
+        np.array([0.0, 0.1, 0.2, 0.4, 0.6, 1.0, 1.0, 1.0]),
+        np.array([0.0, 0.0, 0.0, 0.4, 0.6, 0.8, 1.0, 1.2]),
+    ):
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        bspline = Bspline(space, np.arange(space.num_total_basis, dtype=np.float64))
+
+        with pytest.raises(ValueError, match="needs a clamped knot vector"):
+            bspline.elevate_degree(1)
+
+
 # ---------------------------------------------------------------------------
 # Periodic Bspline: degree elevation preserves periodicity
 # ---------------------------------------------------------------------------

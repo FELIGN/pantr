@@ -965,6 +965,13 @@ class Bspline:
                 (``_BINCOEFF_MAX_N``). Reachable with ``keep_degree=True``, and
                 for a rational B-spline with either setting, since that path
                 always re-elevates.
+            ValueError: If the call re-elevates and the differentiated direction's
+                knot vector is not clamped, meaning a run of ``degree + 1`` equal
+                knots at each end. Re-elevating is ``keep_degree=True`` and any
+                rational field; it runs Piegl and Tiller A5.9, which assumes those
+                runs and without them returns a different function. A non-rational
+                ``keep_degree=False`` asks nothing of the ends and serves an
+                unclamped direction as before.
             TypeError: If this field was built under the other backend. New with the
                 C++ dispatch: differentiation crosses the boundary as a *field*, and
                 ``_cpp_handle`` refuses a foreign one rather than converting it.
@@ -1018,6 +1025,13 @@ class Bspline:
             ValueError: If the number of increments does not match the dimension.
             ValueError: If an elevated degree would exceed the exactness envelope
                 of the binomial-coefficient kernel (``_BINCOEFF_MAX_N``).
+            ValueError: If a direction to be elevated is not periodic and its knot
+                vector is not clamped, meaning a run of ``degree + 1`` equal knots
+                at each end. Elevation is Piegl and Tiller A5.9, which assumes those
+                runs: without the closing one its segment walk reads past the
+                control points, and without the opening one it returns a different
+                function. A periodic direction is converted to its open form first
+                and is unaffected.
             TypeError: If this field was built under the other backend. New with the
                 C++ dispatch: degree elevation crosses the boundary as a *field*, and
                 ``_cpp_handle`` refuses a foreign one rather than converting it.
