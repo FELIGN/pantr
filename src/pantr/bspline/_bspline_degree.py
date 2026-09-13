@@ -315,6 +315,14 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
 
     new_space = BsplineSpace(new_spaces_1d)
 
-    _refuse_a_reduction_that_inverts_a_weight(ctrl, is_rational=orig_is_rational)
+    _refuse_a_reduction_that_inverts_a_weight(
+        ctrl,
+        is_rational=orig_is_rational,
+        remedy=(
+            "Bspline has no minimize_degree; convert to Bezier form with to_bezier or "
+            "to_beziers and use Bezier.minimize_degree on the segments, which reduces "
+            "only as far as it can without changing the sign of the weight function."
+        ),
+    )
 
     return Bspline(new_space, ctrl, is_rational=orig_is_rational)

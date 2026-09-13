@@ -408,7 +408,7 @@ def _reduce_along_axis(
 
 
 def _refuse_a_reduction_that_inverts_a_weight(
-    ctrl: npt.NDArray[np.floating[Any]], *, is_rational: bool
+    ctrl: npt.NDArray[np.floating[Any]], *, is_rational: bool, remedy: str
 ) -> None:
     """Raise if a rational reduction produced a control weight that is not positive.
 
@@ -432,11 +432,20 @@ def _refuse_a_reduction_that_inverts_a_weight(
     The guard sits on the *output* of the reduction, at the point both backends return
     through, so what the library accepts cannot depend on ``PANTR_BACKEND``.
 
+    The remedy is the caller's to supply, because the two callers have different ones and
+    a shared message got this wrong: it named
+    :meth:`~pantr.bezier.Bezier.minimize_degree` unconditionally, and
+    :class:`~pantr.bspline.Bspline` has no such method, so a B-spline caller who followed
+    the advice got an ``AttributeError``. An error that misdirects is worse than one that
+    only reports.
+
     Args:
         ctrl (npt.NDArray[np.floating[Any]]): Reduced control points, the last column the
             weights.
         is_rational (bool): Whether that last column is a weight column. A non-rational
             reduction has no weight to invert and is not checked.
+        remedy (str): One sentence naming what this caller's type can do instead. Must be
+            true of that type.
 
     Raises:
         ValueError: If any weight of a rational result is not strictly positive.
@@ -451,9 +460,7 @@ def _refuse_a_reduction_that_inverts_a_weight(
         f"Degree reduction drove a control weight to {smallest:.3e}, which is not "
         "strictly positive, so the reduced rational spline is not a valid NURBS: its "
         "denominator can vanish on the domain. The reduction operator is not a convex "
-        "combination and acts on the weight column too. Reduce the degree of the "
-        "non-rational components, or use minimize_degree, which declines a reduction "
-        "that changes the sign of the weight function."
+        f"combination and acts on the weight column too. {remedy}"
     )
 
 
@@ -483,7 +490,12 @@ def _degree_reduce_bezier(
     """
     reduced = reduce_degree_kernel()(bezier, decrements, _reduction_operators(bezier, decrements))
     _refuse_a_reduction_that_inverts_a_weight(
-        reduced.control_points, is_rational=bezier.is_rational
+        reduced.control_points,
+        is_rational=bezier.is_rational,
+        remedy=(
+            "Use minimize_degree, which reduces only as far as it can without changing "
+            "the sign of the weight function."
+        ),
     )
     return reduced
 
