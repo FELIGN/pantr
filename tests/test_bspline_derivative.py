@@ -649,6 +649,159 @@ class TestKeepDegreeRational:
 
 
 # ---------------------------------------------------------------------------
+# Periodic rational derivative (round-trip through open form)
+# ---------------------------------------------------------------------------
+
+
+def _make_periodic_rational(
+    num_intervals: int, degree: int, weight_amplitude: float = 0.3
+) -> Bspline:
+    """Build a periodic NURBS whose homogeneous CPs sample a weighted unit circle.
+
+    Args:
+        num_intervals (int): Number of elements of the periodic knot vector.
+        degree (int): B-spline degree.
+        weight_amplitude (float): Modulation of the weight column, so the weights are
+            non-constant and the quotient rule's product terms are non-trivial.
+            Defaults to 0.3.
+
+    Returns:
+        Bspline: A periodic rational (NURBS) 1D B-spline of rank 2.
+    """
+    knots = create_uniform_periodic_knots(num_intervals, degree)
+    space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
+    n = space.num_total_basis
+    t = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    w = 1.0 + weight_amplitude * np.cos(t)
+    xyw = np.column_stack([np.cos(t) * w, np.sin(t) * w, w])
+    return Bspline(space, xyw, is_rational=True)
+
+
+def _interior_probe_points(
+    num_intervals: int, h: float, frac: float = 0.37
+) -> npt.NDArray[np.float64]:
+    """Get one point per element, offset from every breakpoint by at least ``h``.
+
+    A central finite difference evaluated exactly *at* a spline knot is not a valid
+    oracle: below the spline's continuity order, higher derivatives can jump there, so
+    the O(h^2) truncation term is unbounded even though the code under test is correct.
+    Placing points at a fixed interior fraction of each element keeps them at least
+    ``frac`` (here 0.37) of an element width from the nearest knot, which for the
+    ``num_intervals`` and ``h`` used in this file is comfortably more than ``h``.
+
+    Args:
+        num_intervals (int): Number of elements over the unit domain ``[0, 1]``.
+        h (float): The finite-difference step that will be used at these points.
+        frac (float): Fractional offset into each element. Defaults to 0.37.
+
+    Returns:
+        npt.NDArray[np.float64]: One probe point per element, shape ``(num_intervals,)``.
+    """
+    width = 1.0 / num_intervals
+    assert frac * width > h and (1 - frac) * width > h
+    return np.linspace(0.0, 1.0, num_intervals, endpoint=False) + frac * width
+
+
+def _assert_derivative_matches_central_difference(
+    f: Bspline, direction: int, pts: npt.NDArray[np.float64], *, keep_degree: bool, atol: float
+) -> Bspline:
+    """Assert ``f.derivative()`` matches a central finite difference of ``f.evaluate``.
+
+    The finite difference is an oracle independent of the hodograph construction under
+    test: it never builds a derivative B-spline, only evaluates ``f`` itself at ``pts
+    +/- h``.
+
+    Returns:
+        Bspline: The derivative B-spline, for further checks by the caller.
+    """
+    h = 1e-6
+    f_prime = f.derivative(direction=direction, keep_degree=keep_degree)
+    analytic = f_prime.evaluate(pts)
+    fd = (f.evaluate(pts + h) - f.evaluate(pts - h)) / (2 * h)
+    np.testing.assert_allclose(analytic, fd, atol=atol, rtol=0)
+    return f_prime
+
+
+class TestRationalPeriodic1D:
+    """Derivative of a periodic rational (NURBS) B-spline.
+
+    Regression for a defect where differentiating a periodic rational raised
+    ``ValueError: Inserting these knots would exceed the maximum multiplicity of 7.
+    Maximum multiplicity found: 10.`` four frames down, for both values of
+    ``keep_degree`` (the dispatcher routes both to the same rational path). The fix
+    routes the differentiated direction through open form and closes the seam again
+    afterwards; these tests exercise that round trip.
+
+    The finite-difference tolerance is dominated by the oracle's own round-off floor
+    (``eps / h`` with ``h = 1e-6``, about ``2.2e-10``), not by the derivative's error --
+    that is deliberate: making ``h`` much smaller would trade truncation error for
+    round-off noise in the *oracle*, which would make the bound meaningless as a check
+    on the code under test.
+    """
+
+    @pytest.mark.parametrize("degree", [2, 3, 4])
+    @pytest.mark.parametrize(
+        "keep_degree", [False, True], ids=["keep_degree=False", "keep_degree=True"]
+    )
+    def test_matches_central_difference_and_stays_periodic(
+        self, degree: int, keep_degree: bool
+    ) -> None:
+        """The rational round trip is correct and periodic for both ``keep_degree`` values."""
+        num_intervals = 6
+        f = _make_periodic_rational(num_intervals, degree)
+        pts = _interior_probe_points(num_intervals, h=1e-6)
+
+        f_prime = _assert_derivative_matches_central_difference(
+            f, direction=0, pts=pts, keep_degree=keep_degree, atol=1e-8
+        )
+
+        assert f_prime.is_rational
+        assert f_prime.space.spaces[0].periodic
+
+    def test_nonrational_periodic_control_is_unaffected(self) -> None:
+        """Control: a non-rational periodic derivative was never on the fixed path.
+
+        Pins that the round-trip added for the rational case did not change this
+        (already-working) path.
+        """
+        num_intervals = 6
+        degree = 3
+        f = _make_periodic(num_intervals, degree)
+        pts = _interior_probe_points(num_intervals, h=1e-6)
+
+        f_prime = _assert_derivative_matches_central_difference(
+            f, direction=0, pts=pts, keep_degree=False, atol=1e-8
+        )
+
+        assert f_prime.space.spaces[0].periodic
+
+    def test_open_rational_control_is_unaffected(self) -> None:
+        """Control: an open (non-periodic) rational derivative never took the round trip.
+
+        Pins the ``if not space_1d.periodic: return _derivative_rational_open(...)``
+        early exit -- the code path every pre-existing rational test in this file
+        already covers -- stays untouched by the periodic round trip added for the fix.
+        """
+        num_intervals = 6
+        degree = 3
+        knots = create_uniform_open_knots(num_intervals, degree)
+        space = BsplineSpace([BsplineSpace1D(knots, degree)])
+        n = space.num_total_basis
+        t = np.linspace(0.0, 2.0 * np.pi / 3.0, n)  # open arc, not a full period
+        w = 1.0 + 0.3 * np.cos(t)
+        xyw = np.column_stack([np.cos(t) * w, np.sin(t) * w, w])
+        f = Bspline(space, xyw, is_rational=True)
+        pts = _interior_probe_points(num_intervals, h=1e-6)
+
+        f_prime = _assert_derivative_matches_central_difference(
+            f, direction=0, pts=pts, keep_degree=False, atol=1e-8
+        )
+
+        assert f_prime.is_rational
+        assert not f_prime.space.spaces[0].periodic
+
+
+# ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
 
