@@ -261,16 +261,22 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
                 # smooth periodic spline (``m_bdy = 1``) asks for multiplicity 0 and
                 # the reduction fails on a knot vector it never had to build.
                 m_bdy_new = max(1, m_bdy - dec)
-                # `inf` removes the closure's admissibility test rather than loosening
-                # it, for the same reason `_coarsen_knots_after_reduction` removes the
-                # removal kernel's: restoring the seam the original spline had is
-                # structural, so the periodic form is what must come out and its
+                # `inf` removes the closure's least-squares admissibility test rather
+                # than loosening it, for the same reason `_coarsen_knots_after_reduction`
+                # removes the removal kernel's: restoring the seam the original spline
+                # had is structural, so the periodic form is what must come out, and its
                 # distance from the reduced open form is not a criterion. That distance
-                # *is* the reduction's own error, which `Bspline.reduce_degree`
-                # documents the forced removal as setting; grading it against a
-                # round-off floor asked an approximation to be exact, and refused every
-                # legitimate reduction of a smooth periodic spline (measured: `cos(2*pi*t)`
-                # at degree 3 gave a residual of 2.5e-03 against a floor of 2.2e-14).
+                # *is* the reduction's own error. Grading it against a round-off floor
+                # asked an approximation to be exact and refused every legitimate
+                # reduction of a smooth periodic spline: `cos(2*pi*t)` at degree 3 gave a
+                # residual of 2.5e-03 against a floor of 2.2e-14.
+                #
+                # It does NOT remove the C0 seam test, which keeps its own floor. An
+                # approximate reduction does not move the two end control points: the
+                # reduction operator's first and last rows are exact unit vectors and
+                # `_coarsen_knots_after_reduction` touches interior breakpoints only, so
+                # the boundary points arrive bit for bit unchanged, and the seam test
+                # goes on catching what it was there for.
                 per_knots, new_pts_2d = _to_periodic_bspline_1d_impl(
                     new_knots, new_degree, new_pts_2d, m_bdy_new, tol, np.inf
                 )

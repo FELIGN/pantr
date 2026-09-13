@@ -758,6 +758,41 @@ class TestRationalPeriodic1D:
         assert f_prime.is_rational
         assert f_prime.space.spaces[0].periodic
 
+    @pytest.mark.parametrize(
+        ("degree", "num_intervals"),
+        [(6, 64), (4, 256), (3, 128)],
+        ids=["degree=6,64 elements", "degree=4,256 elements", "degree=3,128 elements"],
+    )
+    def test_a_finely_resolved_periodic_nurbs_is_not_called_aperiodic(
+        self, degree: int, num_intervals: int
+    ) -> None:
+        """A spline built on a periodic space must never be refused as "not periodic".
+
+        Its periodicity is structural, not approximate, so this failure mode is
+        definitionally a false refusal however large the round trip's round-off grows.
+        Regression for a seam budget that was one tier tighter than the closure budget
+        grading the same defect downstream: at 64 epsilons of the control-point scale
+        this raised ``Function values do not match at the domain endpoints (max deviation
+        7.82e-13, tolerance 4.78e-13)`` here, while the residual check that follows it
+        would have passed.
+
+        The sizes matter and small ones do not reproduce it: the endpoint deviation grows
+        with both the degree and the element count, so a six-element curve stays far
+        inside even the tight budget. The weight amplitude is large for the same reason,
+        to make the quotient rule's product terms carry weight.
+        """
+        knots = create_uniform_periodic_knots(num_intervals, degree)
+        space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
+        n = space.num_total_basis
+        t = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+        w = 1.0 + 0.9 * np.cos(t)
+        f = Bspline(space, np.column_stack([np.cos(t) * w, np.sin(t) * w, w]), is_rational=True)
+
+        f_prime = f.derivative()
+
+        assert f_prime.is_rational
+        assert f_prime.space.spaces[0].periodic
+
     def test_nonrational_periodic_control_is_unaffected(self) -> None:
         """Control: a non-rational periodic derivative was never on the fixed path.
 
