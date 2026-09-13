@@ -1317,6 +1317,106 @@ class TestBsplineReduceDegreePeriodicSeam:
             bsp.reduce_degree(1)
 
 
+def _make_periodic_cosine(num_intervals: int, degree: int, freq: int) -> Bspline:
+    """Build a genuinely periodic spline by sampling ``cos(2*pi*freq*t)`` at Greville-like sites.
+
+    Args:
+        num_intervals (int): Number of elements of the periodic knot vector.
+        degree (int): B-spline degree.
+        freq (int): Number of full cosine periods over the unit domain.
+
+    Returns:
+        Bspline: A 1D periodic scalar B-spline that is smooth and periodic by
+        construction (unlike white noise, its interpolant is close to periodic at
+        every continuity order, which is what the closure residual actually measures).
+    """
+    knots = create_uniform_periodic_knots(num_intervals=num_intervals, degree=degree)
+    space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
+    n = space.num_total_basis
+    t = np.linspace(0.0, 1.0, n, endpoint=False)
+    return Bspline(space, np.cos(2 * np.pi * freq * t).reshape(-1, 1))
+
+
+class TestBsplineReduceDegreePeriodicClosureIsApproximate:
+    """The periodic closure after a degree reduction is not required to be exact.
+
+    Regression for a defect distinct from the seam-flooring one above: the closure
+    admissibility test that rebuilds the periodic form after reduction used to grade
+    the reduction's own (approximate, by design) residual against a round-off floor,
+    so it refused every legitimate reduction of a smooth periodic spline. No case in
+    this file caught it, because every other periodic case here is either an
+    ``elevate(d).reduce(d)`` round trip (exactly reducible) or built from white noise,
+    whose closure residual happened to stay under the floor by chance regardless of
+    which expression graded it.
+    """
+
+    @pytest.mark.parametrize(
+        ("degree", "freq", "max_relative_error"),
+        [(3, 1, 0.025), (4, 2, 0.16), (5, 1, 0.0015)],
+        ids=["degree=3,freq=1", "degree=4,freq=2", "degree=5,freq=1"],
+    )
+    def test_reduction_succeeds_and_stays_close_to_the_original(
+        self, degree: int, freq: int, max_relative_error: float
+    ) -> None:
+        """``reduce_degree(1)`` succeeds on a smooth periodic spline and approximates it.
+
+        Before the fix this raised ``ValueError`` at every one of these three cases
+        (measured residuals 2.53e-03 and 1.10e-02 against a floor of 2.22e-14 for the
+        first two).
+
+        ``max_relative_error`` is an **observed envelope, not a derived bound** -- the
+        reduction operator's accuracy is a property of the projection it performs, not
+        something this test establishes. The three cases came out at 0.79%, 5.10% and
+        0.04% of amplitude, and each envelope is about three times its own case, so the
+        test catches a reduction that stopped reducing (it raises) or started returning
+        a badly wrong curve, without pinning the operator's exact constant. The
+        envelopes differ by two orders of magnitude between cases because the cases do:
+        halving the degree of a spline resolving two periods over eight elements is a
+        far harder ask than one period over eight at degree 5.
+        """
+        original = _make_periodic_cosine(num_intervals=8, degree=degree, freq=freq)
+
+        reduced = original.reduce_degree(1)
+
+        assert reduced.degree == (degree - 1,)
+        assert reduced.space.spaces[0].periodic
+
+        pts = np.linspace(1e-3, 1.0 - 1e-3, 201)
+        expected = original.to_open_bspline().evaluate(pts)
+        got = reduced.to_open_bspline().evaluate(pts)
+        amplitude = float(np.max(np.abs(expected)))
+        max_error = float(np.max(np.abs(got - expected)))
+        assert max_error < max_relative_error * amplitude, (
+            f"degree={degree}, freq={freq}: max error {max_error:.3e} "
+            f"({max_error / amplitude:.4%} of amplitude) exceeds the "
+            f"{max_relative_error:.4%} envelope"
+        )
+
+    @pytest.mark.parametrize("degree", [2, 3, 4])
+    def test_elevate_then_reduce_round_trip_stays_exact(self, degree: int) -> None:
+        """The exactly-reducible path is still exact: the fix must not become a rubber stamp.
+
+        ``elevate_degree(1).reduce_degree(1)`` inserts and then removes the same
+        redundant degree, so it round-trips to the original curve to round-off
+        whatever the closure admissibility test does -- that is the control showing
+        the fix loosened only the *approximate* path, not this one. Measured here:
+        max errors of 3.3e-16, 2.2e-16, 5.6e-16 for degrees 2, 3, 4; 1e-12 leaves
+        three orders of magnitude of headroom.
+        """
+        knots = create_uniform_periodic_knots(num_intervals=6, degree=degree)
+        space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
+        rng = np.random.default_rng(7 + degree)
+        original = Bspline(space, rng.standard_normal((space.num_total_basis, 1)))
+
+        round_tripped = original.elevate_degree(1).reduce_degree(1)
+
+        assert round_tripped.space.spaces[0].periodic
+        pts = np.linspace(1e-3, 1.0 - 1e-3, 201)
+        expected = original.to_open_bspline().evaluate(pts)
+        got = round_tripped.to_open_bspline().evaluate(pts)
+        np.testing.assert_allclose(got, expected, atol=1e-12, rtol=0)
+
+
 class TestBsplineReduceDegreeErrors:
     """Test that invalid inputs raise appropriate errors."""
 

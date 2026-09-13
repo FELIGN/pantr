@@ -510,6 +510,69 @@ class TestToPeriodic:
         with pytest.raises(ValueError, match="No direction to convert"):
             f.to_periodic(continuity=(None,))
 
+    @pytest.mark.parametrize("scale", [1e0, 1e6, 1e12], ids=["S=1e0", "S=1e6", "S=1e12"])
+    def test_seam_verdict_is_invariant_to_the_knot_vectors_scale(self, scale: float) -> None:
+        """The C0-seam check grades a control-point distance, not a parametric one.
+
+        Regression for a defect where the admissibility test used
+        ``max(tol, 100*eps*scale)`` with ``tol`` an *absolute parametric* tolerance and
+        ``scale`` a control-point magnitude -- two different units maxed together let
+        the parametric term win once the knot vector was scaled up enough. Holding the
+        control points fixed (endpoint mismatch ``1e-4``) and scaling only the knots,
+        the verdict must not change with ``scale``: measured before the fix, this
+        B-spline was correctly refused at ``S in {1e0, 1e6}`` and wrongly *accepted* at
+        ``S = 1e12``, where the resulting "periodic" spline then differed from the
+        input over roughly 40% of its range.
+        """
+        knots = np.array([0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0]) * scale
+        ctrl = np.array([0.0, 2e-5, 4e-5, 6e-5, 8e-5, 1e-4])  # endpoints differ by 1e-4
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        f = Bspline(space, ctrl)
+        with pytest.raises(ValueError, match="not periodic"):
+            f.to_periodic()
+
+    @staticmethod
+    def _make_c0_mismatch(scale: float, mismatch: float) -> Bspline:
+        """Build an open B-spline whose control points sit at ``scale`` with a seam gap.
+
+        Args:
+            scale (float): Magnitude of the control points.
+            mismatch (float): Absolute deviation between the first and last control
+                point (the C0-seam gap).
+
+        Returns:
+            Bspline: Degree-2 open B-spline over a fixed, unscaled knot vector.
+        """
+        knots = np.array([0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0])
+        ctrl = scale * np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+        ctrl[-1] = ctrl[0] + mismatch
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        return Bspline(space, ctrl)
+
+    def test_seam_verdict_is_relative_to_control_point_scale(self) -> None:
+        """Same absolute endpoint gap: accepted at large control-point scale, refused at small.
+
+        ``continuity=0`` isolates the C0-seam check from the (separately-toleranced)
+        higher-continuity residual check, so only the admissibility test this defect
+        touched is exercised. If the budget were an absolute constant -- what the
+        pre-fix ``max(tol, 100*eps*scale)`` degenerated to whenever the parametric
+        ``tol`` term happened to dominate -- both cases would get the same verdict.
+
+        This one is a property test and **not** a regression test for that defect: with
+        the knot vector held at scale 1 the parametric term never wins the old ``max``
+        either, so it passes against the pre-fix code too. It is kept because it pins
+        the property the fix is built on, and it would catch a future budget that
+        stopped scaling with the control points. The regression role belongs entirely to
+        :meth:`test_seam_verdict_is_invariant_to_the_knot_vectors_scale`.
+        """
+        gap = 1e-7
+        f_large = self._make_c0_mismatch(scale=1e8, mismatch=gap)
+        f_large.to_periodic(continuity=0)  # gap is tiny relative to 1e8: must be accepted
+
+        f_small = self._make_c0_mismatch(scale=1e-8, mismatch=gap)
+        with pytest.raises(ValueError, match="not periodic"):
+            f_small.to_periodic(continuity=0)  # same gap, huge relative to 1e-8: refused
+
 
 # ---------------------------------------------------------------------------
 # To / from Bezier

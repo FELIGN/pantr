@@ -1061,9 +1061,18 @@ class Bspline:
         bit and the stitch is exactly C0, with neither side moved off its own
         optimum.  Knots are then removed to restore the original continuity
         structure, and that step, not the reduction, is what sets the final
-        error: it is a forced removal with no deviation bound, so the exact
-        per-segment figure :meth:`~pantr.bezier.Bezier.degree_reduction_error`
-        reports does not carry over to the assembled spline.
+        error on an open direction: it is a forced removal with no deviation
+        bound, so the exact per-segment figure
+        :meth:`~pantr.bezier.Bezier.degree_reduction_error` reports does not
+        carry over to the assembled spline.
+
+        A **periodic** direction has a second such step. The reduction runs on
+        the open form and the periodic seam is then closed by a least-squares
+        projection, also with no deviation bound, because the reduced spline no
+        longer lies in the periodic subspace exactly -- for a smooth periodic
+        spline that projection is percent-level, not round-off. So on a periodic
+        direction neither of the two unbounded steps dominates by construction,
+        and the error has to be measured rather than attributed.
 
         Args:
             degree_decrements (int | Sequence[int]): Number of degrees to
