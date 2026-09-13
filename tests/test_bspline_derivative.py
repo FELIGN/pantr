@@ -801,6 +801,81 @@ class TestRationalPeriodic1D:
         assert not f_prime.space.spaces[0].periodic
 
 
+class TestRationalPeriodicND:
+    """A rational surface with one periodic and one open direction.
+
+    The 1D class above covers the round trip; this covers the part of it that is
+    written in terms of ``direction`` and that a 1D case cannot exercise at all --
+    flattening and unflattening about an axis that is not the first, and leaving the
+    *other* direction's space and periodicity untouched. The defect this whole change
+    fixes was found in exactly the gap one dimension below: before it, the only periodic
+    multi-dimensional case in the suite was non-rational.
+    """
+
+    @staticmethod
+    def _surface() -> Bspline:
+        """Build a rational surface, open in direction 0 and periodic in direction 1.
+
+        Returns:
+            Bspline: A degree ``(2, 3)`` rational surface: a circle of ``u``-dependent
+            radius, with a ``v``-dependent weight so the quotient rule's product terms
+            are non-trivial.
+        """
+        degrees = (2, 3)
+        space = BsplineSpace(
+            [
+                BsplineSpace1D(create_uniform_open_knots(4, degrees[0]), degrees[0]),
+                BsplineSpace1D(
+                    create_uniform_periodic_knots(6, degrees[1]), degrees[1], periodic=True
+                ),
+            ]
+        )
+        n_u, n_v = (sp.num_basis for sp in space.spaces)
+        u = np.linspace(0.0, 1.0, n_u)[:, None]
+        v = np.linspace(0.0, 2.0 * np.pi, n_v, endpoint=False)[None, :]
+        w = (1.0 + 0.3 * np.cos(v)) * np.ones_like(u)
+        radius = 1.0 + 0.5 * u
+        xyw = np.stack([np.cos(v) * radius * w, np.sin(v) * radius * w, w], axis=-1)
+        return Bspline(space, xyw, is_rational=True)
+
+    @pytest.mark.parametrize("direction", [0, 1], ids=["open direction", "periodic direction"])
+    @pytest.mark.parametrize(
+        "keep_degree", [False, True], ids=["keep_degree=False", "keep_degree=True"]
+    )
+    def test_matches_central_difference_and_keeps_each_direction(
+        self, direction: int, keep_degree: bool
+    ) -> None:
+        """Differentiating either direction is correct and disturbs neither space.
+
+        ``direction=0`` is the control that matters most here: the periodic direction is
+        not the one being differentiated, so the round trip must not run at all and must
+        leave direction 1 periodic. ``direction=1`` is the case the round trip exists
+        for. Both are checked against central finite differences of the surface itself,
+        an oracle that never builds a derivative B-spline.
+        """
+        f = self._surface()
+        rng = np.random.default_rng(99)
+        coords = np.empty((40, 2), dtype=np.float64)
+        for d, space_1d in enumerate(f.space.spaces):
+            lo, hi = (float(x) for x in space_1d.domain)
+            coords[:, d] = rng.uniform(lo + 0.05, hi - 0.05, coords.shape[0])
+
+        f_prime = f.derivative(direction=direction, keep_degree=keep_degree)
+
+        h = 1e-6
+        plus = coords.copy()
+        plus[:, direction] += h
+        minus = coords.copy()
+        minus[:, direction] -= h
+        fd = (f.evaluate(plus) - f.evaluate(minus)) / (2.0 * h)
+        # 1e-8 against a measured 2.9e-10, which is the oracle's own round-off floor
+        # (eps / h), not the derivative's error.
+        np.testing.assert_allclose(f_prime.evaluate(coords), fd, atol=1e-8, rtol=0)
+
+        assert f_prime.is_rational
+        assert [sp.periodic for sp in f_prime.space.spaces] == [False, True]
+
+
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
