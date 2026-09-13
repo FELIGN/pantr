@@ -222,6 +222,100 @@ std::vector<Dual1> tabulate_dual(int degree, const std::vector<Dual1>& pts) {
     return out;
 }
 
+constexpr double kOneSidedToTwoSided = 2.0;
+/// Neither side is the exact answer, so a parity bound is twice a one-sided forward-error
+/// bound. `ONE_SIDED_TO_TWO_SIDED` in `tests/_parity_harness.py` is the same factor.
+
+constexpr int kAccumulatorRoundingsPerStage = 2;
+/// Roundings each stage commits along the dominant path, in the accumulator format: one
+/// multiply and one add. Taken from the `Roundings` this site's Python parity claim
+/// already carries (`tests/parity/test_basis_cardinal_bspline.py`), unchanged.
+///
+/// It is **conservative here by one rounding per stage**, deliberately rather than by
+/// oversight. That claim compares two backends that each commit both roundings; this one
+/// compares a `double` path that fuses them into one against a `Dual1` path that cannot,
+/// so the true count is one on one side and two on the other. Charging two to each bounds
+/// three by four, and it keeps the two sites spelling the same budget the same way, which
+/// is worth more than the factor.
+
+/// Get the relative half of the bound separating the two scalar types at one degree.
+///
+/// Higham's `gamma_m = m u / (1 - m u)` over `m = degree * kAccumulatorRoundingsPerStage`,
+/// the closed form `_relative_growth` uses in `tests/_parity_harness.py` and for the reason
+/// recorded there: the algebraically equivalent power form evaluates to exactly zero in
+/// float64 for a budget of one rounding per stage, which would turn this bound into an
+/// assertion of bit-identity while claiming to be a bound.
+///
+/// The storage format is the accumulator format here, so a store rounds nothing and
+/// contributes no term.
+///
+/// \param degree Polynomial degree, one recurrence stage each. Zero gives zero, which is
+///        correct: at degree 0 the kernel writes the value with no arithmetic at all.
+/// \return The relative growth, to be multiplied by the amplification.
+double dual_double_relative_bound(int degree) {
+    const double u = 0.5 * kEps;
+    const double total = static_cast<double>(degree * kAccumulatorRoundingsPerStage) * u;
+    return total / (1.0 - total);
+}
+
+/// Get the absolute half of the same bound, the half a purely relative one omits.
+///
+/// Each rounding contributes at most one smallest-positive-subnormal absolutely, on top of
+/// its relative contribution, and inside the span the stage maps are convex combinations of
+/// non-negative values, so an absolute perturbation passes through unamplified and the
+/// floors simply add. `_underflow_budget` in `tests/_parity_harness.py` derives this and
+/// records why omitting it is not a small error: a bound written as `u |x|` alone goes to
+/// zero with `x` while the true error does not.
+///
+/// \param degree Polynomial degree, one recurrence stage each.
+/// \return The absolute floor accumulated over the stages.
+double dual_double_underflow_budget(int degree) {
+    const double eta = std::numeric_limits<double>::denorm_min();
+    return static_cast<double>(degree * kAccumulatorRoundingsPerStage) * eta;
+}
+
+/// The bound above must reject a perturbation at its own size.
+///
+/// A bound is only a check while something can fail it, and the one next door is
+/// derived rather than measured, so nothing in the comparison itself would notice if a
+/// future edit widened it past usefulness. Its Python counterpart carries the same
+/// guard for the same reason
+/// (`test_bounded_branch_admits_a_perturbation_at_the_bound`).
+///
+/// Two failure modes, at the two ends. A bound that collapses to zero asserts
+/// bit-identity while claiming to be a bound -- the trap `_relative_growth` records
+/// hitting in the Python harness, where the algebraically equivalent power form
+/// evaluated to exactly zero. A bound that grows past round-off scale stops refusing
+/// anything a defect would produce. Both are checked against the *size* of the bound;
+/// checking that a perturbation twice its size is refused would be arithmetic rather
+/// than a property of the bound, and would pass however wide it grew.
+void the_parity_bound_stays_a_check_at_both_ends() {
+    for (int degree = 1; degree <= 8; ++degree) {
+        const double value = 0.7;
+        const double relative = dual_double_relative_bound(degree) * std::abs(value);
+        const double bound =
+            kOneSidedToTwoSided * (relative + dual_double_underflow_budget(degree));
+
+        PANTR_CHECK_MSG(bound > 0.0, "degree " + std::to_string(degree)
+                                         + ": the bound collapsed to zero, so the "
+                                           "comparison asserts bit-identity in disguise");
+
+        // The ceiling is a fixed number of epsilons, and it must not be derived from
+        // `kAccumulatorRoundingsPerStage`: a ceiling computed from the budget widens
+        // with it and cannot catch it widening, which is the whole point of being here.
+        // (Measured: an earlier version of this check did exactly that and passed with
+        // the budget quadrupled.) Sixty-four epsilons is the project's `get_default`
+        // tier -- a short algorithm plus build slack -- and the bound at the largest
+        // degree tested sits about four times below it.
+        const double ceiling = 64.0 * kEps * std::abs(value);
+        PANTR_CHECK_MSG(bound <= ceiling,
+                        "degree " + std::to_string(degree) + ": the bound is "
+                            + std::to_string(bound) + ", past the round-off ceiling "
+                            + std::to_string(ceiling)
+                            + "; it no longer refuses what it exists to refuse");
+    }
+}
+
 /// The kernel's values must not depend on the scalar type carrying a derivative:
 /// a dual number's value component obeys the same `double` recurrence.
 ///
@@ -241,15 +335,23 @@ std::vector<Dual1> tabulate_dual(int degree, const std::vector<Dual1>& pts) {
 /// reproduces the `Dual1` value component bit for bit at every index and degree.
 ///
 /// So the bound below, and it is the project's existing one rather than a new
-/// constant: `tests/parity/test_basis_cardinal_bspline.py` derives the same
-/// difference for the same site, one rounding per stage over `degree` stages, twice
-/// because neither side is the exact answer. The amplification factor is the
-/// companion recurrence run on the absolute coefficients, which inside `[0, 1]` --
-/// where every sample point here lies -- equals the value itself, because the stage
-/// weights are then a convex combination and nothing cancels. Hence a relative
-/// bound. At degree 0 there are no stages and it collapses to exact equality, which
-/// is correct. Measured worst case on this data: 3 ulps, against a bound of about 8.
-void dual_value_component_matches_double_to_one_rounding_per_stage() {
+/// constant: `tests/parity/test_basis_cardinal_bspline.py` carries a parity claim for
+/// this same site, and `dual_double_relative_bound` and
+/// `dual_double_underflow_budget` transcribe its budget, its closed form and its
+/// underflow floor unchanged, doubled once for a two-sided comparison exactly as
+/// `absolute_tolerance` does. Where the two situations differ the transcription stays
+/// conservative rather than being retuned; the constants say where.
+///
+/// The amplification factor is the companion recurrence run on the absolute
+/// coefficients, which inside `[0, 1]` -- where every sample point here lies -- equals
+/// the value itself, because the stage weights are then a convex combination and
+/// nothing cancels. Hence a relative bound, plus the absolute floor.
+///
+/// At degree 0 there are no stages, both halves are zero, and it collapses to exact
+/// equality -- which is right, because the kernel writes the value there with no
+/// arithmetic at all. Measured worst case on this data: 3 ulps, against a bound of
+/// about 16.
+void dual_value_component_matches_double_within_the_parity_bound() {
     using pantr::value_of;
     const auto pts = sample_points();
     const auto seeded = seeded_points(pts);
@@ -262,13 +364,12 @@ void dual_value_component_matches_double_to_one_rounding_per_stage() {
         const pantr::span2d<double> view(plain.data(), pts.size(), stride);
         pantr::tabulate_cardinal_bspline_1d<double>(degree, std::span<const double>(pts), view);
 
-        // gamma_n = n*u / (1 - n*u) with u the unit roundoff, n one stage per degree.
-        const double u = 0.5 * kEps;
-        const double n = static_cast<double>(degree);
-        const double gamma = (n * u) / (1.0 - n * u);
+        const double bound_relative = dual_double_relative_bound(degree);
+        const double bound_floor = dual_double_underflow_budget(degree);
 
         for (std::size_t i = 0; i < plain.size(); ++i) {
-            const double bound = 2.0 * gamma * std::abs(plain[i]);
+            const double bound =
+                kOneSidedToTwoSided * (bound_relative * std::abs(plain[i]) + bound_floor);
             PANTR_CHECK_MSG(std::abs(value_of(dual[i]) - plain[i]) <= bound,
                             "degree " + std::to_string(degree) + " index " +
                                 std::to_string(i) + ": dual " +
@@ -438,7 +539,8 @@ void sign_predicates_reach_a_scalar_without_ordering() {
 }
 
 int main() {
-    dual_value_component_matches_double_to_one_rounding_per_stage();
+    dual_value_component_matches_double_within_the_parity_bound();
+    the_parity_bound_stays_a_check_at_both_ends();
     derivatives_sum_to_zero();
     low_degree_derivatives_match_closed_forms();
     sign_predicates_match_the_product_forms<float>();
