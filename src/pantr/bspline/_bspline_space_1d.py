@@ -1239,6 +1239,7 @@ class BsplineSpace1D:
     def tabulate_Lagrange_extraction_operators(
         self,
         lagrange_variant: LagrangeVariant = LagrangeVariant.EQUISPACES,
+        order: int | None = None,
         out: npt.NDArray[np.float32 | np.float64] | None = None,
     ) -> npt.NDArray[np.float32 | np.float64]:
         """Create Lagrange extraction operators of the B-spline.
@@ -1247,6 +1248,15 @@ class BsplineSpace1D:
             lagrange_variant (LagrangeVariant): Lagrange point distribution to use
                 (e.g., equispaced, Gauss-Lobatto-Legendre, etc).
                 Defaults to `LagrangeVariant.EQUISPACES`.
+            order (int | None): Target order of the Lagrange basis the operator maps
+                from. `None` (the default) uses `degree`, which is the only value
+                every earlier release of this method accepted and reproduces its
+                square result unchanged. An `order` above `degree` elevates the
+                Lagrange side only: the returned operator still reproduces this
+                space's own degree-`p` basis exactly, now from `order + 1`
+                Lagrange nodes rather than `degree + 1`. Must be at least
+                `degree`, since a Lagrange basis of a lower order cannot
+                represent a degree-`p` polynomial exactly. Defaults to None.
             out (npt.NDArray[np.float32 | np.float64] | None): Optional output array where the
                 result will be stored. If None, a new array is allocated. Must have the correct
                 shape and dtype if provided. This follows NumPy's style for output arrays.
@@ -1254,7 +1264,7 @@ class BsplineSpace1D:
 
         Returns:
             npt.NDArray[np.float32 | np.float64]: Array of extraction matrices with shape
-                (n_intervals, degree+1, degree+1) where each matrix transforms
+                (n_intervals, degree+1, order+1) where each matrix transforms
                 Lagrange basis functions to B-spline basis functions for that interval.
 
                 Each matrix C[i, :, :] transforms Lagrange basis functions
@@ -1265,10 +1275,16 @@ class BsplineSpace1D:
                 If `out` was provided, returns the same array.
 
         Raises:
-            ValueError: If `out` is provided and has incorrect shape or dtype.
+            ValueError: If `order` is below `degree`, or if `out` is provided and has
+                incorrect shape or dtype.
         """
         return _tabulate_Bspline_Lagrange_1D_extraction_impl(
-            self.knots, self.degree, self.tolerance, lagrange_variant=lagrange_variant, out=out
+            self.knots,
+            self.degree,
+            self.tolerance,
+            lagrange_variant=lagrange_variant,
+            order=order,
+            out=out,
         )
 
     def tabulate_cardinal_extraction_operators(

@@ -20,6 +20,8 @@ import numpy as np
 import numpy.typing as npt
 
 from ..basis import LagrangeVariant
+from ..basis._basis_1D import _tabulate_Bernstein_basis_1D_impl
+from ..basis._basis_lagrange import _get_lagrange_points
 from ..basis._basis_utils import _allocate_or_validate_out
 from ..change_basis import (
     _cached_cardinal_to_bernstein_matrix,
@@ -38,12 +40,13 @@ def _prepare_extraction_out(
     degree: int,
     tol: float,
     out: npt.NDArray[np.float32 | np.float64] | None,
+    order: int | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Validate inputs and allocate/validate the extraction-operator output array.
 
     Shared prologue for the ``_tabulate_Bspline_*_1D_extraction_impl`` helpers:
     validates ``tol`` and the spline info, then allocates (or validates) the
-    ``(n_intervals, degree+1, degree+1)`` output array.
+    ``(n_intervals, degree+1, order+1)`` output array.
 
     Args:
         knots (npt.NDArray[np.float32 | np.float64]): B-spline knot vector.
@@ -51,10 +54,14 @@ def _prepare_extraction_out(
         tol (float): Tolerance for numerical comparisons; must be non-negative.
         out (npt.NDArray[np.float32 | np.float64] | None): Caller-provided output
             array to validate, or ``None`` to allocate a fresh one.
+        order (int | None): Target order of the last axis. ``None`` (the default)
+            uses ``degree``, which is the only shape the Bézier and cardinal
+            targets ever request. Only the Lagrange target passes a value above
+            ``degree``. Defaults to None.
 
     Returns:
         npt.NDArray[np.float32 | np.float64]: The ``(n_intervals, degree+1,
-        degree+1)`` output array.
+        order+1)`` output array.
 
     Raises:
         ValueError: If ``tol`` is negative, the knots/degree fail validation, or
@@ -65,7 +72,8 @@ def _prepare_extraction_out(
     _check_spline_info(knots, degree)
     unique_knots, _ = _get_unique_knots_and_multiplicity_impl(knots, degree, tol, in_domain=True)
     n_elems = len(unique_knots) - 1
-    return _allocate_or_validate_out(out, (n_elems, degree + 1, degree + 1), knots.dtype)
+    target_order = degree if order is None else order
+    return _allocate_or_validate_out(out, (n_elems, degree + 1, target_order + 1), knots.dtype)
 
 
 def _tabulate_Bspline_Bezier_1D_extraction_impl(
@@ -117,11 +125,12 @@ def _tabulate_Bspline_Bezier_1D_extraction_impl(
     return out
 
 
-def _tabulate_Bspline_Lagrange_1D_extraction_impl(
+def _tabulate_Bspline_Lagrange_1D_extraction_impl(  # noqa: PLR0913
     knots: npt.NDArray[np.float32 | np.float64],
     degree: int,
     tol: float,
     lagrange_variant: LagrangeVariant = LagrangeVariant.EQUISPACES,
+    order: int | None = None,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Create Lagrange extraction operators for a B-spline.
@@ -132,13 +141,18 @@ def _tabulate_Bspline_Lagrange_1D_extraction_impl(
         tol (float): Tolerance for numerical comparisons.
         lagrange_variant (LagrangeVariant): Lagrange point distribution
             (e.g., equispaced, gauss lobatto legendre, etc). Defaults to LagrangeVariant.EQUISPACES.
+        order (int | None): Target order of the Lagrange basis. ``None`` (the
+            default) uses ``degree``, giving the square operator this function
+            has always returned. An order above ``degree`` elevates the Lagrange
+            side only, still reproducing this spline's own degree-``p`` basis
+            exactly. Must be at least ``degree``. Defaults to None.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional output array where the result
             will be stored. If None, a new array is allocated. Must have the correct shape and dtype
             if provided. This follows NumPy's style for output arrays. Defaults to None.
 
     Returns:
         npt.NDArray[np.float32 | np.float64]: Array of extraction matrices with shape
-            (n_intervals, degree+1, degree+1) where each matrix transforms
+            (n_intervals, degree+1, order+1) where each matrix transforms
             Lagrange basis functions to B-spline basis functions for that interval.
 
             Each matrix C[i, :, :] transforms Bernstein basis functions
@@ -147,19 +161,54 @@ def _tabulate_Bspline_Lagrange_1D_extraction_impl(
             If `out` was provided, returns the same array.
 
     Raises:
-        ValueError: If the knot vector or degree fails basic validation or if tol is negative.
-        ValueError: If `out` is provided and has incorrect shape or dtype.
+        ValueError: If the knot vector or degree fails basic validation, if tol is
+            negative, if `order` is below `degree`, or if `out` is provided and has
+            incorrect shape or dtype.
     """
-    out = _prepare_extraction_out(knots, degree, tol, out)
+    target_order = degree if order is None else order
+    if target_order < degree:
+        raise ValueError(
+            f"order must be at least the spline degree ({degree}); got order={target_order}"
+        )
+    out = _prepare_extraction_out(knots, degree, tol, out, order=target_order)
 
-    # The matrix is resolved here rather than inside the kernel: it depends only on
-    # (degree, variant, dtype), `pantr.change_basis` caches it on exactly that key
-    # and dispatches its own backend, and `lagrange_variant` is a `StrEnum`, which
-    # must not reach a kernel. It also refuses `degree == 0`, which is why this
-    # target has no degree-0 case and its sibling mask short-circuits before asking.
-    lagr_to_bzr = _cached_lagrange_to_bernstein_matrix(degree, lagrange_variant, knots.dtype)
+    if target_order == degree:
+        # The matrix is resolved here rather than inside the kernel: it depends only
+        # on (degree, variant, dtype), `pantr.change_basis` caches it on exactly that
+        # key and dispatches its own backend, and `lagrange_variant` is a `StrEnum`,
+        # which must not reach a kernel. It also refuses `degree == 0`, which is why
+        # this target has no degree-0 case and its sibling mask short-circuits before
+        # asking.
+        lagr_to_bzr = _cached_lagrange_to_bernstein_matrix(degree, lagrange_variant, knots.dtype)
 
-    lagrange_extraction_kernel()(knots, degree, tol, lagr_to_bzr, out)
+        lagrange_extraction_kernel()(knots, degree, tol, lagr_to_bzr, out)
+
+        return out
+
+    # Elevated order (`target_order > degree`): the C++ Lagrange-to-Bernstein
+    # builder (`change_basis.hpp::lagrange_to_bernstein_1d`) is hardcoded to a
+    # square `(degree + 1, degree + 1)` matrix regardless of how many nodes it is
+    # given, so it cannot be reused here -- passing it `target_order + 1` nodes
+    # would silently truncate to the first `degree + 1` of them. This path is
+    # composed instead from two building blocks that each already carry their own
+    # cross-backend parity claim: the square Bézier operator, dispatched exactly
+    # as `tabulate_Bezier_extraction_operators` dispatches it, and the public
+    # Bernstein tabulation, which is bit-exact between backends because it runs no
+    # solve. Because the Lagrange basis is cardinal at its own nodes, evaluating
+    # the degree-`p` Bernstein basis at the `target_order + 1` elevated nodes is
+    # exactly the (degree+1, target_order+1) matrix `L[j, k] = B_j(x_k)` with
+    # `C_e @ L = A_e`, the same relation `_tabulate_Bspline_Lagrange_1D_extraction_core`
+    # uses for the square case, generalized to a non-square `L`. The final product
+    # is one `numpy.matmul`, run here rather than inside either backend, so it
+    # needs no C++ counterpart.
+    n_elems = out.shape[0]
+    bezier = np.empty((n_elems, degree + 1, degree + 1), dtype=knots.dtype)
+    bezier_extraction_kernel()(knots, degree, tol, bezier)
+
+    nodes = _get_lagrange_points(lagrange_variant, target_order + 1, knots.dtype)
+    lagr_to_bzr = _tabulate_Bernstein_basis_1D_impl(degree, nodes).T
+
+    np.matmul(bezier, lagr_to_bzr, out=out)
 
     return out
 
