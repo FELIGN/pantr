@@ -9,7 +9,11 @@ and for the claim that where the two differ the integer form is the correct one.
 The floating-point form is evaluated with :func:`math.log2`, which is the same
 libm call C++'s ``std::log2`` makes on the same host, over the same IEEE-754
 binary64. The verdicts therefore transfer; the C++ side was separately confirmed
-to agree on GCC 14, Clang 18, GCC 10 and Clang 10.
+to agree on GCC 14, Clang 18, GCC 10 and Clang 10, as a dated measurement rather
+than a standing one. It is not reproducible as written since FELIGN/pantr#376
+raised the floor to libstdc++ 11: ``g++-10`` no longer configures this tree. The
+agreement it reports is about ``std::log2`` on one host and is unaffected by
+that, but re-running it needs a toolchain the floor still accepts.
 
 Run:
     python scripts/measure_bvh_depth_arithmetic.py

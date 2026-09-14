@@ -79,10 +79,11 @@ declare a `cmake_minimum_required` new enough for CMake 4. Eigen 5.0.1 emits one
 `CMP0146` deprecation warning at configure time, which is a policy warning
 rather than a compile warning and so does not reach `-Werror`.
 
-**GCC 10 and Clang 10 pass the concepts probe** and compile and correctly run
-the ported kernel. This matters because it means the probe alone does not keep
-them out; the version filter in `cmake/PantrCompilerProbes.cmake` does. See the
-open question at the end.
+**Clang 10 passes both hard gates** and compiles and correctly runs the ported
+kernel. GCC 10 passes the concepts probe and is then stopped by the second gate,
+on floating-point `std::to_chars`, which its libstdc++ 10 does not provide -- so
+what keeps it out is a probe rather than a version number. See the version floor
+below.
 
 **No FMA is emitted.** The build sets `-ffp-contract=on` but no `-march`, so the
 target is baseline x86-64, which has no FMA instruction to fuse into. Verified
@@ -162,25 +163,49 @@ numba instead of 1.3x faster, which is the opposite conclusion.
 
 Measured here rather than guessed, against this tree rather than a snippet:
 
-| compiler | probe | build under `-Werror` | ctest |
-|---|---|---|---|
-| g++ 9.5 | fails (no `-std=c++20`) | -- | -- |
-| g++ 10 | passes | yes | 3/3 |
-| clang++ 10 | passes | yes | 3/3 |
-| g++ 14.4, clang++ 18.1.8 | passes | yes | 3/3 |
+| toolchain | standard library | gates | build under `-Werror` | ctest |
+|---|---|---|---|---|
+| g++ 9.5 | libstdc++ 9 | fails (no `-std=c++20`) | -- | -- |
+| g++ 10 | libstdc++ 10 | fails (no floating-point `std::to_chars`) | -- | -- |
+| clang++ 10 | libstdc++ 12 | passes | yes | 3/3 |
+| g++ 14.4, clang++ 18.1.8 | libstdc++ 14 | passes | yes | 3/3 |
 
-So the floor is **10 for GCC and Clang alike**, and it means *the lowest version anyone has
-actually exercised*. It replaces a floor of 14 for Clang, inherited from
-`design/toolchain_requirements.md` as an explicit guess, together with no floor at all for
-GCC -- an asymmetry that let a GCC 10 configure silently while a Clang 10 of the same year
-was refused outright, and that nobody had measured in either direction.
+**The binding bound is the standard library, not the compiler.** Those middle two rows are
+contemporaries -- 2020 front ends, the same language level -- and they disagree, because on
+Linux a compiler is *paired* with a libstdc++ rather than carrying one. `clang++ 10` picks up
+the system's libstdc++ 12 and builds the tree; `g++ 10` is stuck with its own libstdc++ 10,
+which implements `std::to_chars` for integers only. `pantr::detail::format_repr` needs the
+floating-point overloads to reproduce Python's `repr` exactly, and there is no second
+implementation of that rule to fall back to.
 
-AppleClang stays exempt: its version numbers do not map to LLVM versions, so any threshold
-applied to it is a row that lies. `-DPANTR_ALLOW_UNTESTED_COMPILER=ON` still opens the gate
-for anyone who knows better, and the floor should rise only from an observed failure.
+So the floor is two bounds:
 
-`scripts/ci_local.sh` builds and tests with both floor compilers on every run, so the table
-above is re-established rather than remembered. **The GitHub workflow does not**: it runs
-GCC 14 and Clang 18, and `ubuntu-24.04` does not package GCC 10. So the floor is guaranteed
-by one machine, and that is a deliberate trade rather than an oversight -- covering it in CI
-needs an older runner image or a container, which is more than this prototype should carry.
+- **libstdc++ 11 or newer**, which is the one that binds. Enforced twice: by a configure-time
+  probe in `cmake/PantrCompilerProbes.cmake` that compiles the calls `format_repr` makes, and
+  by an `#error` in `pantr/core/format.hpp` for anyone who installed the package and never runs
+  our CMake. Both are feature tests on `__cpp_lib_to_chars`, never version comparisons. Raised
+  from 10 by FELIGN/pantr#376, on an observed failure.
+- **version 10 for GCC and Clang alike**, meaning *untested below this* -- a claim about us,
+  not about the compiler. Unchanged, and deliberately not raised to 11 for GCC: that would
+  state a library fact through a front-end number, and `clang++ 10` is the counterexample
+  sitting on this machine. It is no longer the same as *the lowest version exercised*, which
+  it was until #376: for GCC that is now 14, since `g++ 10` is refused by the gate above and
+  nothing between the two is installed here.
+
+AppleClang stays exempt from the version half: its version numbers do not map to LLVM
+versions, so any threshold applied to it is a row that lies. `-DPANTR_ALLOW_UNTESTED_COMPILER=ON`
+still opens the version filter for anyone who knows better, but **not** the `std::to_chars`
+gate -- an untested version and an absent facility are different claims.
+
+`scripts/ci_local.sh` re-establishes the table above on every run rather than remembering it:
+it builds and ctests at `clang++ 10`, and asserts that `g++ 10` is refused -- at configure
+time by CMake, and separately at compile time by the header, each naming the facility. An absent compiler there is a **failure**, not a
+skip, which is the other half of #376 -- it used to skip, so on a machine without these
+compilers the guarantee was vacuous and read as passing.
+
+**The GitHub workflow does not run any of it**: it runs GCC 14, and `ubuntu-24.04` does not
+package Clang 10 -- the half that would build the tree *at* the floor. It does list `g++-10`
+in `universe`, so the refusal half could run there; what cannot is the acceptance half, and a
+floor check that only ever watches something fail is not the claim the floor makes. So the
+floor is guaranteed by one machine: a deliberate trade rather than an oversight, since
+covering it properly needs an older runner image or a container.

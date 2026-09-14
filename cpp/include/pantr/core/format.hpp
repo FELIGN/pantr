@@ -52,6 +52,21 @@
 /// stays. Collecting the rule here is what turns "some header somewhere needs it"
 /// into one file a probe can name, and `format_general` and `format_fixed`
 /// deliberately go through `snprintf` instead, which the floor does have.
+///
+/// #376 raised the floor to **libstdc++ 11** on that basis and added the probe, in
+/// `cmake/PantrCompilerProbes.cmake`. That probe decides by **compiling the call**,
+/// not by a feature-test macro, and the difference is not pedantry: libc++ implements
+/// these overloads and leaves `__cpp_lib_to_chars` undefined, so a macro test refuses
+/// a working toolchain -- and with it every AppleClang there is.
+///
+/// A matching guard in this header was written and then removed, for that reason and
+/// one more. A header cannot compile a probe, so it would have had to test the macro,
+/// and refusing every macOS consumer to spare them one error message is a bad trade.
+/// Measured, besides, that it would not have spared them: GCC prints an `#error` and
+/// then carries on to the overload-resolution dump anyway. So the configure-time gate
+/// is where this is enforced, and a consumer compiling against the installed package
+/// with too old a library meets the overload error -- which is the state #376 found,
+/// and widening the fix to cover it needs a mechanism a header does not have.
 
 #include <array>
 #include <charconv>

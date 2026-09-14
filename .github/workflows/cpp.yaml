@@ -17,8 +17,10 @@
 #
 # One question: does the tree work somewhere that is not the development server?
 # Everything else is answered better locally, by `scripts/ci_local.sh`, which
-# builds four full configurations on every run -- GCC 14, Clang 18, and both
-# floor compilers, GCC 10 and Clang 10.
+# builds three full configurations on every run -- GCC 14, Clang 18, and the
+# floor toolchain, Clang 10 -- and asserts on the same run that GCC 10 is refused
+# at configure time, which since FELIGN/pantr#376 is what being below the floor
+# means.
 #
 # So there is ONE compiler here, not a matrix. A second one would be the fifth
 # build of the same source in a day, at double the wall clock, to answer a
@@ -48,10 +50,23 @@
 # heap-buffer-overflow write in tabulate_bernstein_1d -- and nothing in a Release
 # build observes that.
 #
-# The version floor (GCC 10 / Clang 10) is NOT checked here. `ubuntu-24.04` does
-# not package GCC 10, so it would need an older image or a container, and
-# `ci_local.sh` covers it on every run. design/toolchain_requirements.md records
-# that the floor is guaranteed by one machine.
+# The version floor is NOT checked here, and that decision is unchanged by
+# FELIGN/pantr#376. The floor section needs two compilers: Clang 10 to build the
+# tree at the floor, and GCC 10 to be refused below it. `ubuntu-24.04` does not
+# package Clang 10 at all; it does list `g++-10` in `universe`, so the refusal half
+# could run here. The acceptance half could not, and a floor check that only ever
+# watches something fail is not the claim the floor makes -- so covering this
+# properly needs an older image or a container, which is more weight than a
+# prototype should carry. `ci_local.sh` covers it on every
+# run and design/toolchain_requirements.md records that the floor is guaranteed by
+# one machine.
+#
+# What #376 changed is what that sentence is worth. The floor section used to
+# `record SKIP` when a floor compiler was absent, so on any machine without one it
+# guaranteed nothing and read as passing. It now records a FAILURE instead. So
+# "guaranteed by one machine" is now guaranteed on the machine that makes the
+# claim, rather than conditional on it happening to have the compiler -- which is
+# the premise this block's trade rests on, made true rather than reversed.
 
 name: C++ prototype
 
