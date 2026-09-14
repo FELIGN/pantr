@@ -15,7 +15,8 @@ The real-MPI equivalence test (collective over ``MPI.COMM_WORLD``) lives in
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import Any, Literal
 
 import numpy as np
 import pytest
@@ -423,6 +424,115 @@ class TestMultiRankEquivalence:
                     serial.evaluate(mid),
                     atol=1e-10,
                 )
+
+
+# ---------------------------------------------------------------------------
+# Where func is evaluated: the owned box, or the whole lattice
+# ---------------------------------------------------------------------------
+
+
+def _counting(seen: list[int]) -> Callable[[Any], np.ndarray]:
+    """Return a scalar ``func(lattice)`` that records each call's point count in ``seen``."""
+
+    def func(lat: Any) -> np.ndarray:
+        mesh = _grid(lat)
+        seen.append(int(mesh[0].size))
+        return np.sin(np.pi * mesh[0]) * np.cos(np.pi * mesh[1]) + 0.25 * mesh[0]
+
+    return func
+
+
+def _non_box_partition(space: BsplineSpace, n_parts: int) -> Partition:
+    """The block partition with rank 1's highest cell handed to rank 0.
+
+    On the grids used here every block is at least two cells wide in each direction, so
+    ranks 0 and 1 own non-box sets by construction and every other rank keeps its box.
+    """
+    owner = np.array(partition_grid(tensor_product_grid(space), n_parts).cell_owner)
+    owner[int(np.flatnonzero(owner == 1).max())] = 0
+    return Partition(owner, n_parts)
+
+
+@pytest.mark.parametrize("n_parts", [2, 3, 4])
+@pytest.mark.parametrize("n_intervals", [[8, 8], [7, 11]])
+def test_block_partition_evaluates_each_owned_box_only(
+    n_parts: int, n_intervals: list[int]
+) -> None:
+    """Under the block partition the collecting pass's per-rank counts sum to serial."""
+    space = create_uniform_space([2, 2], n_intervals)
+    seen: list[int] = []
+    func = _counting(seen)
+    serial = l2_project_bspline(func, space)
+    serial_points = seen.pop()
+
+    results = _simulate_distributed_l2(func, space, n_parts)
+
+    collecting = seen[:n_parts]
+    assert len(seen) == 2 * n_parts  # one call per rank, per simulation pass
+    assert sum(collecting) == serial_points, collecting
+    for dfn in results:
+        np.testing.assert_allclose(
+            dfn.global_function.control_points, serial.control_points, atol=1e-12
+        )
+
+
+@pytest.mark.parametrize("quadrature", ["gauss-legendre", "gauss-lobatto"])
+@pytest.mark.parametrize("boundary_interpolation", [False, True])
+@pytest.mark.parametrize("kind", ["block", "non-box", "empty-rank"])
+def test_owned_box_and_whole_lattice_paths_match_serial(
+    quadrature: Literal["gauss-legendre", "gauss-lobatto"],
+    boundary_interpolation: bool,
+    kind: str,
+) -> None:
+    """Both evaluation paths, alone and mixed in one reduction, reproduce the serial result.
+
+    ``block`` takes the owned-box path on every rank; ``non-box`` takes the whole-lattice
+    path on ranks 0 and 1 and the box path on ranks 2 and 3; ``empty-rank`` gives rank 1
+    no cells. Gauss-Lobatto puts nodes on the element boundaries, so the box's node
+    sub-range starts and ends on a knot shared with the neighbouring rank.
+    """
+    n_parts = 4
+    space = create_uniform_space([3, 2], [8, 6])
+    if kind == "block":
+        part = partition_grid(tensor_product_grid(space), n_parts)
+    elif kind == "non-box":
+        part = _non_box_partition(space, n_parts)
+    else:
+        owner = np.array(partition_grid(tensor_product_grid(space), n_parts).cell_owner)
+        owner[owner == 1] = 0
+        part = Partition(owner, n_parts)
+    kwargs: dict[str, Any] = {
+        "quadrature": quadrature,
+        "boundary_interpolation": boundary_interpolation,
+        "n_quad": [4, 3],
+    }
+    seen: list[int] = []
+    func = _counting(seen)
+    serial = l2_project_bspline(func, space, **kwargs)
+
+    results = _simulate_distributed_l2(func, space, n_parts, part=part, **kwargs)
+
+    for dfn in results:
+        np.testing.assert_allclose(
+            dfn.global_function.control_points, serial.control_points, atol=1e-12
+        )
+
+
+def test_non_box_ranks_evaluate_the_whole_lattice() -> None:
+    """Ranks whose owned set is not a box are handed the whole lattice; box ranks are not."""
+    n_parts = 4
+    space = create_uniform_space([2, 2], [8, 8])
+    seen: list[int] = []
+    func = _counting(seen)
+    l2_project_bspline(func, space)
+    serial_points = seen.pop()
+
+    _simulate_distributed_l2(func, space, n_parts, part=_non_box_partition(space, n_parts))
+
+    collecting = seen[:n_parts]
+    assert collecting[0] == serial_points
+    assert collecting[1] == serial_points
+    assert all(count < serial_points for count in collecting[2:]), collecting
 
 
 # ---------------------------------------------------------------------------
