@@ -161,22 +161,40 @@
 /// C++ core never performs the read, which in C++ would be undefined behaviour rather
 /// than a wrong number.
 ///
+/// The oracle refuses the direction too now, in
+/// `pantr.bspline._bspline_degree_core._check_clamped_knots`, so the route no longer
+/// carries the vector to a defect but to the same verdict in one wording. Two details of
+/// that check are worth having here, because this file's own is narrower. It tests **both**
+/// end runs, not just the closing one: without the opening run the walk stays in bounds
+/// and returns a different function over a widened domain, which is a failure no
+/// out-of-bounds read would ever report, and which the field-level `has_open_knots()`
+/// gate below happens to catch while `degree_elevate_1d`'s closing-run check does not.
+/// And the routing predicate is now that same both-ends, bit-exact test, so a direction
+/// reaches this file only when the oracle would have elevated it as well.
+///
 /// **`derivative` has no `keep_degree` parameter and no rational path, and the reason is
-/// not that they are hard.** Both are reachable in the oracle and both currently have an
-/// open defect, so there is nothing stable for a C++ side to be at parity with:
+/// not that they are hard.** Both were reachable in the oracle and both had an open defect
+/// when this file was written, so there was nothing stable for a C++ side to be at parity
+/// with. One of the two is now closed:
 ///
-/// - `derivative(keep_degree=True)` on an **unclamped, non-periodic** direction returns a
-///   wrong function, and the cause is very likely the one the next section documents:
-///   that path re-elevates through A5.9, and the vector it hands it is `knots[1:-1]` of
-///   an unclamped vector, which is unclamped too -- so it meets the same out-of-bounds
-///   walk. On a curve where the counts happen to line up the walk returns rather than
-///   raising and the result is simply wrong; on one where they do not, the field's own
-///   constructor refuses it on the coefficient count. No figure is quoted for how wrong,
-///   because none taken here would be reproducible by anything in this tree.
-/// - the **rational** derivative raises a multiplicity error whenever the differentiated
-///   direction is periodic, so the call does not complete at all.
+/// - `derivative(keep_degree=True)` on an **unclamped, non-periodic** direction used to
+///   return a wrong function, from the cause the previous section documents: that path
+///   re-elevates through A5.9, and the vector it hands it is `knots[1:-1]` of an unclamped
+///   vector, which is unclamped too. The oracle now states A5.9's precondition and refuses
+///   -- `pantr.bspline._bspline_degree_core._check_clamped_knots`, applied to the vector
+///   the kernel actually receives -- so the path raises rather than answering wrongly. A
+///   degree-1 direction is the one shape of it that was never wrong and is still served:
+///   its hodograph is degree 0, whose domain is its whole knot vector, so A5.9 asks
+///   nothing of that vector's ends.
+/// - the **rational** derivative on a periodic direction: this one is **closed**. It used
+///   to raise a multiplicity error, because the quotient rule raises the degree to `2p`
+///   through `multiply` and a periodic knot vector cannot carry the seam multiplicity
+///   that product needs. It now routes the differentiated direction through open form and
+///   closes the seam afterwards, the way degree elevation and reduction already did, and
+///   `tests/test_bspline_derivative.py` pins it for both values of `keep_degree` in one
+///   and several dimensions. It is no longer a reason to keep anything off the C++ path.
 ///
-/// Both are with the repository's owner. A port pinned to a result that is about to change
+/// The second is with the repository's owner. A port pinned to a result that is about to change
 /// would have to be re-derived when it does, and a parity test over it would be asserting
 /// that two backends reproduce the same wrong answer -- which
 /// `design/backend_parity.md` opens by warning is invisible to every parity test that will

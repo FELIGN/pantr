@@ -210,6 +210,94 @@ class TestNonRationalNonOpen1D:
         f_prime = f.derivative()
         assert f_prime.space.spaces[0].degree == 2
 
+    def test_the_unclamped_degree_preserving_derivative_is_refused(self) -> None:
+        """``keep_degree=True`` refuses an unclamped direction; ``False`` still serves it.
+
+        ``keep_degree=True`` re-elevates through Piegl and Tiller A5.9, which assumes a
+        clamped knot vector, and the differentiated vector ``knots[1:-1]`` of an
+        unclamped one is unclamped too.  What that used to return was a *different
+        function*: no exception, no warning, a well-formed :class:`~pantr.bspline.Bspline`
+        whose disagreement with the finite difference was of order one where the
+        difference's own floor is around ``1e-10``.
+
+        The **clamped row is the control**, and it is what isolates the cause from its
+        confound.  Same degree, same coefficient draw, same probe layout: there both
+        settings agree with the finite difference, so what separates them is the
+        unclamped vector and not ``keep_degree``.
+
+        ``keep_degree=False`` on a **non-rational** field is the other half of the rule
+        and the one an over-broad condition would break.  The difference quotient is
+        elementwise and assumes nothing about the ends, so it serves an unclamped
+        direction correctly and must keep doing so.  A *rational* field is the exception,
+        refused under either setting because its quotient rule re-elevates regardless;
+        :class:`TestKeepDegreeRational` pins that separately.
+        """
+        rng = np.random.default_rng(7)
+        degree = 2
+        for knots, clamped in (
+            (np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]), False),
+            (np.array([0.2, 0.2, 0.2, 0.3, 0.4, 0.4, 0.4]), True),
+        ):
+            space_1d = BsplineSpace1D(knots, degree)
+            space = BsplineSpace([space_1d])
+            f = Bspline(space, rng.uniform(-1.0, 1.0, size=space.num_total_basis))
+            assert space_1d.has_open_knots() == clamped
+            assert not space_1d.periodic
+
+            a, b = (float(x) for x in space_1d.domain)
+            pts = np.linspace(a + 0.02, b - 0.02, 50)
+            # Inside the domain, and clear of every breakpoint by far more than the
+            # difference's own step, for the reason `_interior_probe_points` gives.
+            # Checked rather than argued: a probe landing on the interior knot would make
+            # the difference quotient an invalid oracle there, not the code wrong.
+            assert np.min(np.abs(pts[:, None] - knots[None, :])) > 1e-6
+
+            # `atol` is the finite difference's floor rather than the hodograph's: at
+            # h = 1e-6 the cancellation in `(f(x+h) - f(x-h)) / 2h` costs eps/(2h), about
+            # 1e-10 times the coefficient scale, and this file's usual 1e-8 sits two
+            # decades above it.
+            _assert_derivative_matches_central_difference(f, 0, pts, keep_degree=False, atol=1e-8)
+
+            if clamped:
+                _assert_derivative_matches_central_difference(
+                    f, 0, pts, keep_degree=True, atol=1e-8
+                )
+            else:
+                with pytest.raises(ValueError, match="needs a clamped knot vector"):
+                    f.derivative(keep_degree=True)
+
+    def test_an_unclamped_degree_1_direction_is_still_served(self) -> None:
+        """``keep_degree=True`` on an unclamped **degree-1** direction is not refused.
+
+        The precondition is checked on the vector A5.9 actually receives, which is the
+        hodograph's -- ``knots[1:-1]`` at degree ``p - 1``.  At ``p == 1`` that is a
+        degree-0 vector, whose domain is the whole vector, so A5.9 asks nothing of its
+        ends and re-elevating it is right whatever the original's ends were.  The check
+        therefore passes, and it should: this is the one unclamped shape of the
+        degree-preserving derivative that was never wrong in the first place.
+
+        Testing the *original* direction's ends instead would have refused this call, so
+        this is the case that pins the check against being written one level too high.
+        """
+        knots = np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
+        space_1d = BsplineSpace1D(knots, 1)
+        space = BsplineSpace([space_1d])
+        assert not space_1d.has_open_knots()
+        rng = np.random.default_rng(3)
+        f = Bspline(space, rng.uniform(-1.0, 1.0, size=space.num_total_basis))
+
+        a, b = (float(x) for x in space_1d.domain)
+        pts = np.linspace(a + 0.02, b - 0.02, 41)
+        # A degree-1 spline is only C^0 at a breakpoint, so its second derivative jumps
+        # there and a central difference is no oracle within `h` of one.  Drop those.
+        pts = pts[np.min(np.abs(pts[:, None] - knots[None, :]), axis=1) > 1e-3]
+        assert pts.size > 10
+
+        f_prime = _assert_derivative_matches_central_difference(
+            f, 0, pts, keep_degree=True, atol=1e-8
+        )
+        assert f_prime.space.spaces[0].degree == 1
+
 
 # ---------------------------------------------------------------------------
 # Non-rational 1D periodic tests
@@ -646,6 +734,33 @@ class TestKeepDegreeRational:
         d_keep = f.derivative(keep_degree=True)
         pts = eval_pts()
         np.testing.assert_allclose(d_keep.evaluate(pts), d_normal.evaluate(pts), atol=1e-14)
+
+    def test_an_unclamped_rational_direction_is_refused_either_way(self) -> None:
+        """An unclamped rational direction is refused for both values of ``keep_degree``.
+
+        This is the one place where ``keep_degree=False`` does **not** stay available on
+        an unclamped direction, and it is worth pinning because the reason is invisible
+        at the call site: the quotient rule differentiates the numerator and the weight
+        with :func:`~pantr.bspline._bspline_derivative._derivative_keep_degree_nonrational`
+        whatever ``keep_degree`` says, so a rational field re-elevates through A5.9 either
+        way and inherits its precondition either way.
+
+        Before the precondition landed this call did not return a wrong answer -- it
+        raised a parametric-domain mismatch from further downstream, because the elevation
+        had quietly widened one operand's domain.  So what moves here is the diagnosis,
+        from an internal-looking symptom to the precondition that actually failed.
+        """
+        knots = np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        rng = np.random.default_rng(19)
+        ctrl = rng.random((space.num_total_basis, 2))
+        ctrl[:, -1] += 1.0  # positive, distinct weights
+        f = Bspline(space, ctrl, is_rational=True)
+        assert f.is_rational
+
+        for keep_degree in (False, True):
+            with pytest.raises(ValueError, match="needs a clamped knot vector"):
+                f.derivative(keep_degree=keep_degree)
 
 
 # ---------------------------------------------------------------------------

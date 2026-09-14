@@ -62,6 +62,77 @@ def _check_bincoeff_envelope(n: int, what: str) -> None:
         )
 
 
+def _clamped_ends(knots: npt.NDArray[Any], degree: int) -> tuple[bool, bool]:
+    """Report which ends of a knot vector carry a run of ``degree + 1`` equal knots.
+
+    Bit-identity rather than a tolerance, because a run is what
+    :func:`_degree_elevate_1d_core` finds by comparing knots with ``==``: a run that
+    ties only to within a tolerance is no run to the algorithm, whatever it is to a
+    reader. It is the comparison ``degree_elevate_1d`` makes in
+    ``cpp/include/pantr/bspline/degree.hpp`` for the closing end.
+
+    At ``degree == 0`` both runs are one knot long and the answer is ``(True, True)`` for
+    any vector.  That is right rather than vacuous: a degree-0 curve's domain is the whole
+    knot vector, so the kernel's opening assumption holds by construction and its segment
+    walk terminates on the amended ``b <= m`` bound rather than on a closing run.
+
+    Args:
+        knots (np.ndarray): A knot vector of ``num_coefficients + degree + 1`` entries.
+            The caller guarantees that length; nothing here checks it, and on a longer
+            vector ``knots[-1]`` would not be the knot the kernel walks to.
+        degree (int): The degree that vector carries.
+
+    Returns:
+        tuple[bool, bool]: Whether the vector opens, and whether it closes, with a run
+        of ``degree + 1`` bit-identical knots.
+    """
+    return (
+        bool(np.all(knots[: degree + 1] == knots[0])),
+        bool(np.all(knots[-degree - 1 :] == knots[-1])),
+    )
+
+
+def _check_clamped_knots(knots: npt.NDArray[Any], degree: int, what: str) -> None:
+    """Raise unless ``knots`` is clamped, which :func:`_degree_elevate_1d_core` assumes.
+
+    A Layer-2 validator, beside the kernel whose contract it enforces and never called
+    from inside one, for the reason :func:`_check_bincoeff_envelope` gives.
+
+    A5.9 needs a run of ``degree + 1`` equal knots at **each** end, and the kernel
+    checks for neither:
+
+    * the **closing** run is what ends the segment walk. Without it the walk steps past
+      the coefficient array -- interpreted, numpy raises ``IndexError``; compiled, numba
+      does not bounds check in ``nopython`` mode and the read returns whatever it found.
+    * the **opening** run is what makes ``ctrl[: degree + 1]`` the Bézier form of the
+      first segment, which the kernel assumes when it seeds ``bpts``. Without it the
+      walk stays in bounds and nothing is raised: the kernel opens its output with
+      ``degree + increment + 1`` copies of ``knots[0]``, so the result is a different
+      function, over a domain starting at the vector's first knot rather than at the
+      original domain's own start.
+
+    Args:
+        knots (np.ndarray): The knot vector about to be handed to the kernel.
+        degree (int): The degree that vector carries.
+        what (str): Description of the requested operation, used in the error message.
+
+    Raises:
+        ValueError: If either end run is not bit-identical.
+    """
+    opens, closes = _clamped_ends(knots, degree)
+    if opens and closes:
+        return
+    ends = " or ".join(end for end, ok in (("open", opens), ("close", closes)) if not ok)
+    raise ValueError(
+        f"{what} needs a clamped knot vector: A5.9 takes the first {degree + 1} "
+        f"coefficients as the first Bézier segment and walks segments until a run of "
+        f"equal knots reaches the last knot, so it needs a run of {degree + 1} equal "
+        f"knots at each end, and this vector does not {ends} with one. Elevating an "
+        f"unclamped direction is not part of pantr, on either backend; "
+        f"`Bspline.to_open_bspline` converts one to a clamped form that can be elevated."
+    )
+
+
 @nb_jit(nopython=True, cache=True)
 def _bincoeff(n: int, k: int) -> float:
     """Compute the binomial coefficient ``C(n, k)`` in exact integer arithmetic.
@@ -134,7 +205,11 @@ def _degree_elevate_1d_core(  # noqa: PLR0912, PLR0915
     Args:
         degree (int): Original degree.
         ctrl (np.ndarray): Control points of shape (n_pts, rank).
-        knots (np.ndarray): Knot vector of shape (n_knots,).
+        knots (np.ndarray): Knot vector of shape (n_knots,), **clamped**: a run of
+            ``degree + 1`` bit-identical knots at each end.  The closing run is what
+            ends the segment walk and the opening one is what makes the first
+            ``degree + 1`` control points a Bézier segment; :func:`_check_clamped_knots`
+            is the Layer 2 check that establishes both, and states what each end buys.
         degree_increment (int): How much to increase the degree.
 
     Returns:

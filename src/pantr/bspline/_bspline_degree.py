@@ -15,6 +15,7 @@ import numpy.typing as npt
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from ._bspline_degree_core import (
     _check_bincoeff_envelope,
+    _check_clamped_knots,
     _degree_elevate_1d_core,
     _degree_reduce_1d_core,
 )
@@ -41,7 +42,10 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
     Raises:
         ValueError: If an elevated degree would exceed the exactness envelope of the
             binomial-coefficient kernel (see
-            :data:`~pantr.bspline._bspline_degree_core._BINCOEFF_MAX_N`).
+            :data:`~pantr.bspline._bspline_degree_core._BINCOEFF_MAX_N`), or if a
+            direction to be elevated is not periodic and its knot vector is not
+            clamped, which A5.9 assumes (see
+            :func:`~pantr.bspline._bspline_degree_core._check_clamped_knots`).
     """
     dim = bspline.dim
     ctrl = bspline.control_points
@@ -82,7 +86,13 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
                     space_1d.knots, space_1d.degree, pts_2d, True, tol
                 )
 
-                # Degree elevate the open representation.
+                # Degree elevate the open representation.  ``_to_open_bspline_1d_impl``
+                # writes both end runs itself, so the check below states the kernel's
+                # precondition on the vector that actually reaches it rather than
+                # trusting the conversion; a periodic direction cannot fail it.
+                _check_clamped_knots(
+                    open_knots, space_1d.degree, f"Degree elevation in direction {i}"
+                )
                 new_pts_2d, new_knots = _degree_elevate_1d_core(
                     space_1d.degree, open_pts_2d, open_knots, inc
                 )
@@ -98,6 +108,9 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
                 new_space_1d = BsplineSpace1D(per_knots, new_degree, periodic=True)
             else:
                 # Numba kernel
+                _check_clamped_knots(
+                    space_1d.knots, space_1d.degree, f"Degree elevation in direction {i}"
+                )
                 new_pts_2d, new_knots = _degree_elevate_1d_core(
                     space_1d.degree, pts_2d, space_1d.knots, inc
                 )

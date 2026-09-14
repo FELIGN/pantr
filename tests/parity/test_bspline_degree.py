@@ -151,34 +151,40 @@ nothing here has grounds for.
 
 Four, counted as :mod:`pantr.bspline._degree_backend` counts them, and all four are
 recorded there and pinned here rather than left to be met. Two are boundaries of the
-port, one is a defect in the oracle that the port deliberately does not inherit and
-deliberately does not change, and one is an asymmetry between the two sides' own argument
-checking.
+port, one is a precondition both sides now enforce where only the C++ side used to, and
+one is an asymmetry between the two sides' own argument checking.
 
-- **`keep_degree=True` and a rational derivative run the oracle**, because the oracle's
-  own answers on those paths are under review and there is nothing stable to be at parity
-  with. ``keep_degree`` is absent from the C++ signature outright; a rational field is
-  refused by the binding, which
+- **`keep_degree=True` and a rational derivative run the oracle.** ``keep_degree`` is
+  absent from the C++ signature outright, so there is no door to send a caller to; a
+  rational field is refused by the binding, which
   :func:`test_a_rational_derivative_is_refused_by_the_binding_and_served_by_the_oracle`
-  pins.
+  pins. Both of the reasons that section of ``cpp/include/pantr/bspline/degree.hpp``
+  used to give have since gone: ``keep_degree=True`` on an unclamped direction no longer
+  answers wrongly, being refused by the same precondition as the elevation since it
+  re-elevates through A5.9; and the oracle's quotient rule no longer raises on a periodic
+  direction, routing through open form instead. What keeps this on the oracle is only the
+  asymmetry above -- no ``keep_degree`` in the C++ signature, and a rational field refused
+  by the binding.
 - **A periodic direction being elevated runs the oracle**, because elevating one
   round-trips through ``_to_periodic_bspline_1d_impl``, which
   ``cpp/include/pantr/bspline/structural.hpp`` declares as its own boundary. The
   derivative does **not** share that boundary and serves a periodic direction in C++;
   :func:`test_the_periodic_hodograph_reaches_the_cpp_path` is the other half of that rule,
   which an over-broad condition would get wrong.
-- **An unclamped direction being elevated runs the oracle, and the oracle is wrong
-  there.** A5.9 walks segments until a run of equal knots reaches the last index of the
-  vector; an unclamped vector has none, so the walk reads past the control array. Numba
-  does not bounds check in ``nopython`` mode, so it returns whatever the read found. The
-  C++ half refuses rather than reproducing undefined behaviour, and the routing sends the
-  call to the oracle anyway so that what the library accepts does not change with
+- **An unclamped direction being elevated runs the oracle, and is refused there.** A5.9
+  needs a run of ``degree + 1`` equal knots at each end: the closing one ends the segment
+  walk, and without it the walk reads past the control array; the opening one makes the
+  first ``degree + 1`` control points a Bézier segment, and without it the walk stays in
+  bounds and the answer is a different function. The C++ half refused such a direction
+  from the start, rather than reproducing undefined behaviour, and the oracle refuses it
+  now too -- in ``_check_clamped_knots``, a Layer 2 check on the vectors that reach the
+  kernel. The routing still sends the call to the oracle, so the refusal reaches a caller
+  in one wording rather than two, and what the library accepts does not change with
   ``PANTR_BACKEND``.
-  :func:`test_an_unclamped_elevation_fails_the_same_way_under_both_backends` pins the
-  oracle's current behaviour on purpose, so that fixing it is a visible change rather than
-  a silent one -- including that the symptom depends on the configuration: compiled, the
-  walk returns and the field's constructor refuses the coefficient count; interpreted,
-  numpy bounds checks and the read itself raises ``IndexError``.
+  :func:`test_an_unclamped_elevation_is_refused_the_same_way_under_both_backends` pins
+  the refusal, and pins that it no longer depends on the configuration: the check runs
+  before the kernel, so ``NUMBA_DISABLE_JIT=1`` sees the same ``ValueError`` and not the
+  ``IndexError`` numpy used to raise on the read itself.
 - **An increment tuple with nothing to elevate runs the oracle.** The C++ half refuses an
   all-zero or negative one with :meth:`~pantr.bspline.Bspline.elevate_degree`'s own Layer 1
   message while ``_degree_elevate_bspline`` never checks and returns the field unchanged.
@@ -199,7 +205,7 @@ import pytest
 from pantr._backend import Backend, use_backend
 from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
 from pantr.bspline._bspline_degree_core import _bincoeff
-from pantr.bspline._degree_backend import _closes_bit_exactly, elevate_field_degree
+from pantr.bspline._degree_backend import _is_clamped_bit_exactly, elevate_field_degree
 from tests._parity_harness import (
     AccuracyClaim,
     Field,
@@ -210,7 +216,6 @@ from tests._parity_harness import (
     demand_the_compiled_kernel,
     derived_accuracy,
     exact_parity,
-    the_jit_is_disabled,
     underflow_floor,
     unit_roundoff,
 )
@@ -615,19 +620,20 @@ def _elevatable(case: _Case) -> bool:
 
     Calls the routing's own predicate rather than restating it, so the two cannot drift:
     the routing is deliberately stricter than the C++ entry point's tolerance-based
-    clamped check, and a case whose closing run only ties within tolerance goes to the
-    oracle even though C++ would have taken it.
+    clamped check, and a case whose end run only ties within tolerance goes to the
+    oracle even though C++ would have taken it -- to be refused there, the oracle
+    requiring bit-identical end runs of its own.
 
     Args:
         case (_Case): The shape.
 
     Returns:
-        bool: ``True`` when no elevated direction is periodic, and every one of them
-        closes bit-exactly.
+        bool: ``True`` when no elevated direction is periodic, and every one of them is
+        clamped bit-exactly.
     """
     spaces = _spaces(case, np.float64)
     return all(
-        increment == 0 or (not space.periodic and _closes_bit_exactly(space))
+        increment == 0 or (not space.periodic and _is_clamped_bit_exactly(space))
         for increment, space in zip(case.increments, spaces, strict=True)
     )
 
@@ -1265,10 +1271,11 @@ def test_an_unclamped_direction_is_refused_by_the_binding() -> None:
     """The C++ half refuses to elevate an unclamped direction, rather than reading past.
 
     A5.9 walks segments until a run of equal knots reaches the last index of the knot
-    vector, and an unclamped vector has none. The oracle performs the read; in C++ that
-    would be undefined behaviour, so the boundary is declared and the routing sends the
-    call to the oracle -- which is the subject of
-    :func:`test_an_unclamped_elevation_fails_the_same_way_under_both_backends`.
+    vector, and an unclamped vector has none. In C++ that read would be undefined
+    behaviour, so the boundary is declared here; the oracle refuses the same direction
+    for the same reason, and the routing sends the call there so that one wording
+    reaches a caller -- which is the subject of
+    :func:`test_an_unclamped_elevation_is_refused_the_same_way_under_both_backends`.
     """
     with use_backend(Backend.CPP):
         field = _make_field(_case("unclamped curve"), np.float64)
@@ -1277,64 +1284,59 @@ def test_an_unclamped_direction_is_refused_by_the_binding() -> None:
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_an_unclamped_elevation_fails_the_same_way_under_both_backends(
+def test_an_unclamped_elevation_is_refused_the_same_way_under_both_backends(
     dtype: npt.DTypeLike,
 ) -> None:
-    """An unclamped elevation raises the oracle's own error under either backend.
+    """An unclamped elevation raises the oracle's precondition error under either backend.
 
-    **This pins a defect on purpose.** A5.9 needs a clamped vector and the oracle does
-    not check for one; what a caller currently sees is the count mismatch its
-    out-of-bounds walk produces, raised by ``Bspline``'s own constructor. The C++ half
-    refuses such a direction outright and :mod:`pantr.bspline._degree_backend` routes it
-    to the oracle, so what the library accepts does not change with ``PANTR_BACKEND`` --
-    and the day the oracle is fixed, this test fails and says so rather than the change
-    landing silently.
+    This pinned the *defect* until the oracle grew the precondition A5.9 always assumed;
+    it now pins the refusal, and the same thing it always pinned about it -- that the two
+    backends produce it in the same words, because :mod:`pantr.bspline._degree_backend`
+    routes the direction to the oracle rather than to a C++ side that refuses it in its
+    own. What the library accepts does not change with ``PANTR_BACKEND``.
+
+    The other half of what it used to pin is that the symptom no longer depends on the
+    configuration. ``_check_clamped_knots`` runs before the kernel and is plain numpy, so
+    the compiled and interpreted paths raise the same ``ValueError``, where the walk they
+    now never reach used to give a coefficient-count ``ValueError`` compiled and an
+    ``IndexError`` interpreted.
 
     Args:
         dtype (npt.DTypeLike): The storage format.
     """
-    # The defect's *symptom* depends on the configuration, which is worth pinning rather
-    # than gating away: numba does not bounds check, so compiled the walk returns and the
-    # field's own constructor refuses the coefficient count; interpreted, numpy checks and
-    # the read itself raises. Both are the same out-of-bounds walk.
-    if the_jit_is_disabled():
-        expected_type: type[Exception] = IndexError
-        fragment = "is out of bounds for axis 0"
-    else:
-        expected_type = ValueError
-        fragment = "must be a multiple of the number of basis functions"
-
     messages = []
     for backend in (Backend.PYTHON, Backend.CPP):
         with use_backend(backend):
             field = _make_field(_case("unclamped curve"), dtype)
-            with pytest.raises(expected_type) as raised:
+            with pytest.raises(ValueError) as raised:
                 field.elevate_degree(1)
             messages.append(str(raised.value))
     assert messages[0] == messages[1], (
         "the two backends refuse an unclamped elevation differently, so the routing is "
         "not sending it to the oracle"
     )
-    assert fragment in messages[0], (
-        f"the oracle's unclamped elevation no longer fails with {fragment!r}; if it now "
-        f"refuses the vector properly, cpp/include/pantr/bspline/degree.hpp's boundary "
-        f"and pantr.bspline._degree_backend's routing should both be revisited"
+    # Unconditional, where this test used to branch on `the_jit_is_disabled()`: the
+    # assertion below is the same in both configurations and the suite runs the file in
+    # both, which is what pins that the exception no longer depends on the JIT. No
+    # in-process assertion could say more, there being one configuration per process.
+    assert "needs a clamped knot vector" in messages[0], (
+        f"an unclamped elevation no longer names the precondition it failed; got {messages[0]!r}"
     )
 
 
 def test_a_tail_that_closes_only_within_tolerance_still_goes_to_the_oracle() -> None:
     """A closing run that ties within tolerance but not bitwise routes to the oracle.
 
-    The C++ elevation refuses a closing run that is not bit-identical, while
+    Both cores refuse a closing run that is not bit-identical, while
     :meth:`~pantr.bspline.BsplineSpace1D.has_open_knots` compares it within the space's
     tolerance.  Routing on the looser predicate hands C++ a vector it then refuses in its
-    own words while the oracle refuses the same vector in different words, so the error a
-    caller sees would depend on ``PANTR_BACKEND``.  Building the near-tie needs
+    own words while the oracle refuses the same vector in its own, so the error a caller
+    sees would depend on ``PANTR_BACKEND``.  Building the near-tie needs
     ``snap_knots=False``, since snapping collapses it.
 
     This is the boundary between the two predicates, which
-    :func:`test_an_unclamped_elevation_fails_the_same_way_under_both_backends` does not
-    reach: its vector is grossly unclamped, so both predicates agree on it.
+    :func:`test_an_unclamped_elevation_is_refused_the_same_way_under_both_backends` does
+    not reach: its vector is grossly unclamped, so both predicates agree on it.
     """
     knots = np.array([0.0, 0.0, 0.0, 0.5, 0.9999999999999998, 1.0, 1.0])
     space_1d = BsplineSpace1D(knots, 2, snap_knots=False)
@@ -1342,25 +1344,22 @@ def test_a_tail_that_closes_only_within_tolerance_still_goes_to_the_oracle() -> 
     assert space_1d.has_open_knots()
     assert knots[-3] != knots[-1]
 
-    # Which exception the oracle raises depends on the configuration, for the same reason
-    # as in `test_an_unclamped_elevation_fails_the_same_way_under_both_backends`: compiled,
-    # A5.9's out-of-bounds walk returns and a later check refuses the result; interpreted,
-    # numpy checks the read itself. What this test pins is that both backends agree,
-    # whichever of the two it is.
-    expected_type: type[Exception] = IndexError if the_jit_is_disabled() else ValueError
-
     messages = []
     for backend in (Backend.PYTHON, Backend.CPP):
         with use_backend(backend):
             space = BsplineSpace([BsplineSpace1D(knots, 2, snap_knots=False)])
             field = Bspline(space, np.arange(space.num_total_basis, dtype=float).reshape(-1, 1))
-            with pytest.raises(expected_type) as raised:
+            with pytest.raises(ValueError) as raised:
                 field.elevate_degree(1)
             messages.append(str(raised.value))
 
     assert messages[0] == messages[1], (
         "the two backends refuse a near-tie closing run differently, so the routing "
         "predicate is not shadowing the C++ refusal"
+    )
+    assert "needs a clamped knot vector" in messages[0], (
+        f"the near-tie went somewhere other than the oracle's precondition check; got "
+        f"{messages[0]!r}"
     )
 
 

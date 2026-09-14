@@ -300,7 +300,13 @@ def _derivative_keep_degree_nonrational(bspline: Bspline, direction: int) -> Bsp
     Raises:
         ValueError: If the direction's degree exceeds the exactness envelope of the
             binomial-coefficient kernel (see
-            :data:`~pantr.bspline._bspline_degree_core._BINCOEFF_MAX_N`).
+            :data:`~pantr.bspline._bspline_degree_core._BINCOEFF_MAX_N`), or if the
+            hodograph's own knot vector -- ``knots[1:-1]`` at degree ``p - 1`` -- is not
+            clamped, since re-elevating it runs A5.9 and A5.9 assumes it is (see
+            :func:`~pantr.bspline._bspline_degree_core._check_clamped_knots`). A clamped
+            direction always yields a clamped hodograph, and so does **any** direction of
+            degree 1, whose hodograph is degree 0 and has no end runs to lack; every other
+            unclamped direction is refused.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -309,6 +315,7 @@ def _derivative_keep_degree_nonrational(bspline: Bspline, direction: int) -> Bsp
     from . import Bspline as BsplineCls  # noqa: PLC0415
     from ._bspline_degree_core import (  # noqa: PLC0415
         _check_bincoeff_envelope,
+        _check_clamped_knots,
         _degree_elevate_1d_core,
     )
 
@@ -335,6 +342,19 @@ def _derivative_keep_degree_nonrational(bspline: Bspline, direction: int) -> Bsp
     # Derivative (degree p → p-1) + degree elevation (p-1 → p) on arrays.
     deriv_pts = _derivative_ctrl_1d(knots, p, pts_2d)
     deriv_knots = knots[1:-1]
+    # A5.9's precondition, checked on the vector that actually reaches it rather than on
+    # ``space_d``: an original clamped at both ends implies ``knots[1:-1]`` is too, and the
+    # converse does not hold, so testing the original would refuse a direction this path
+    # serves correctly.  ``p == 1`` is that case and it is not a loophole -- the hodograph
+    # is degree 0, whose domain is its whole knot vector, so A5.9 asks nothing of its ends
+    # and re-elevating it is right whatever the original's ends were.  The difference
+    # quotient above assumes nothing about the ends either, which is why
+    # ``keep_degree=False`` stays available on an unclamped non-rational direction.
+    _check_clamped_knots(
+        deriv_knots,
+        p - 1,
+        f"Degree-preserving derivative in direction {direction} (its degree-{p - 1} hodograph)",
+    )
     elevated_pts, elevated_knots = _degree_elevate_1d_core(p - 1, deriv_pts, deriv_knots, 1)
 
     new_ctrl = _unflatten_along_axis(elevated_pts, trailing_shape, direction)
