@@ -141,8 +141,7 @@ def test_a_kernel_names_the_knot_vector_property_it_assumes(kernel: object) -> N
     """
     doc = _docstring_of(kernel)
     assert "non-decreasing" in doc, (
-        f"{getattr(kernel, '__name__', kernel)} does not say the knot vector must be "
-        "non-decreasing"
+        f"{getattr(kernel, '__name__', kernel)} does not say the knot vector must be non-decreasing"
     )
 
 
@@ -150,10 +149,9 @@ def test_a_kernel_names_the_knot_vector_property_it_assumes(kernel: object) -> N
 def test_a_kernel_leaves_out_of_contract_behavior_unspecified(kernel: object) -> None:
     """Each kernel says behavior outside its precondition is unspecified, not today's.
 
-    Pinning today's behaviour (three of these eight raise on the boundary violation
-    checked for this ticket and five happen not to, per the PR body's AC2 table)
-    would freeze something the library does not promise, and would fail the moment
-    a build turns bounds checking off.
+    Pinning today's behaviour (some of these kernels raise just outside their
+    precondition and others return silently) would freeze something the library does
+    not promise, and would fail the moment a build turns bounds checking off.
     """
     doc = _docstring_of(kernel)
     assert "unspecified" in doc, (
