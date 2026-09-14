@@ -79,10 +79,11 @@ declare a `cmake_minimum_required` new enough for CMake 4. Eigen 5.0.1 emits one
 `CMP0146` deprecation warning at configure time, which is a policy warning
 rather than a compile warning and so does not reach `-Werror`.
 
-**GCC 10 and Clang 10 pass the concepts probe** and compile and correctly run
-the ported kernel. GCC 10 no longer gets that far, though: it fails the
-*second* hard gate, on floating-point `std::to_chars`, which its libstdc++ 10
-does not provide. See the version floor below.
+**Clang 10 passes both hard gates** and compiles and correctly runs the ported
+kernel. GCC 10 passes the concepts probe and is then stopped by the second gate,
+on floating-point `std::to_chars`, which its libstdc++ 10 does not provide -- so
+what keeps it out is a probe rather than a version number. See the version floor
+below.
 
 **No FMA is emitted.** The build sets `-ffp-contract=on` but no `-march`, so the
 target is baseline x86-64, which has no FMA instruction to fuse into. Verified
@@ -184,9 +185,12 @@ So the floor is two bounds:
   by an `#error` in `pantr/core/format.hpp` for anyone who installed the package and never runs
   our CMake. Both are feature tests on `__cpp_lib_to_chars`, never version comparisons. Raised
   from 10 by FELIGN/pantr#376, on an observed failure.
-- **version 10 for GCC and Clang alike**, meaning *the lowest version anyone has actually
-  exercised*. Unchanged, and not raised to 11 for GCC: that would state a library fact through
-  a front-end number, and `clang++ 10` is the counterexample sitting on this machine.
+- **version 10 for GCC and Clang alike**, meaning *untested below this* -- a claim about us,
+  not about the compiler. Unchanged, and deliberately not raised to 11 for GCC: that would
+  state a library fact through a front-end number, and `clang++ 10` is the counterexample
+  sitting on this machine. It is no longer the same as *the lowest version exercised*, which
+  it was until #376: for GCC that is now 14, since `g++ 10` is refused by the gate above and
+  nothing between the two is installed here.
 
 AppleClang stays exempt from the version half: its version numbers do not map to LLVM
 versions, so any threshold applied to it is a row that lies. `-DPANTR_ALLOW_UNTESTED_COMPILER=ON`

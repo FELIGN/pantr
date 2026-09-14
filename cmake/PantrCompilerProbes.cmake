@@ -276,12 +276,18 @@ endif()
 #   the standard library   binding, and raised: libstdc++ 11 or newer. Enforced by
 #                          the std::to_chars probe above, which is a feature test
 #                          rather than a version comparison.
-#   the compiler version   10 for GCC and Clang alike, unchanged, and still
-#                          meaning THE LOWEST VERSION ACTUALLY EXERCISED rather
-#                          than a guess about anyone's concepts implementation.
-#                          "Untested below this" is a claim about us and we can
-#                          support it; "broken below this" was a claim about the
-#                          compiler and we could not.
+#   the compiler version   10 for GCC and Clang alike, unchanged, and meaning
+#                          UNTESTED BELOW THIS rather than a guess about anyone's
+#                          concepts implementation. That is a claim about us and we
+#                          can support it; "broken below this" was a claim about
+#                          the compiler and we could not.
+#
+# That second line used to read "the lowest version ACTUALLY EXERCISED", and the
+# two readings were the same thing while both families' 10 built the tree. They
+# are not any more. The lowest GNU actually exercised is now the environment's 14
+# -- g++ 10 is refused by the gate above and nothing between the two is installed
+# here -- while clang++ 10 still makes both readings true at once. Only the
+# weaker one is supportable for both families, so only the weaker one is claimed.
 #
 # clang++ 10 is what holds those two apart, and is why the GNU row of the check
 # below did not simply move to 11: a 2020 front end that satisfies the raised
@@ -292,7 +298,11 @@ endif()
 # The check covers GNU as well as Clang, and that symmetry is the other half of
 # the correction. It was Clang-only because the guess was about Clang's concepts,
 # so a GCC 10 walked in with nothing said while a Clang 10 hit a hard stop --
-# same year, same standard-library era, opposite treatment, neither measured.
+# same year, opposite treatment, neither measured. (Not the same standard library,
+# as it turned out, and that is the whole of FELIGN/pantr#376: on this machine the
+# two resolve to libstdc++ 10 and libstdc++ 12 respectively. The symmetry being
+# corrected here was the right correction to make; the assumption underneath it,
+# that a shared year implies a shared library, was not.)
 #
 # AppleClang stays excluded deliberately: its version numbers do not map to LLVM
 # versions, so any threshold applied to it is a row that lies.

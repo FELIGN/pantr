@@ -41,6 +41,7 @@ exists.
 |---|---|---|
 | C++20 mode | none | **hard gate** |
 | working concepts | none: the scalar-generic design rests entirely on them | **hard gate** |
+| floating-point `std::to_chars` | none: a second copy of the Python-`repr` rule is the thing being avoided | **hard gate** (added 2026-09-14, #376) |
 | `std::span` | trivial to write, not worth it | hard gate in practice |
 | `<mdspan>` | yes, the Kokkos reference implementation | **detect and adapt** |
 | `<expected>` | yes, a small `Result` type or `tl::expected` | detect and adapt |
