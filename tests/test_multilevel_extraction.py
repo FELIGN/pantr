@@ -678,7 +678,7 @@ class TestDeepHierarchy:
         ext.multilevel_operator(0)
         cells = self._deep_cells(thb, 4)
         level = thb.grid.max_level
-        n_single = 4**3
+        n_single = int(np.prod([p + 1 for p in self._CASE.degrees]))
         # The windowed recursion holds at most one row per candidate function, i.e.
         # (level + 1) * n_single rows of n_single doubles, once as scratch and once as
         # the returned operator.  The global-box recursion instead materialises a

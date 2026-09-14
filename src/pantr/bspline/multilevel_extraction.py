@@ -116,8 +116,10 @@ def _window_two_scale_blocks(
     coarse_cols = fb_coarse[cells // factor][:, None] + local[None, :]  # (cells, size)
     band_index = coarse_cols[:, None, :] - first_col[fine_rows][:, :, None]  # (cells, a, b)
     in_band = (band_index >= 0) & (band_index <= degree)
-    gathered = np.take_along_axis(
-        alphas[fine_rows], np.clip(band_index, 0, degree), axis=2
+    # `_compute_oslo_rows_1d_core` is typed `Any`; pin the dtype so the annotation holds.
+    gathered = np.asarray(
+        np.take_along_axis(alphas[fine_rows], np.clip(band_index, 0, degree), axis=2),
+        dtype=np.float64,
     )  # (cells, a, b)
     blocks = np.zeros((cells.shape[0], width, width), dtype=np.float64)
     blocks[:, :size, :size] = np.where(in_band, gathered, 0.0)
@@ -148,6 +150,8 @@ def _build_window_tables(space: THBSplineSpace) -> _WindowTables:
             fb_parts.append(part)
 
     ts_parts: list[npt.NDArray[np.float64]] = []
+    # At least one row so an unrefined space still gets a well-formed 2D array; the
+    # kernel never reads it then, since a level-0 cell takes no two-scale step.
     ts_offset = np.zeros((max(num_levels - 1, 1), dim), dtype=np.int64)
     start = 0
     for m in range(num_levels - 1):
