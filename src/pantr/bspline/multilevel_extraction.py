@@ -33,12 +33,15 @@ Main exports:
 
 from __future__ import annotations
 
-from typing import cast
+import math
+from typing import NamedTuple, cast
 
 import numpy as np
 import numpy.typing as npt
 
 from ..basis._basis_utils import _allocate_or_validate_out
+from ._bspline_knot_insertion_core import _compute_oslo_rows_1d_core
+from ._multilevel_extraction_core import _windowed_multilevel_rows
 from ._thb_spline_space import THBSplineSpace
 from .spanwise_element_extraction import (
     ExtractionTarget,
@@ -46,6 +49,137 @@ from .spanwise_element_extraction import (
     TargetLike,
     _coerce_target,
 )
+
+
+class _WindowTables(NamedTuple):
+    """Flat per-level tables the windowed extraction kernel reads.
+
+    Every array is read-only.  Sizes are linear in the number of 1D cells per level, not
+    in the number of functions of the tensor-product levels.
+    """
+
+    factor: npt.NDArray[np.int64]
+    """Per-direction subdivision factor, shape ``(dim,)``."""
+    degrees: npt.NDArray[np.int64]
+    """Per-direction degree, shape ``(dim,)``."""
+    num_basis: npt.NDArray[np.int64]
+    """Per-level, per-direction function count, shape ``(num_levels, dim)``."""
+    first_basis: npt.NDArray[np.int64]
+    """Concatenated first non-zero function index per cell, every level and direction."""
+    first_basis_offset: npt.NDArray[np.int64]
+    """Start of each ``(level, direction)`` in ``first_basis``."""
+    two_scale: npt.NDArray[np.float64]
+    """Concatenated two-scale blocks restricted to the element windows."""
+    two_scale_offset: npt.NDArray[np.int64]
+    """Start of each ``(transition, direction)`` in ``two_scale``."""
+    active: npt.NDArray[np.int64]
+    """Concatenated sorted active flat indices; position is the global dof."""
+    func_offset: npt.NDArray[np.int64]
+    """Per-level global dof base, shape ``(num_levels + 1,)``."""
+
+
+def _window_two_scale_blocks(
+    space: THBSplineSpace, level: int, direction: int, width: int
+) -> npt.NDArray[np.float64]:
+    """Return the two-scale blocks of one direction restricted to the element windows.
+
+    For each cell ``j`` of level ``level + 1`` (in direction ``direction``) with parent
+    ``j // factor``, the block maps the ``p + 1`` functions of level ``level`` supported
+    on the parent to the ``p + 1`` functions of level ``level + 1`` supported on ``j``.
+    Built from the banded Oslo rows, so the dense refinement matrix is never formed.
+
+    Args:
+        space (THBSplineSpace): The hierarchical space.
+        level (int): Coarse level of the transition, in ``[0, num_levels - 1)``.
+        direction (int): Parametric direction.
+        width (int): Padded block width, ``max(degrees) + 1``.
+
+    Returns:
+        npt.NDArray[np.float64]: Blocks of shape ``(num_cells_fine, width, width)``, zero
+        outside the leading ``(p + 1) x (p + 1)``.
+    """
+    coarse = space.level_space(level).spaces[direction]
+    fine = space.level_space(level + 1).spaces[direction]
+    degree = coarse.degree
+    size = degree + 1
+    alphas, first_col = _compute_oslo_rows_1d_core(
+        degree,
+        np.asarray(coarse.knots, dtype=np.float64),
+        np.asarray(fine.knots, dtype=np.float64),
+    )
+    fb_coarse = space._support[level][direction][0]
+    fb_fine = space._support[level + 1][direction][0]
+    factor = space.grid.factor[direction]
+    cells = np.arange(fb_fine.shape[0], dtype=np.int64)
+    local = np.arange(size, dtype=np.int64)
+    fine_rows = fb_fine[:, None] + local[None, :]  # (cells, size)
+    coarse_cols = fb_coarse[cells // factor][:, None] + local[None, :]  # (cells, size)
+    band_index = coarse_cols[:, None, :] - first_col[fine_rows][:, :, None]  # (cells, a, b)
+    in_band = (band_index >= 0) & (band_index <= degree)
+    gathered = np.take_along_axis(
+        alphas[fine_rows], np.clip(band_index, 0, degree), axis=2
+    )  # (cells, a, b)
+    blocks = np.zeros((cells.shape[0], width, width), dtype=np.float64)
+    blocks[:, :size, :size] = np.where(in_band, gathered, 0.0)
+    return blocks
+
+
+def _build_window_tables(space: THBSplineSpace) -> _WindowTables:
+    """Flatten the per-level data the windowed extraction kernel needs.
+
+    Args:
+        space (THBSplineSpace): The hierarchical space.
+
+    Returns:
+        _WindowTables: The frozen tables.
+    """
+    dim = space.dim
+    num_levels = space.num_levels
+    width = max(space.degrees) + 1
+
+    fb_parts: list[npt.NDArray[np.int64]] = []
+    fb_offset = np.empty((num_levels, dim), dtype=np.int64)
+    start = 0
+    for m in range(num_levels):
+        for k in range(dim):
+            part = np.asarray(space._support[m][k][0], dtype=np.int64)
+            fb_offset[m, k] = start
+            start += part.shape[0]
+            fb_parts.append(part)
+
+    ts_parts: list[npt.NDArray[np.float64]] = []
+    ts_offset = np.zeros((max(num_levels - 1, 1), dim), dtype=np.int64)
+    start = 0
+    for m in range(num_levels - 1):
+        for k in range(dim):
+            blocks = _window_two_scale_blocks(space, m, k, width)
+            ts_offset[m, k] = start
+            start += blocks.shape[0]
+            ts_parts.append(blocks)
+    two_scale = (
+        np.concatenate(ts_parts, axis=0)
+        if ts_parts
+        else np.zeros((0, width, width), dtype=np.float64)
+    )
+
+    tables = _WindowTables(
+        factor=np.asarray(space.grid.factor, dtype=np.int64),
+        degrees=np.asarray(space.degrees, dtype=np.int64),
+        num_basis=np.asarray(
+            [space.level_space(m).num_basis for m in range(num_levels)], dtype=np.int64
+        ).reshape(num_levels, dim),
+        first_basis=np.concatenate(fb_parts),
+        first_basis_offset=fb_offset,
+        two_scale=two_scale,
+        two_scale_offset=ts_offset,
+        active=np.concatenate([space.active_function_indices(m) for m in range(num_levels)]).astype(
+            np.int64
+        ),
+        func_offset=np.asarray(space._func_offset, dtype=np.int64).copy(),
+    )
+    for array in tables:
+        array.flags.writeable = False
+    return tables
 
 
 class MultiLevelExtraction:
@@ -77,21 +211,15 @@ class MultiLevelExtraction:
     Attributes:
         _space (THBSplineSpace): The hierarchical space being extracted.
         _target (ExtractionTarget): The single-level reference basis.
-        _oslo (tuple[tuple[npt.NDArray[np.float64], ...], ...]): Cached per-level,
-            per-direction two-scale (Oslo) matrices; ``_oslo[m][k]`` maps level ``m``
-            to level ``m+1`` in direction ``k``.
+        _tables (_WindowTables): Frozen flat tables read by the windowed extraction
+            kernel: per-level first-basis indices, the two-scale blocks restricted to
+            the element windows, and the active-function index sets.  Their size is
+            linear in the 1D cell counts, and no per-cell or per-function state is kept.
         _ext (dict[int, SpanwiseElementExtraction]): Cache of per-level single-level
             extractions, built lazily.
-        _coeffs_cache (dict[tuple[int, tuple[int, ...], int], tuple[tuple[int, ...],
-            npt.NDArray[np.float64]]]): Memoized ``_element_coeffs`` results keyed
-            by ``(origin_level, multi, target_level)``.  A hierarchical function's
-            coefficients in a finer level's basis are independent of the cell, but a
-            function's support covers up to ``(p + 1) ** d`` cells per level, so the
-            per-cell operators would otherwise recompute each entry many times.
-            Cached coefficient arrays are frozen read-only.
     """
 
-    __slots__ = ("_coeffs_cache", "_ext", "_oslo", "_space", "_target")
+    __slots__ = ("_ext", "_space", "_tables", "_target")
 
     def __init__(self, space: THBSplineSpace, target: TargetLike = ExtractionTarget.BEZIER) -> None:
         """Create a multi-level extraction for a hierarchical space.
@@ -111,12 +239,8 @@ class MultiLevelExtraction:
         resolved_target = _coerce_target(target)
         self._space = space
         self._target = resolved_target
-        self._oslo = space._build_oslo_matrices()
+        self._tables = _build_window_tables(space)
         self._ext: dict[int, SpanwiseElementExtraction] = {}
-        self._coeffs_cache: dict[
-            tuple[int, tuple[int, ...], int],
-            tuple[tuple[int, ...], npt.NDArray[np.float64]],
-        ] = {}
 
     # ------------------------------------------------------------------
     # Properties
@@ -216,58 +340,23 @@ class MultiLevelExtraction:
                 ``(K, n)`` where ``K = active_basis(cid).size`` and
                 ``n = (p + 1) ** d``.  Allocated when ``None``.
 
+        Built by the windowed per-element recursion: working memory is
+        ``(L + 1) * n`` rows of ``n`` doubles on a level-``L`` cell, independent of how
+        far the functions' supports reach beyond the cell.
+
         Returns:
             npt.NDArray[np.float64]: The operator :math:`M^\epsilon`.
 
         Raises:
             IndexError: If ``cid`` is out of range.
             ValueError: If ``out`` has the wrong shape, dtype, or is not writeable.
-            RuntimeError: If a refined coefficient box does not overlap the cell window
-                (a bug in this class).
         """
-        space = self._space
-        grid = space.grid
-        level = grid.cell_level(cid)
-        cell_midx = grid.cell_multi_index(cid)
-        dim = space.dim
-        degrees = space.degrees
-        support = space._support[level]
-
-        contribs = space._cell_contributions(cid)
-        n_active = len(contribs)
-        first_basis = [int(support[d][0][cell_midx[d]]) for d in range(dim)]
-        n_per = tuple(degrees[d] + 1 for d in range(dim))
-        n_single = int(np.prod(n_per))
-
+        rows, _, _ = self._windowed_rows(cid)
         result = cast(
             npt.NDArray[np.float64],
-            _allocate_or_validate_out(out, (n_active, n_single), np.float64),
+            _allocate_or_validate_out(out, rows.shape, np.float64),
         )
-        result[...] = 0.0
-        for row, (_, origin_level, multi) in enumerate(contribs):
-            box_lo, coeffs = self._element_coeffs(origin_level, multi, level)
-            block = np.zeros(n_per, dtype=np.float64)
-            src_slices: list[slice] = []
-            dst_slices: list[slice] = []
-            covered = True
-            for d in range(dim):
-                offset = first_basis[d] - box_lo[d]
-                j0 = max(0, -offset)
-                j1 = min(n_per[d], coeffs.shape[d] - offset)
-                if j1 <= j0:
-                    covered = False
-                    break
-                dst_slices.append(slice(j0, j1))
-                src_slices.append(slice(offset + j0, offset + j1))
-            if not covered:
-                raise RuntimeError(
-                    f"multilevel_operator: cell {cid} row {row} "
-                    f"(origin_level={origin_level}, multi={multi}) — refined coefficient "
-                    "box does not overlap the cell window. This is a bug; please report "
-                    "it with the space and grid configuration."
-                )
-            block[tuple(dst_slices)] = coeffs[tuple(src_slices)]
-            result[row] = block.ravel()
+        result[...] = rows
         return result
 
     def operator(
@@ -301,13 +390,15 @@ class MultiLevelExtraction:
         cell_midx = space.grid.cell_multi_index(cid)
         level_ext = self._level_extraction(level)
         n_in = int(np.prod(level_ext.input_shape_per_dir))
-        multilevel = self.multilevel_operator(cid)
+        multilevel, _, nonzero = self._windowed_rows(cid)
         result = cast(
             npt.NDArray[np.float64],
             _allocate_or_validate_out(out, (multilevel.shape[0], n_in), np.float64),
         )
         single_level_f64 = np.asarray(level_ext.operator(cell_midx), dtype=np.float64)
-        np.matmul(multilevel, single_level_f64, out=result)
+        # A row of M^e that vanishes on the cell maps to a zero row of C^e.
+        result[...] = 0.0
+        result[nonzero] = multilevel[nonzero] @ single_level_f64
         return result
 
     # ------------------------------------------------------------------
@@ -330,64 +421,54 @@ class MultiLevelExtraction:
             self._ext[level] = ext
         return ext
 
-    def _element_coeffs(
-        self,
-        origin_level: int,
-        multi: tuple[int, ...],
-        target_level: int,
-    ) -> tuple[tuple[int, ...], npt.NDArray[np.float64]]:
-        """Express a hierarchical function on a cell in the level-``target_level`` basis.
-
-        Refines the originating B-spline ``B^{origin_level}_multi`` from its origin level
-        up to ``target_level``, applying the truncation at each intermediate level when the
-        space is truncated.  The result is the function's exact coefficients in the
-        level-``target_level`` tensor-product basis over the cell.
-
-        The result depends only on the arguments — not on the cell — so it is
-        memoized on the instance (see ``_coeffs_cache``); the returned ``coeffs``
-        array is shared across calls and frozen read-only.
+    def _windowed_rows(
+        self, cid: int
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], npt.NDArray[np.bool_]]:
+        r"""Run the windowed extraction kernel on one cell.
 
         Args:
-            origin_level (int): Level the function originates at.
-            multi (tuple[int, ...]): Per-axis function index at ``origin_level``.
-            target_level (int): The cell's level; the basis the result is expressed in.
+            cid (int): Active cell flat id in ``[0, num_elements)``.
 
         Returns:
-            tuple[tuple[int, ...], npt.NDArray[np.float64]]: ``(box_lo, coeffs)`` over
-            the level-``target_level`` function box.  ``coeffs`` is read-only.
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], npt.NDArray[np.bool_]]:
+            ``(rows, dofs, nonzero)`` of shapes ``(K, n)``, ``(K,)`` and ``(K,)``: the
+            rows of :math:`M^\epsilon` for every active function whose tensor-product
+            support covers the cell, their global dofs in increasing order (equal to
+            :meth:`THBSplineSpace.active_basis`), and whether each row has a non-zero
+            entry (``False`` for a truncated function that vanishes on the cell).
 
         Raises:
-            ValueError: If ``origin_level > target_level``.
+            IndexError: If ``cid`` is out of range.
         """
-        if origin_level > target_level:
-            raise ValueError(
-                f"origin_level ({origin_level}) must be <= target_level ({target_level})."
-            )
-        key = (origin_level, multi, target_level)
-        cached = self._coeffs_cache.get(key)
-        if cached is not None:
-            return cached
-        space = self._space
-        dim = space.dim
-        box_lo = [int(multi[d]) for d in range(dim)]
-        box_hi = [int(multi[d]) + 1 for d in range(dim)]
-        coeffs = np.ones((1,) * dim, dtype=np.float64)
-        for lvl in range(origin_level, target_level):
-            coeffs, box_lo, box_hi = THBSplineSpace._refine_box(
-                coeffs, box_lo, box_hi, self._oslo[lvl]
-            )
-            if space._truncate:
-                THBSplineSpace._truncate_box(
-                    coeffs,
-                    box_lo,
-                    box_hi,
-                    space._active_funcs[lvl + 1],
-                    space._level_spaces[lvl + 1].num_basis,
-                )
-        coeffs.flags.writeable = False
-        entry = (tuple(box_lo), coeffs)
-        self._coeffs_cache[key] = entry
-        return entry
+        grid = self._space.grid
+        level = grid.cell_level(cid)  # validates cid
+        cell_multi = np.asarray(grid.cell_multi_index(cid), dtype=np.int64)
+        tables = self._tables
+        n_single = math.prod(p + 1 for p in self._space.degrees)
+        # Every row belongs to a function in one level's window, and there are
+        # ``level + 1`` windows of ``n_single`` functions.
+        capacity = (level + 1) * n_single
+        rows = np.empty((capacity, n_single), dtype=np.float64)
+        dofs = np.empty(capacity, dtype=np.int64)
+        nonzero = np.empty(capacity, dtype=np.bool_)
+        count = _windowed_multilevel_rows(
+            level,
+            cell_multi,
+            tables.factor,
+            tables.degrees,
+            tables.num_basis,
+            tables.first_basis,
+            tables.first_basis_offset,
+            tables.two_scale,
+            tables.two_scale_offset,
+            tables.active,
+            tables.func_offset,
+            self._space.truncate,
+            rows,
+            dofs,
+            nonzero,
+        )
+        return rows[:count], dofs[:count], nonzero[:count]
 
     def __repr__(self) -> str:
         """Return a compact string representation.

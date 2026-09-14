@@ -969,6 +969,18 @@ class THBSplineSpace:
             on the number of *non-zero* functions -- which is what a fixed-width dofmap
             wants. The value is therefore the same for the THB and HB bases.
 
+            What the bound costs at depth: a function supported on a level-``L`` cell
+            lies, at its own level ``m``, among the ``prod(degree + 1)`` level-``m``
+            functions supported on the cell's ancestor, so a cell lists at most
+            ``(L + 1) * prod(degree + 1)`` functions, and a hierarchy refined repeatedly
+            around one region makes the count on its deepest cells grow with every
+            level. Under truncation the functions actually non-zero on such a cell can be
+            far fewer, because a coarse function refined through several levels of active
+            finer functions vanishes there. A dofmap sized by this value on a deep THB
+            hierarchy therefore over-allocates by up to ``prod(degree + 1)`` entries per
+            level; :meth:`MultiLevelExtraction.multilevel_operator` still emits a row,
+            identically zero, for each such function.
+
             Visits every cell, so the first call populates the per-cell contribution
             cache for the whole grid -- the same cache :meth:`active_basis` fills lazily,
             but warmed in full.
