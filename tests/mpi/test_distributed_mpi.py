@@ -533,17 +533,17 @@ def test_the_l2_projection_evaluates_the_whole_lattice_where_the_owned_set_is_no
 def test_the_quasi_interpolant_does_distribute_its_evaluation() -> None:
     """`quasi_interpolate_bspline_distributed` evaluates its windowed space, not everything.
 
-    The counterpart of the test above. Its callable takes a flat point array rather than
-    a lattice, so it is not held to a tensor product and can evaluate a rank's own
-    window; the L2 projection is, and does not.
+    The counterpart of the L2 tests above. Its callable takes a flat point array rather
+    than a lattice, so it is not held to a tensor product and can evaluate a rank's own
+    window whatever the partition; the L2 projection is held to one, and restricts its
+    evaluation only where a rank's owned cells form a box.
 
     **Windowed, which is owned plus halo, not owned alone.** The evaluation is genuinely
     distributed -- the per-rank count falls as ranks are added, which is the property
     pinned here -- but the halo is evaluated on both sides of every partition boundary,
     so the aggregate still exceeds the serial count. That is why this asserts a strict
     decrease rather than a share: the margin depends on the grid and the partition. What
-    is not allowed is for the count to stay put, which is the shape of the defect next
-    door.
+    is not allowed is for the count to stay put.
     """
     comm = MPI.COMM_WORLD
     if comm.size == 1:
@@ -570,5 +570,5 @@ def test_the_quasi_interpolant_does_distribute_its_evaluation() -> None:
     assert len(seen) == 1, f"func was called {len(seen)} times, expected once"
     assert seen[0] < serial_points, (
         f"{seen[0]} points per rank against {serial_points} serial: the distributed "
-        "quasi-interpolant is evaluating everything, like the L2 projection does"
+        "quasi-interpolant is evaluating everything"
     )
