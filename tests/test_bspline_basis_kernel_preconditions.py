@@ -137,11 +137,14 @@ def test_a_kernel_names_the_knot_vector_property_it_assumes(kernel: object) -> N
     """Each kernel states that ``knots`` must be non-decreasing.
 
     Every kernel here either binary-searches the knot vector or relies on knot
-    differences being non-negative, so the ordering is part of every contract.
+    differences being non-negative, so the ordering is part of every contract. The
+    assertion matches the stated precondition, whitespace-normalised, rather than the
+    bare word, which two of these docstrings already used in an unrelated sentence.
     """
-    doc = _docstring_of(kernel)
-    assert "non-decreasing" in doc, (
-        f"{getattr(kernel, '__name__', kernel)} does not say the knot vector must be non-decreasing"
+    doc = " ".join(_docstring_of(kernel).split())
+    assert "including that ``knots`` is non-decreasing" in doc, (
+        f"{getattr(kernel, '__name__', kernel)} does not state that the knot vector must be "
+        "non-decreasing"
     )
 
 
