@@ -303,8 +303,11 @@ def l2_project_bspline_distributed(  # noqa: PLR0913
             ranks).
 
     Note:
-        ``func`` MUST be rank-independent: for a given quadrature lattice it must return
-        the same shape and dtype on every rank.  The reduction (``comm.allreduce``) is a
+        ``func`` MUST be rank-independent: its dtype and component count must not depend
+        on the rank or on the size of the lattice it is handed, since ranks with a box
+        receive only their box while other ranks receive the whole lattice.  A component
+        count that varied with the lattice size could broadcast in the reduction rather
+        than raise.  The reduction (``comm.allreduce``) is a
         collective that every rank must reach with a matching contribution; if ``func``
         raised on a subset of ranks (e.g. a shape error seen by some ranks only) those
         ranks would abort before the collective and deadlock the rest, and mixed dtypes
