@@ -133,6 +133,20 @@ def test_a_kernel_still_disclaims_validation(kernel: object) -> None:
 
 
 @pytest.mark.parametrize("kernel", _KERNELS, ids=_KERNEL_NAMES)
+def test_a_kernel_names_the_knot_vector_property_it_assumes(kernel: object) -> None:
+    """Each kernel states that ``knots`` must be non-decreasing.
+
+    Every kernel here either binary-searches the knot vector or relies on knot
+    differences being non-negative, so the ordering is part of every contract.
+    """
+    doc = _docstring_of(kernel)
+    assert "non-decreasing" in doc, (
+        f"{getattr(kernel, '__name__', kernel)} does not say the knot vector must be "
+        "non-decreasing"
+    )
+
+
+@pytest.mark.parametrize("kernel", _KERNELS, ids=_KERNEL_NAMES)
 def test_a_kernel_leaves_out_of_contract_behavior_unspecified(kernel: object) -> None:
     """Each kernel says behavior outside its precondition is unspecified, not today's.
 
