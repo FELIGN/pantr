@@ -80,7 +80,14 @@ def _find_spans_and_first_basis(  # noqa: PLR0913
         npt.NDArray[np.int_]: Clamped knot-span index per point, shape (n_pts,).
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``degree >= 0`` and
+        ``knots.size >= 2 * degree + 2``, which keeps the two span clamps below in
+        agreement about which one binds. This function's own array reads never go
+        out of bounds on a shorter knot vector; what it returns does -- a knot-span
+        index outside the range :func:`_basis_funcs_point` and
+        :func:`_basis_derivs_point` are in contract for. Behavior on an
+        out-of-contract input is unspecified.
         For general use, call :func:`_tabulate_Bspline_basis_1D_impl` instead.
     """
     knot_ids = _get_last_knot_smaller_equal_impl(knots, pts)
@@ -151,7 +158,14 @@ def _find_span_and_first_basis_point(
         index and the index of the first active basis function at ``pt``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``degree >= 0`` and
+        ``knots.size >= 2 * degree + 2``, for the same reason as
+        :func:`_find_spans_and_first_basis`'s clamp: a shorter vector lets the upper
+        and lower clamps disagree, and this function's own read
+        (``np.searchsorted``) never goes out of bounds, but the ``knot_id`` it
+        returns can fall outside the range the point kernels are in contract for.
+        Behavior on an out-of-contract input is unspecified.
         For general use, call :func:`_tabulate_Bspline_basis_1D_impl` or
         :func:`_tabulate_Bspline_basis_deriv_1D_impl` instead.
     """
@@ -198,9 +212,21 @@ def _basis_funcs_point(
         N (npt.NDArray[np.float32 | np.float64]): Output row of length ``degree + 1``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed). The recurrence
-        denominator is a sum of two knot differences and is always ``>= 0`` for a
-        non-decreasing knot vector; it is treated as zero (and the corresponding
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``degree - 1 <= knot_id <= knots.size - 1 -
+        degree``: the knot reads below run from ``knot_id + 1 - degree`` to
+        ``knot_id + degree``, and nothing here bounds-checks them. **A ``knot_id``
+        one above the upper bound reads past the array.** One below the lower bound
+        happens to survive it instead, via NumPy's negative-index wraparound, and
+        returns a value read from the wrong knot rather than raising -- unspecified
+        either way. :func:`_find_spans_and_first_basis` and
+        :func:`_find_span_and_first_basis_point` only ever produce a ``knot_id`` in
+        the narrower ``degree <= knot_id <= knots.size - degree - 2``: that is the
+        callers' guarantee, not this function's whole contract, and it is one entry
+        tighter than the bound above on each side.
+
+        The recurrence denominator is a sum of two knot differences and is always
+        ``>= 0`` for a non-decreasing knot vector; it is treated as zero (and the corresponding
         term dropped) exactly when ``denom == 0`` (Piegl & Tiller A2.2's textbook
         guard). No tolerance is needed, and -- contrary to what this note used to
         claim -- the guard does **not** rest on knots meant to be equal being
@@ -292,7 +318,15 @@ def _compute_basis_nurbs_book_impl(  # noqa: PLR0913
             Must have shape (n_pts,) and dtype int.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``degree >= 0`` and
+        ``knots.size >= 2 * degree + 2`` (see :func:`_find_spans_and_first_basis`),
+        plus ``out_basis.shape == (pts.size, degree + 1)`` and
+        ``out_first_basis.shape == (pts.size,)`` with a dtype matching ``knots`` and
+        ``np.int_`` respectively. A knot vector shorter than the minimum does not
+        crash here either: it propagates an out-of-range span into
+        :func:`_basis_funcs_point`, whose own contract note says what happens
+        there. Behavior on an out-of-contract input is unspecified.
     """
     # See The NURBS Book, by Piegl & Tiller. Algorithm A2.2 (BasisFuncs)
     n_pts = pts.size
@@ -347,7 +381,15 @@ def _compute_basis_nurbs_book_serial_impl(  # noqa: PLR0913
             Must have shape (n_pts,) and dtype int.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``degree >= 0`` and
+        ``knots.size >= 2 * degree + 2`` (see :func:`_find_spans_and_first_basis`),
+        plus ``out_basis.shape == (pts.size, degree + 1)`` and
+        ``out_first_basis.shape == (pts.size,)`` with a dtype matching ``knots`` and
+        ``np.int_`` respectively. A knot vector shorter than the minimum does not
+        crash here either: it propagates an out-of-range span into
+        :func:`_basis_funcs_point`, whose own contract note says what happens
+        there. Behavior on an out-of-contract input is unspecified.
         For general use, call :func:`_tabulate_Bspline_basis_1D_impl` instead.
     """
     n_pts = pts.size
@@ -385,9 +427,27 @@ def _basis_derivs_point(  # noqa: PLR0913
             ``(n_deriv + 1, degree + 1)``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed). The recurrence
-        denominator ``ndu[j, r]`` is a sum of two knot differences and is always
-        ``>= 0`` for a non-decreasing knot vector; it is treated as zero (and the
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is the same as :func:`_basis_funcs_point`'s:
+        ``degree - 1 <= knot_id <= knots.size - 1 - degree``, plus ``n_deriv >= 0``
+        and ``out_pt.shape == (n_deriv + 1, degree + 1)``. Behavior on an
+        out-of-contract ``knot_id`` is unspecified there too. Step 1's knot reads
+        are exactly :func:`_basis_funcs_point`'s, with the same two failure modes
+        at the two ends. **Step 2's three divisions by ``ndu[...]`` carry no
+        guard**, unlike step 1's: a ``knot_id`` at either end of the precondition
+        above can still land on a Cox-de Boor sub-span of zero width there and
+        raise ``ZeroDivisionError`` even though every read stayed in bounds --
+        measured at both ends, on a knot vector with a genuine interior knot rather
+        than the last-knot multiplicity
+        :func:`~pantr.bspline.BsplineSpace1D.__init__` already refuses at
+        construction for the same reason. ``cpp/include/pantr/bspline/tabulate.hpp``
+        documents the same gap for the C++ port, reached there through a space's
+        domain endpoint rather than through a direct call; it is a pre-existing
+        Layer 3 gap, not introduced or fixed by this note, and stays out of scope
+        here.
+
+        The recurrence denominator ``ndu[j, r]`` is a sum of two knot differences and
+        is always ``>= 0`` for a non-decreasing knot vector; it is treated as zero (and the
         corresponding term dropped) exactly when ``denom == 0`` (Piegl & Tiller
         A2.3's textbook guard). No tolerance is needed, and the guard does **not**
         rest on knots meant to be equal being stored bitwise identical: as in
@@ -522,7 +582,15 @@ def _compute_basis_deriv_nurbs_book_impl(  # noqa: PLR0913
             Must have shape (n_pts,) and dtype int.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``degree >= 0``, ``n_deriv >= 0`` and
+        ``knots.size >= 2 * degree + 2`` (see :func:`_find_spans_and_first_basis`),
+        plus ``out_deriv.shape == (pts.size, n_deriv + 1, degree + 1)`` and
+        ``out_first_basis.shape == (pts.size,)`` with a dtype matching ``knots`` and
+        ``np.int_`` respectively. A knot vector shorter than the minimum does not
+        crash here either: it propagates an out-of-range span into
+        :func:`_basis_derivs_point`, whose own contract note says what happens
+        there. Behavior on an out-of-contract input is unspecified.
     """
     # See The NURBS Book, by Piegl & Tiller. Algorithm A2.3 (DerBasisFuncs)
     n_pts = pts.size
@@ -578,7 +646,15 @@ def _compute_basis_deriv_nurbs_book_serial_impl(  # noqa: PLR0913
             Must have shape (n_pts,) and dtype int.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``degree >= 0``, ``n_deriv >= 0`` and
+        ``knots.size >= 2 * degree + 2`` (see :func:`_find_spans_and_first_basis`),
+        plus ``out_deriv.shape == (pts.size, n_deriv + 1, degree + 1)`` and
+        ``out_first_basis.shape == (pts.size,)`` with a dtype matching ``knots`` and
+        ``np.int_`` respectively. A knot vector shorter than the minimum does not
+        crash here either: it propagates an out-of-range span into
+        :func:`_basis_derivs_point`, whose own contract note says what happens
+        there. Behavior on an out-of-contract input is unspecified.
         For general use, call :func:`_tabulate_Bspline_basis_deriv_1D_impl` instead.
     """
     n_pts = pts.size
