@@ -158,11 +158,13 @@ one is an asymmetry between the two sides' own argument checking.
   absent from the C++ signature outright, so there is no door to send a caller to; a
   rational field is refused by the binding, which
   :func:`test_a_rational_derivative_is_refused_by_the_binding_and_served_by_the_oracle`
-  pins, because the oracle's quotient rule still raises on a periodic direction and there
-  is nothing stable to be at parity with. The other reason that section of
-  ``cpp/include/pantr/bspline/degree.hpp`` gives -- that ``keep_degree=True`` on an
-  unclamped direction answers wrongly -- no longer holds: it is refused now, by the same
-  precondition as the elevation, since it re-elevates through A5.9.
+  pins. Both of the reasons that section of ``cpp/include/pantr/bspline/degree.hpp``
+  used to give have since gone: ``keep_degree=True`` on an unclamped direction no longer
+  answers wrongly, being refused by the same precondition as the elevation since it
+  re-elevates through A5.9; and the oracle's quotient rule no longer raises on a periodic
+  direction, routing through open form instead. What keeps this on the oracle is only the
+  asymmetry above -- no ``keep_degree`` in the C++ signature, and a rational field refused
+  by the binding.
 - **A periodic direction being elevated runs the oracle**, because elevating one
   round-trips through ``_to_periodic_bspline_1d_impl``, which
   ``cpp/include/pantr/bspline/structural.hpp`` declares as its own boundary. The

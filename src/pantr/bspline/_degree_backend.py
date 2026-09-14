@@ -46,12 +46,15 @@ nothing stable for a C++ side to be at parity with. One of the two is now closed
 ``derivative(keep_degree=True)`` on an unclamped, non-periodic direction re-elevates
 through A5.9 and is refused rather than answered wrongly, which is the subject of the
 unclamped section below; the one shape of it that was never wrong, a degree-1 direction
-whose hodograph is degree 0, is still served -- while the rational derivative still
-raises a multiplicity error whenever the differentiated direction is periodic. Note that
-a rational field re-elevates whatever ``keep_degree`` says, so it inherits the refusal
-under both settings. Closing the second one would
-not by itself move this branch: ``keep_degree`` is absent from the C++ *signature*, so
-there is no door to send a caller to. :func:`_the_cpp_backend_can_differentiate` keeps
+whose hodograph is degree 0, is still served. Note that a rational field re-elevates
+whatever ``keep_degree`` says, so it inherits the refusal under both settings.
+
+The other is closed too: the rational derivative on a periodic direction used to raise a
+multiplicity error and now routes through open form, pinned in
+``tests/test_bspline_derivative.py`` for both values of ``keep_degree``. Neither is a
+reason to keep anything here any more, and what does keep this branch is unchanged:
+``keep_degree`` is absent from the C++ *signature*, so there is no door to send a caller
+to. :func:`_the_cpp_backend_can_differentiate` keeps
 both cases on the Python path rather than letting a caller meet that refusal or, worse,
 a silently absent parameter.
 

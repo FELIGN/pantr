@@ -186,8 +186,13 @@
 ///   degree-1 direction is the one shape of it that was never wrong and is still served:
 ///   its hodograph is degree 0, whose domain is its whole knot vector, so A5.9 asks
 ///   nothing of that vector's ends.
-/// - the **rational** derivative raises a multiplicity error whenever the differentiated
-///   direction is periodic, so the call does not complete at all. This one is still open.
+/// - the **rational** derivative on a periodic direction: this one is **closed**. It used
+///   to raise a multiplicity error, because the quotient rule raises the degree to `2p`
+///   through `multiply` and a periodic knot vector cannot carry the seam multiplicity
+///   that product needs. It now routes the differentiated direction through open form and
+///   closes the seam afterwards, the way degree elevation and reduction already did, and
+///   `tests/test_bspline_derivative.py` pins it for both values of `keep_degree` in one
+///   and several dimensions. It is no longer a reason to keep anything off the C++ path.
 ///
 /// The second is with the repository's owner. A port pinned to a result that is about to change
 /// would have to be re-derived when it does, and a parity test over it would be asserting
