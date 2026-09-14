@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import tracemalloc
+from typing import NamedTuple
+
 import numpy as np
 import numpy.typing as npt
 import pytest
@@ -14,6 +17,7 @@ from pantr.bspline import (
     MultiLevelExtraction,
     SpanwiseElementExtraction,
     THBSplineSpace,
+    create_uniform_space,
 )
 from pantr.grid import HierarchicalGrid, hierarchical_grid, uniform_grid
 
@@ -403,3 +407,297 @@ class TestElementCoeffsMemoization:
         ext = MultiLevelExtraction(self._thb())
         with pytest.raises(ValueError, match="must be <="):
             ext._element_coeffs(2, (0, 0), 0)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Windowed per-element recursion (#336): direct-evaluation oracle, partition of
+# unity and depth
+# ──────────────────────────────────────────────────────────────────────────────
+
+_UNIT_ROUNDOFF = float(np.finfo(np.float64).eps) / 2.0
+"""Unit roundoff ``u`` of binary64."""
+
+_OSLO_STAGE_OPS = 5
+"""Rounded operations per stage of a nonnegative knot-insertion recurrence.
+
+One stage is ``w * a + w' * a'`` with ``w = (x - t_j) / (t_{j+k} - t_j)``: two knot
+differences and a division for the weight, a product, and the sum -- five operations,
+each carrying a relative error of at most ``u`` against the exact result on the stored
+knots.  Counting ``1 - w`` as one more subtraction (Bézier extraction, Bernstein
+recurrence) is covered by the same count only while ``w`` stays bounded away from ``1``,
+which holds on the uniform knots used here; that part is an admitted assumption.
+"""
+
+
+def _gamma(n: int) -> float:
+    """Return Higham's ``gamma_n = n u / (1 - n u)``.
+
+    With nonnegative operands and no cancellation, ``n`` rounded operations perturb a
+    result by at most a relative ``gamma_n`` (Higham, *Accuracy and Stability of
+    Numerical Algorithms*, 2nd ed., Lemma 3.1 and Theorem 3.1 in relative form).
+
+    Args:
+        n (int): Number of rounded operations.
+
+    Returns:
+        float: The relative bound.
+    """
+    return n * _UNIT_ROUNDOFF / (1.0 - n * _UNIT_ROUNDOFF)
+
+
+def _chain_ops(degrees: tuple[int, ...], level: int) -> int:
+    """Upper count of rounded operations behind one entry of ``M^e`` on a level-``level`` cell.
+
+    Every two-scale coefficient is nonnegative and truncation only zeroes entries, so an
+    entry of ``M^e`` is a cancellation-free sum of products.  Each of the ``level``
+    transitions contracts direction ``k`` against ``p_k + 1`` coefficients
+    (``level * sum(p_k + 1)`` operations), and the product it sums has ``level * dim``
+    two-scale factors, each out of a ``p_k``-stage recurrence (``_OSLO_STAGE_OPS * level
+    * sum(p_k)``).
+
+    Args:
+        degrees (tuple[int, ...]): Per-direction degrees.
+        level (int): The cell's level (number of transitions).
+
+    Returns:
+        int: The operation count.
+    """
+    return level * sum(p + 1 for p in degrees) + _OSLO_STAGE_OPS * level * sum(degrees)
+
+
+def _extraction_ops(degrees: tuple[int, ...], level: int) -> int:
+    """Upper count of rounded operations behind one entry of ``C^e = M^e E^e``.
+
+    Adds the Bézier extraction entries (a ``p_k``-stage recurrence per direction) and the
+    length-``prod(p_k + 1)`` inner product of the matrix product to :func:`_chain_ops`.
+
+    Args:
+        degrees (tuple[int, ...]): Per-direction degrees.
+        level (int): The cell's level.
+
+    Returns:
+        int: The operation count.
+    """
+    n_single = int(np.prod([p + 1 for p in degrees]))
+    return _chain_ops(degrees, level) + _OSLO_STAGE_OPS * sum(degrees) + n_single
+
+
+def _oracle_tolerance(
+    thb: THBSplineSpace, cid: int, lo: npt.NDArray[np.float64], hi: npt.NDArray[np.float64]
+) -> float:
+    """Bound ``|C^e B(xi) - tabulate_basis(cid, x)|`` on cell ``cid``, per entry.
+
+    Both sides are cancellation-free sums of nonnegative terms of value at most ``1``
+    (the truncated basis is a partition of unity; the untruncated functions are each at
+    most ``1``), so each side's rounding is a relative bound read as an absolute one.
+
+    - Extraction side: :func:`_extraction_ops`, the Bernstein recurrence
+      (``_OSLO_STAGE_OPS * sum(p_k)``) and the length-``n`` inner product with ``B``.
+    - Direct side: the Cox-de Boor recurrence (``_OSLO_STAGE_OPS * sum(p_k)``), the
+      truncated coefficients' own chain (:func:`_chain_ops`), ``dim`` tensor-product
+      factors and a length-``n`` contraction.
+    - The mapping ``x = lo + xi * (hi - lo)``: three operations, so
+      ``|dx_k| <= gamma_3 (|lo_k| + h_k)``, and every function on the cell has
+      ``|d/dx_k| <= 2 p_k / h_k`` (a B-spline derivative is ``p`` over a knot span of at
+      least the cell width times a difference of two nonnegative lower-degree terms;
+      nonnegative combinations of weight at most ``1`` keep the bound).
+
+    Args:
+        thb (THBSplineSpace): The space.
+        cid (int): Active cell id.
+        lo (npt.NDArray[np.float64]): Cell lower bounds.
+        hi (npt.NDArray[np.float64]): Cell upper bounds.
+
+    Returns:
+        float: The absolute tolerance.
+    """
+    degrees = thb.degrees
+    level = thb.grid.cell_level(cid)
+    n_single = int(np.prod([p + 1 for p in degrees]))
+    recurrence = _OSLO_STAGE_OPS * sum(degrees)
+    extraction_side = _gamma(_extraction_ops(degrees, level) + recurrence + n_single)
+    direct_side = _gamma(recurrence + _chain_ops(degrees, level) + thb.dim + n_single)
+    width = hi - lo
+    mapping = float(np.sum(2.0 * np.asarray(degrees) / width * _gamma(3) * (np.abs(lo) + width)))
+    return extraction_side + direct_side + mapping
+
+
+class _CornerCase(NamedTuple):
+    """A corner-refined hierarchy: the ticket's reproduction family, generalised."""
+
+    degrees: tuple[int, ...]
+    """Per-direction degrees."""
+    root_cells: int
+    """Root cells per direction."""
+    refinements: int
+    """Number of refinement steps (levels minus one)."""
+    truncate: bool = True
+    """THB (``True``) or HB (``False``)."""
+    factor: tuple[int, ...] | None = None
+    """Per-direction subdivision factor; ``None`` means dyadic."""
+    regularity: tuple[int, ...] | None = None
+    """Per-direction regularity at inserted knots; ``None`` means maximal."""
+
+
+def _corner_space(case: _CornerCase) -> THBSplineSpace:
+    """Build the hierarchy that refines the ``[0, 2]^d`` corner block once per level.
+
+    Args:
+        case (_CornerCase): The configuration.
+
+    Returns:
+        THBSplineSpace: The space.
+    """
+    dim = len(case.degrees)
+    factor = case.factor if case.factor is not None else (2,) * dim
+    grid = hierarchical_grid(uniform_grid([[0.0, 1.0]] * dim, [case.root_cells] * dim), factor)
+    for level in range(case.refinements):
+        grid = grid.refine(level, [0] * dim, [2] * dim)
+    root = create_uniform_space(list(case.degrees), [case.root_cells] * dim)
+    return THBSplineSpace(root, grid, truncate=case.truncate, regularity=case.regularity)
+
+
+def _check_against_direct_evaluation(
+    thb: THBSplineSpace,
+    ext: MultiLevelExtraction,
+    cid: int,
+    xi: npt.NDArray[np.float64],
+) -> None:
+    """Assert ``C^e B(xi)`` equals ``tabulate_basis`` on cell ``cid``, dof by dof.
+
+    The extraction's rows are matched to ``tabulate_basis`` columns by global dof, so the
+    check holds whether or not the extraction lists the functions that vanish on the
+    cell; any column the extraction does not list must evaluate to zero there.
+
+    Args:
+        thb (THBSplineSpace): The space.
+        ext (MultiLevelExtraction): Its extraction.
+        cid (int): Active cell id.
+        xi (npt.NDArray[np.float64]): Reference points in ``[0, 1]^d``, ``(n_pts, d)``.
+    """
+    lo, hi = (np.asarray(a, dtype=np.float64) for a in thb.grid.cell_bounds(cid))
+    tol = _oracle_tolerance(thb, cid, lo, hi)
+    vals, dofs = thb.tabulate_basis(cid, lo + xi * (hi - lo))
+    ext_dofs = ext.active_basis(cid)
+    pos = np.searchsorted(dofs, ext_dofs)
+    assert np.all(pos < dofs.size), f"cell {cid}: extraction lists a dof the space does not"
+    np.testing.assert_array_equal(dofs[pos], ext_dofs)
+    c_op = ext.operator(cid)
+    assert c_op.shape == (ext_dofs.size, int(np.prod([p + 1 for p in thb.degrees])))
+    from_extraction = tabulate_bernstein(list(thb.degrees), xi) @ c_op.T
+    residual = np.abs(from_extraction - vals[:, pos])
+    assert float(residual.max()) <= tol, (
+        f"cell {cid}: extraction residual {residual.max():.3e} exceeds {tol:.3e}"
+    )
+    dropped = np.setdiff1d(np.arange(dofs.size), pos)
+    if dropped.size:
+        assert float(np.abs(vals[:, dropped]).max()) <= tol, (
+            f"cell {cid}: a dof omitted by the extraction is non-zero on the cell"
+        )
+
+
+_ORACLE_CASES = [
+    _CornerCase((3,), 8, 2),
+    _CornerCase((3, 3), 4, 2),
+    _CornerCase((3, 3, 3), 4, 2),
+    _CornerCase((3, 3, 3), 4, 2, truncate=False),
+    _CornerCase((2, 2), 4, 3),
+    _CornerCase((3, 2), 4, 3, factor=(3, 2), regularity=(1, 0)),
+    _CornerCase((2,), 4, 4, truncate=False, factor=(3,)),
+]
+
+
+def _case_id(case: _CornerCase) -> str:
+    """Return a readable pytest id for a corner case.
+
+    Args:
+        case (_CornerCase): The configuration.
+
+    Returns:
+        str: The id.
+    """
+    kind = "thb" if case.truncate else "hb"
+    extra = f"-f{case.factor}" if case.factor else ""
+    extra += f"-r{case.regularity}" if case.regularity else ""
+    return f"p{case.degrees}-n{case.root_cells}-L{case.refinements + 1}-{kind}{extra}"
+
+
+class TestDirectEvaluationOracle:
+    """``C^e B(x)`` equals direct evaluation of the hierarchical basis (#336 AC3)."""
+
+    @pytest.mark.parametrize("case", _ORACLE_CASES, ids=_case_id)
+    def test_matches_tabulate_basis(self, case: _CornerCase) -> None:
+        thb = _corner_space(case)
+        ext = MultiLevelExtraction(thb, "bezier")
+        rng = np.random.default_rng(0)
+        num_cells = thb.grid.num_cells
+        cells = rng.choice(num_cells, size=min(25, num_cells), replace=False)
+        deepest = [c for c in range(num_cells) if thb.grid.cell_level(c) == thb.grid.max_level]
+        for cid in {int(c) for c in cells} | set(deepest[:4]):
+            _check_against_direct_evaluation(thb, ext, cid, rng.random((7, thb.dim)))
+
+
+class TestWindowedPartitionOfUnity:
+    """Column sums of ``M^e`` and ``C^e`` are 1 on every cell, every level (#336 AC4)."""
+
+    @pytest.mark.parametrize("case", [c for c in _ORACLE_CASES if c.truncate], ids=_case_id)
+    def test_column_sums(self, case: _CornerCase) -> None:
+        thb = _corner_space(case)
+        ext = MultiLevelExtraction(thb)
+        levels_seen: set[int] = set()
+        for cid in range(thb.grid.num_cells):
+            level = thb.grid.cell_level(cid)
+            levels_seen.add(level)
+            m_op = ext.multilevel_operator(cid)
+            k = m_op.shape[0]
+            m_tol = _gamma(_chain_ops(thb.degrees, level) + k)
+            c_tol = _gamma(_extraction_ops(thb.degrees, level) + k)
+            m_defect = float(np.abs(m_op.sum(axis=0) - 1.0).max())
+            c_defect = float(np.abs(ext.operator(cid).sum(axis=0) - 1.0).max())
+            assert m_defect <= m_tol, f"cell {cid}: M^e column-sum defect {m_defect:.3e}"
+            assert c_defect <= c_tol, f"cell {cid}: C^e column-sum defect {c_defect:.3e}"
+        assert levels_seen == set(range(thb.num_levels))
+
+
+class TestDeepHierarchy:
+    """A 6-level 3D hierarchy stays within the element window (#336 AC5)."""
+
+    _CASE = _CornerCase((3, 3, 3), 4, 5)
+
+    @staticmethod
+    def _deep_cells(thb: THBSplineSpace, count: int) -> list[int]:
+        grid = thb.grid
+        return [c for c in range(grid.num_cells) if grid.cell_level(c) == grid.max_level][:count]
+
+    def test_peak_memory_is_bounded_by_the_element_window(self) -> None:
+        thb = _corner_space(self._CASE)
+        ext = MultiLevelExtraction(thb)
+        # First call outside the trace: JIT dispatch and lazily built state are not the
+        # per-cell cost under test.
+        ext.multilevel_operator(0)
+        cells = self._deep_cells(thb, 4)
+        level = thb.grid.max_level
+        n_single = 4**3
+        # The windowed recursion holds at most one row per candidate function, i.e.
+        # (level + 1) * n_single rows of n_single doubles, once as scratch and once as
+        # the returned operator.  The global-box recursion instead materialises a
+        # coefficient box of width 2^level (p + 1) - p per direction, which at this depth
+        # is two orders of magnitude above that.  The fixed MiB covers interpreter and
+        # array-header overhead, which no derivation reaches: a heuristic allowance.
+        window_bytes = 2 * (level + 1) * n_single * n_single * 8
+        cap = window_bytes + 2**20
+        tracemalloc.start()
+        try:
+            for cid in cells:
+                ext.multilevel_operator(cid)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert peak <= cap, f"peak {peak / 2**20:.2f} MiB exceeds the window cap {cap / 2**20:.2f}"
+
+    def test_deep_cells_match_direct_evaluation(self) -> None:
+        thb = _corner_space(self._CASE)
+        ext = MultiLevelExtraction(thb)
+        rng = np.random.default_rng(1)
+        for cid in self._deep_cells(thb, 4):
+            _check_against_direct_evaluation(thb, ext, cid, rng.random((5, 3)))
