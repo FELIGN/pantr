@@ -38,7 +38,8 @@
 /// A mode flagged identity is passed through: no contraction is run, and the
 /// operator's **values are never read**. Its **extents are**, which is not the
 /// same thing and is what the oracle does too -- it reads all `2 d` shapes before
-/// testing any flag. An identity mode must therefore be square, and that is a
+/// testing any flag, except `apply_kron_1d`, whose identity branch reads neither the
+/// shape nor the values of `M_0`. An identity mode must therefore be square, and that is a
 /// memory-safety obligation rather than a correctness one, so it carries
 /// `PANTR_PRECONDITION`: a non-square identity would make the extent bookkeeping
 /// below inconsistent with the storage it indexes.
