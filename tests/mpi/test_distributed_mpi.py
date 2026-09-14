@@ -10,6 +10,7 @@ are checked with real ``allgather`` collectives.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -30,7 +31,7 @@ from pantr.bspline import (
     quasi_interpolate_bspline,
     quasi_interpolate_thb_spline,
 )
-from pantr.grid import partition_grid, tensor_product_grid
+from pantr.grid import Partition, partition_grid, tensor_product_grid
 from pantr.mpi import (
     DistributedSpace,
     create_distributed_function,
@@ -432,46 +433,101 @@ def test_fit_bspline_distributed_replicated_values_matches_serial() -> None:
 # what a test can catch is the property the prose describes, which is what these do.
 
 
-def test_the_l2_projection_evaluates_the_whole_lattice_on_every_rank() -> None:
-    """`l2_project_bspline_distributed` does not distribute the evaluation of ``func``.
+def _counted_l2_func(seen: list[int]) -> Callable[[Any], np.ndarray]:
+    """Return an L2 ``func`` that records how many points each call is handed.
 
-    Pins what the docstring now says, deliberately including the part that is a
-    limitation: every rank calls ``func`` on the whole global quadrature lattice and
-    masks afterwards, so the per-rank count is the serial count however many ranks
-    there are.
+    Args:
+        seen (list[int]): Receives one entry per call, the lattice's point count.
 
-    Compared against the serial count rather than only across ranks. Cross-rank
-    uniformity is not the property: the default partitioner splits a uniform grid into
-    equal boxes, so a *restricted* evaluation would also be uniform across ranks and an
-    equality-of-ranks assertion would keep passing through the very change it is meant
-    to notice.
-
-    If someone does restrict it, this fails, which is the point: the docstring and the
-    behaviour move together or not at all.
+    Returns:
+        Callable[[Any], np.ndarray]: A scalar ``func(lattice)``, identical on every rank.
     """
-    comm = MPI.COMM_WORLD
-    space = create_uniform_space([2, 2], [6, 6])
-    seen: list[int] = []
 
     def counted(lat: Any) -> np.ndarray:
         mesh = _grid_mesh(lat)
         seen.append(int(mesh[0].size))
-        return np.sin(np.pi * mesh[0]) * np.cos(np.pi * mesh[1])
+        value = np.sin(np.pi * mesh[0]) * np.cos(np.pi * mesh[1])
+        return value * (1.0 + mesh[2]) if len(mesh) > 2 else value
 
-    # The serial reference, taken by running the serial entry point on the same space.
-    l2_project_bspline(counted, space)
+    return counted
+
+
+@pytest.mark.parametrize(
+    ("degrees", "n_intervals"),
+    [([2, 2], [24, 24]), ([2, 3], [7, 11]), ([2, 1, 2], [5, 6, 4])],
+    ids=["square", "non-square-non-divisible", "3d"],
+)
+def test_the_l2_projection_evaluates_only_the_owned_box_under_the_default_partitioner(
+    degrees: list[int], n_intervals: list[int]
+) -> None:
+    """Under the default partitioner the points handed to ``func`` sum to the serial count.
+
+    The default partitioner gives every rank an axis-aligned box of cells, so each rank
+    evaluates ``func`` on its box's quadrature nodes only and the boxes tile the lattice.
+
+    Compared against the serial count, taken by running the serial entry point, rather
+    than only across ranks: the boxes of a uniform grid are near-equal, so an
+    equality-of-ranks assertion would pass through a regression to the whole lattice as
+    readily as through the restriction. The global control points are checked against
+    serial too, since a restriction that named the wrong sub-range could still hand
+    ``func`` the right number of points.
+    """
+    comm = MPI.COMM_WORLD
+    space = create_uniform_space(degrees, n_intervals)
+    seen: list[int] = []
+    counted = _counted_l2_func(seen)
+
+    serial = l2_project_bspline(counted, space)
     assert len(seen) == 1
     serial_points = seen.pop()
 
     ds = create_distributed_space(space, comm)
-    l2_project_bspline_distributed(counted, ds)
+    dfn = l2_project_bspline_distributed(counted, ds)
 
     assert len(seen) == 1, f"func was called {len(seen)} times, expected once"
-    assert seen[0] == serial_points, (
-        f"{seen[0]} points per rank against {serial_points} serial: the evaluation is no "
-        "longer the whole global lattice, so the docstring needs to change with it"
+    per_rank = comm.allgather(seen[0])
+    assert sum(per_rank) == serial_points, (
+        f"per-rank counts {per_rank} sum to {sum(per_rank)} against {serial_points} serial: "
+        "the evaluation is not restricted to each rank's owned box"
     )
-    assert len(set(comm.allgather(seen[0]))) == 1
+    np.testing.assert_allclose(
+        dfn.global_function.control_points, serial.control_points, atol=1e-10
+    )
+
+
+def test_the_l2_projection_evaluates_the_whole_lattice_where_the_owned_set_is_not_a_box() -> None:
+    """A rank whose owned cells are not a box evaluates the whole lattice; the result holds.
+
+    The partition is the default block split with one cell moved from rank 1's box to
+    rank 0, so ranks 0 and 1 own non-box sets by construction while any further rank
+    keeps its box. Both branches then meet in one ``allreduce``.
+    """
+    comm = MPI.COMM_WORLD
+    if comm.size == 1:
+        pytest.skip("a single rank owns the whole grid, which is a box")
+
+    space = create_uniform_space([2, 2], [8, 8])
+    owner = np.array(partition_grid(tensor_product_grid(space), comm.size).cell_owner)
+    # Every block on an 8x8 grid at up to four ranks is at least 2x4 cells, so taking one
+    # corner cell away leaves rank 1 a non-box, and one cell cannot complete rank 0's box.
+    owner[int(np.flatnonzero(owner == 1).max())] = 0
+    ds = DistributedSpace(space, Partition(owner, comm.size), comm)
+
+    seen: list[int] = []
+    counted = _counted_l2_func(seen)
+    serial = l2_project_bspline(counted, space)
+    serial_points = seen.pop()
+
+    dfn = l2_project_bspline_distributed(counted, ds)
+
+    assert len(seen) == 1, f"func was called {len(seen)} times, expected once"
+    per_rank = comm.allgather(seen[0])
+    assert per_rank[0] == serial_points
+    assert per_rank[1] == serial_points
+    assert all(count < serial_points for count in per_rank[2:]), per_rank
+    np.testing.assert_allclose(
+        dfn.global_function.control_points, serial.control_points, atol=1e-10
+    )
 
 
 def test_the_quasi_interpolant_does_distribute_its_evaluation() -> None:
