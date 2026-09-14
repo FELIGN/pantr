@@ -122,6 +122,12 @@ user-facing, and the ports change what it affects.
   writing the obvious thing would break parity on every `float32` input at the degree-1 base case.
 - `scripts/measure_bezier_fma_bound.py`, which reproduces the bound's slack against whatever
   extension is installed, and prints how to build one that fuses.
+- `BsplineSpace1D.tabulate_Lagrange_extraction_operators` takes a keyword-only `order`, so a
+  spline's basis can be extracted onto a Lagrange basis of higher order than its degree. The
+  result has shape `(n_intervals, degree + 1, order + 1)`; the default, `order=None`, is the
+  spline's degree and returns the square operator as before. An order below the degree is
+  refused. The elevated case is composed from the Bézier operator and a Bernstein tabulation
+  rather than dispatched to either backend's Lagrange kernel.
 
 ### Fixed
 - **A `Bezier` is a value again: it copies its control points and hands back read-only views.**
