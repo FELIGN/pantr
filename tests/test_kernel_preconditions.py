@@ -147,6 +147,7 @@ _BSPLINE_ROOT_PRECONDITIONS: dict[str, tuple[str, ...]] = {
     "_zero_index": ("len(coeffs) >= num_coeffs",),
     "_is_zero_index": ("len(coeffs) >= num_coeffs",),
     "_deboor_point": (
+        "degree <= span",
         "len(coeffs) >= span + 1",
         "len(knots) >= span + degree + 1",
     ),
