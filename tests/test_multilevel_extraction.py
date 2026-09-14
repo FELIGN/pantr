@@ -355,58 +355,58 @@ class TestOperatorApi:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Coefficient memoization (PR 5 of #197)
+# Windowed kernel state and row bookkeeping (#336)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-class TestElementCoeffsMemoization:
-    """_element_coeffs is memoized per (origin_level, multi, target_level)."""
+class TestWindowedKernelBookkeeping:
+    """The kernel's row labels and zero flags, and the extraction's frozen tables."""
 
     @staticmethod
     def _thb() -> THBSplineSpace:
         grid = hierarchical_grid(uniform_grid([[0.0, 1.0], [0.0, 1.0]], 4), 2)
         grid = grid.refine(0, [0, 0], [2, 2])
         grid = grid.refine(1, [0, 0], [2, 2])
+        grid = grid.refine(2, [0, 0], [2, 2])
         return THBSplineSpace(_root_2d(), grid)
 
-    def test_cache_returns_shared_readonly_entry(self) -> None:
-        """Repeated keys return the same frozen array; distinct keys return independent objects."""
+    def test_tables_are_frozen(self) -> None:
         ext = MultiLevelExtraction(self._thb())
-        box1, c1 = ext._element_coeffs(0, (0, 0), 2)
-        box2, c2 = ext._element_coeffs(0, (0, 0), 2)
-        assert c1 is c2
-        assert box1 == box2
-        assert not c1.flags.writeable
-        with pytest.raises(ValueError, match="read-only|assignment"):
-            c1[(0,) * c1.ndim] = 1.0
-        # Different target_level → independent cache entry (no key collision).
-        _, c_other = ext._element_coeffs(0, (0, 0), 1)
-        assert c_other is not c1
+        for name, array in ext._tables._asdict().items():
+            assert not array.flags.writeable, f"table {name} is writeable"
 
-    def test_operators_match_fresh_instance(self) -> None:
-        """Operators computed through a warm cache equal a fresh instance's."""
+    def test_rows_are_labelled_by_active_basis(self) -> None:
         thb = self._thb()
-        warm = MultiLevelExtraction(thb)
-        for cid in range(thb.grid.num_cells):  # warm the cache over all cells
-            warm.multilevel_operator(cid)
-        fresh = MultiLevelExtraction(thb)
+        ext = MultiLevelExtraction(thb)
         for cid in range(thb.grid.num_cells):
-            np.testing.assert_array_equal(
-                warm.multilevel_operator(cid), fresh.multilevel_operator(cid)
-            )
-            np.testing.assert_array_equal(warm.operator(cid), fresh.operator(cid))
+            rows, dofs, nonzero = ext._windowed_rows(cid)
+            np.testing.assert_array_equal(dofs, thb.active_basis(cid))
+            assert rows.shape == (dofs.size, 9)
+            assert nonzero.shape == dofs.shape
+
+    def test_zero_flags_match_direct_evaluation(self) -> None:
+        # A nonnegative combination of B-splines that has a positive coefficient on one of
+        # the cell's window functions is strictly positive in the cell's interior, and a
+        # truncated function with no such coefficient evaluates to exactly 0.0.  So the
+        # flag is decided exactly by sampling interior points.
+        thb = self._thb()
+        ext = MultiLevelExtraction(thb)
+        xi = _interior_points(thb)
+        flagged_zero = 0
+        for cid in range(thb.grid.num_cells):
+            rows, _, nonzero = ext._windowed_rows(cid)
+            lo, hi = thb.grid.cell_bounds(cid)
+            vals, _ = thb.tabulate_basis(cid, lo + (hi - lo) * xi)
+            np.testing.assert_array_equal(nonzero, np.any(vals != 0.0, axis=0))
+            np.testing.assert_array_equal(nonzero, np.any(rows != 0.0, axis=1))
+            flagged_zero += int((~nonzero).sum())
+        assert flagged_zero > 0, "the hierarchy should contain vanishing truncated functions"
 
     def test_repeated_calls_identical(self) -> None:
         """Two operator calls on the same cell are bitwise identical."""
         ext = MultiLevelExtraction(self._thb())
         cid = ext.num_elements - 1
         np.testing.assert_array_equal(ext.operator(cid), ext.operator(cid))
-
-    def test_invalid_levels_still_raise(self) -> None:
-        """The origin > target validation fires before the cache."""
-        ext = MultiLevelExtraction(self._thb())
-        with pytest.raises(ValueError, match="must be <="):
-            ext._element_coeffs(2, (0, 0), 0)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
