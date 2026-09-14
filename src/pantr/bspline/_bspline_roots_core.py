@@ -77,7 +77,10 @@ def _knot_average(knots: npt.NDArray[Any], degree: int, index: int) -> float:
         float: The knot average (Greville abscissa) of coefficient ``index``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``len(knots) >= index + degree + 1``: the sum
+        reads ``knots[index + 1]`` through ``knots[index + degree]``. This kernel
+        reads past a shorter array; behavior there is unspecified.
         For general use, call :func:`pantr.bspline.find_roots` instead.
     """
     total = 0.0
@@ -104,7 +107,10 @@ def _zero_index(coeffs: npt.NDArray[Any], num_coeffs: int, start: int) -> int:
         int: The zero index, or ``-1`` if the polygon has no sign change left.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``len(coeffs) >= num_coeffs``: the scan reads
+        ``coeffs[0]`` through ``coeffs[num_coeffs - 1]`` when it runs that far. This
+        kernel reads past a shorter array; behavior there is unspecified.
         For general use, call :func:`pantr.bspline.find_roots` instead.
     """
     index = start if start > 1 else 1
@@ -130,7 +136,11 @@ def _is_zero_index(coeffs: npt.NDArray[Any], num_coeffs: int, index: int) -> boo
         ``coeffs[index - 1] * coeffs[index]`` is non-positive.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The precondition
+        that disclaimer stands on is ``len(coeffs) >= num_coeffs``: whenever the
+        guard above lets ``index`` through, ``coeffs[index]`` is read and
+        ``index < num_coeffs``. This kernel reads past a shorter array; behavior
+        there is unspecified.
         For general use, call :func:`pantr.bspline.find_roots` instead.
     """
     if index < 1 or index >= num_coeffs:
@@ -162,7 +172,13 @@ def _deboor_point(  # noqa: PLR0913
         float: The value of the spline at ``point``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The
+        preconditions that disclaimer stands on are ``len(coeffs) >= span + 1``,
+        since the algorithm reads ``coeffs[span - degree]`` through
+        ``coeffs[span]``, and ``len(knots) >= span + degree + 1``, since the
+        Cox-de Boor recursion reads as far as ``knots[span + degree]``. This
+        kernel reads past a shorter array in either case; behavior there is
+        unspecified.
         For general use, call :func:`pantr.bspline.find_roots` instead.
     """
     for i in range(degree + 1):
@@ -199,7 +215,12 @@ def _span_at(
         int: Span index in ``[degree, num_coeffs - 1]``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The
+        precondition that disclaimer stands on is ``len(knots) >= num_coeffs``:
+        the loop reads ``knots[span + 1]`` for every ``span + 1 < num_coeffs``,
+        so the highest index read is ``num_coeffs - 1``. This kernel reads past
+        a shorter array; behavior there is unspecified, and so is the returned
+        span if ``degree >= num_coeffs``.
         For general use, call :func:`pantr.bspline.find_roots` instead.
     """
     span = degree
@@ -235,7 +256,12 @@ def _residual_at(  # noqa: PLR0913
         float: ``|f(point)|``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The
+        preconditions that disclaimer stands on are ``len(coeffs) >= num_coeffs``
+        and ``len(knots) >= num_coeffs + degree``, composed from
+        :func:`_span_at`'s and :func:`_deboor_point`'s own preconditions at the
+        worst-case span ``num_coeffs - 1``. This kernel reads past a shorter
+        array; behavior there is unspecified.
         For general use, call :func:`pantr.bspline.find_roots` instead.
     """
     span = _span_at(knots, num_coeffs, degree, point)
@@ -261,10 +287,18 @@ def _insert_knot(  # noqa: PLR0913
         num_coeffs (int): Number of valid coefficients before the insertion.
         degree (int): Polynomial degree.
         point (float): Knot value to insert.
-        span (int): Knot span index of ``point``.
+        span (int): Knot span index of ``point``, with ``degree <= span <=
+            num_coeffs - 1``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The
+        preconditions that disclaimer stands on, matching the "room for one
+        more" the Args above already describe:
+        ``len(coeffs) >= num_coeffs + 1`` (the shift writes
+        ``coeffs[num_coeffs]``) and
+        ``len(knots) >= num_coeffs + degree + 2`` (the shift writes
+        ``knots[num_coeffs + degree + 1]``). This kernel writes past a shorter
+        array; behavior there is unspecified.
         For general use, call :func:`pantr.bspline.find_roots` instead.
     """
     for i in range(num_coeffs, span, -1):
@@ -325,7 +359,17 @@ def _split_at_root(  # noqa: PLR0913
         down by ``offset``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Two
+        preconditions that disclaimer stands on. First, ``point <
+        knots[len(knots) - 1]``: the initial span search has no upper bound of
+        its own (unlike :func:`_span_at`) and keeps reading ``knots[span + 1]``
+        until it finds one exceeding ``point``, so it walks off the end of a
+        shorter array or one where ``point`` is not below the last entry.
+        Second, ``len(knots) >= len(coeffs) + degree + 1``: the multiplicity
+        loop may call :func:`_insert_knot` as many times as ``coeffs`` has
+        spare capacity, and that kernel's own knot-buffer precondition then has
+        to hold at every one of those calls. This kernel reads or writes past a
+        shorter array; behavior there is unspecified.
         For general use, call :func:`pantr.bspline.find_roots` instead.
     """
     # Count only the run that ends at this span: the same value may well appear
@@ -382,7 +426,14 @@ def _drop_window_head(
         int: The coefficient count after the shift, ``num_coeffs - offset``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The
+        preconditions that disclaimer stands on: ``0 <= offset <= num_coeffs``;
+        ``len(coeffs) >= num_coeffs`` (the shift reads
+        ``coeffs[num_coeffs - 1]``); and
+        ``len(knots) >= num_coeffs + degree + 1`` (the shift reads
+        ``knots[num_coeffs + degree]``), the module's own open-knot-window
+        relation. This kernel reads past a shorter array; behavior there is
+        unspecified.
         For general use, call :func:`pantr.bspline.find_roots` instead.
     """
     remaining = num_coeffs - offset
@@ -443,7 +494,15 @@ def _track_zero(  # noqa: PLR0913
         the refined window.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The
+        precondition that disclaimer stands on is ``len(knots) >= len(coeffs)``:
+        the insertion budget is self-limiting (``coeffs.shape[0] - degree - 1 -
+        num_coeffs``, see the comment below), so ``num_coeffs`` never grows
+        past ``coeffs.shape[0] - degree - 1``, and each :func:`_insert_knot`
+        call it makes then needs at most ``coeffs.shape[0]`` knot entries. This
+        relation is exact, not merely sufficient: a shorter ``knots`` reads or
+        writes past the array, confirmed by driving the budget to its cap;
+        behavior there is unspecified.
         For general use, call :func:`pantr.bspline.find_roots` instead.
     """
     num_iterates = 0
@@ -633,7 +692,22 @@ def _morken_reimers_roots(  # noqa: PLR0912, PLR0913, PLR0915
         does not report.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The
+        precondition that disclaimer stands on, matching the shape the Args
+        above already state:
+        ``len(knots) >= coeffs.shape[0] + degree + 1``. The initial copy reads
+        ``knots[0]`` through ``knots[coeffs.shape[0] + degree]``. This kernel
+        reads past a shorter array; behavior there is unspecified.
+
+        A second precondition cannot be checked from a length alone: ``knots``
+        must be genuinely open (clamped), ``degree + 1`` repeats of the start
+        value and of the end value, which the endpoint reads (``coeffs[0]``,
+        ``coeffs[num_coeffs - 1]``) trust without checking. On an unclamped
+        knot vector of the right length this kernel does not raise -- it
+        returns a wrong value, reporting ``knots[degree]`` as a root whenever
+        ``coeffs[0]`` happens to be within ``zero_tol`` of zero, whether or not
+        ``knots[degree]`` is really where the spline's left endpoint sits
+        (measured).
         For general use, call :func:`pantr.bspline.find_roots` instead.
     """
     num_coeffs = coeffs.shape[0]
@@ -791,7 +865,11 @@ def _merge_roots(
         run that ``roots[i]`` joined.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). The
+        precondition that disclaimer stands on is ``len(radii) >= len(roots)``,
+        matching the "same length" the Args above already state: the merge
+        loop reads ``radii[i]`` for every ``i`` it reads ``roots[i]`` for. This
+        kernel reads past a shorter ``radii``; behavior there is unspecified.
         For general use, call :func:`pantr.bspline.find_roots` instead.
     """
     count = roots.shape[0]
