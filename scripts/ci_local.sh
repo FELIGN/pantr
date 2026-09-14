@@ -106,6 +106,11 @@ check() {
 #
 # Each of these asserts that a gate FIRES, not merely that a good toolchain
 # builds. A gate nobody has ever seen reject anything is not known to be a gate.
+#
+# Configure-time throughout, with one exception at the end of the floor block:
+# the std::to_chars floor is enforced twice, once by CMake for anyone building
+# this tree and once by the header for anyone who installed it, and the second
+# one is a compile of a single translation unit.
 
 gates() {
     step "Configure-time gates"
@@ -171,50 +176,133 @@ gates() {
         record SKIP "concepts gate rejects GCC 9" "/usr/bin/g++-9 absent"
     fi
 
-    # The version floor is 10 for GCC and Clang alike, and 10 is the lowest
-    # version this tree has actually been built and tested with. So the assertion
-    # here is that both of the machine's 2020 compilers are ACCEPTED -- the
-    # opposite of what this check asserted until the floor was measured, when it
-    # sat at 14 for Clang on a guess and at nothing at all for GCC.
+    # The floor's two gates, from opposite sides, on the machine's two 2020
+    # compilers. Both rows are the point of FELIGN/pantr#376 and both are
+    # mandatory: an ABSENT compiler is a FAILURE here rather than a SKIP, because
+    # .github/workflows/cpp.yaml deliberately does not run the floor and this
+    # script is the only place it is checked at all. A check that reports absence
+    # and success identically is what let the floor go stale for a month.
     #
-    # Configuring is not the interesting half. `cxx` below builds the whole tree
-    # with the development toolchains; what these two prove is that the gate does
-    # not stand in the way of a compiler that works, which is the failure mode a
-    # version table produces and the reason this file distrusts them.
-    for _old_cxx in /usr/bin/clang++-10 /usr/bin/g++-10; do
-        _name="$(basename "$_old_cxx")"
-        if [[ ! -x "$_old_cxx" ]]; then
-            record SKIP "$_name is accepted" "$_old_cxx absent"
-            continue
-        fi
-        if cmake -S . -B "$tmp/$_name" -G Ninja \
-                 -DCMAKE_CXX_COMPILER="$_old_cxx" \
-                 -DPANTR_BUILD_TESTS=OFF -DPANTR_BUILD_BENCHMARK=OFF \
-                 >"$tmp/$_name.log" 2>&1; then
-            record PASS "$_name is accepted"
-        else
-            record FAIL "$_name is accepted" "the floor rejects a version measured to work"
-            tail -20 "$tmp/$_name.log"
-        fi
-    done
-
-    # The override still has to work, because the floor still rejects something
-    # below it and someone will need past it one day. There is no compiler below
-    # 10 on this machine to try it against -- g++ 9.5 is stopped earlier, by the
-    # concepts probe -- so this asserts the flag is at least accepted and does not
-    # itself break a configure.
-    if [[ -x /usr/bin/g++-10 ]]; then
-        if cmake -S . -B "$tmp/override" -G Ninja \
-                 -DCMAKE_CXX_COMPILER=/usr/bin/g++-10 \
-                 -DPANTR_ALLOW_UNTESTED_COMPILER=ON \
-                 -DPANTR_BUILD_TESTS=OFF -DPANTR_BUILD_BENCHMARK=OFF \
-                 >"$tmp/override.log" 2>&1; then
-            record PASS "PANTR_ALLOW_UNTESTED_COMPILER is honoured"
-        else
-            record FAIL "PANTR_ALLOW_UNTESTED_COMPILER is honoured"
-        fi
+    # clang++-10 must be ACCEPTED. That is the failure mode a version table
+    # produces -- refusing a toolchain that works -- and the reason this file
+    # distrusts them. It is also the evidence that the floor is bounded by the
+    # standard LIBRARY: a 2020 front end, resolving to the system libstdc++ 12,
+    # walks straight through a gate its exact contemporary g++-10 cannot.
+    if [[ ! -x /usr/bin/clang++-10 ]]; then
+        record FAIL "clang++-10 is accepted" \
+               "/usr/bin/clang++-10 absent; the floor cannot be checked on this machine"
+    elif cmake -S . -B "$tmp/clang++-10" -G Ninja \
+               -DCMAKE_CXX_COMPILER=/usr/bin/clang++-10 \
+               -DPANTR_BUILD_TESTS=OFF -DPANTR_BUILD_BENCHMARK=OFF \
+               >"$tmp/clang++-10.log" 2>&1; then
+        record PASS "clang++-10 is accepted"
     else
-        record SKIP "PANTR_ALLOW_UNTESTED_COMPILER is honoured" "no old compiler to try"
+        record FAIL "clang++-10 is accepted" "the floor rejects a toolchain measured to work"
+        tail -20 "$tmp/clang++-10.log"
+    fi
+
+    # g++-10 must be REFUSED, by the std::to_chars gate and by its message.
+    #
+    # The message is grepped for, for the reason the -ffast-math checks above give:
+    # asserting only that configure FAILED would keep reporting PASS for a gate
+    # that had stopped firing and a build that had started failing for some other
+    # reason -- which is exactly the shape of the bug this replaced, where g++-10
+    # configured fine and died later inside a header.
+    #
+    # The log is flattened before the grep because CMake reflows a FATAL_ERROR to
+    # the terminal width, so a phrase that fits on one line here can be split on a
+    # narrower one.
+    local _refusal="FLOATING-POINT overloads of std::to_chars"
+    if [[ ! -x /usr/bin/g++-10 ]]; then
+        record FAIL "the to_chars gate refuses g++-10" \
+               "/usr/bin/g++-10 absent; nothing below the floor to refuse"
+    elif cmake -S . -B "$tmp/g++-10" -G Ninja \
+               -DCMAKE_CXX_COMPILER=/usr/bin/g++-10 \
+               -DPANTR_BUILD_TESTS=OFF -DPANTR_BUILD_BENCHMARK=OFF \
+               >"$tmp/g++-10.log" 2>&1; then
+        record FAIL "the to_chars gate refuses g++-10" "configure SUCCEEDED; the gate did not fire"
+    elif tr '\n' ' ' <"$tmp/g++-10.log" | tr -s ' ' | grep -q "$_refusal"; then
+        record PASS "the to_chars gate refuses g++-10"
+    else
+        record FAIL "the to_chars gate refuses g++-10" "rejected, but not by the gate"
+        tail -20 "$tmp/g++-10.log"
+    fi
+
+    # And it must still be refused with the override ON. PANTR_ALLOW_UNTESTED_COMPILER
+    # says "I know this VERSION is untested"; a facility that is absent is a
+    # different claim, and opening the gate for it would buy nothing back but the
+    # template error inside a header. Nothing but this row stops the two from
+    # being wired together later by someone who reads the flag's name and not the
+    # comment in cmake/PantrCompilerProbes.cmake.
+    if [[ ! -x /usr/bin/g++-10 ]]; then
+        record FAIL "PANTR_ALLOW_UNTESTED_COMPILER does not open the to_chars gate" \
+               "/usr/bin/g++-10 absent; nothing below the floor to refuse"
+    elif cmake -S . -B "$tmp/override" -G Ninja \
+               -DCMAKE_CXX_COMPILER=/usr/bin/g++-10 \
+               -DPANTR_ALLOW_UNTESTED_COMPILER=ON \
+               -DPANTR_BUILD_TESTS=OFF -DPANTR_BUILD_BENCHMARK=OFF \
+               >"$tmp/override.log" 2>&1; then
+        record FAIL "PANTR_ALLOW_UNTESTED_COMPILER does not open the to_chars gate" \
+               "the override let a standard library without the facility through"
+    elif tr '\n' ' ' <"$tmp/override.log" | tr -s ' ' | grep -q "$_refusal"; then
+        record PASS "PANTR_ALLOW_UNTESTED_COMPILER does not open the to_chars gate"
+    else
+        record FAIL "PANTR_ALLOW_UNTESTED_COMPILER does not open the to_chars gate" \
+               "refused, but not by the gate"
+        tail -20 "$tmp/override.log"
+    fi
+
+    # The same floor, from the consumer's side. The CMake gate above measures the
+    # toolchain that BUILDS this tree, and pantr is header-only and installable --
+    # cmake/pantrConfig.cmake.in runs no probes -- so someone who installed the
+    # package and compiles against it with libstdc++ 10 never meets that gate at
+    # all. cpp/include/pantr/core/format.hpp carries an #error for them, on the
+    # pattern and for the reason cpp/include/pantr/core/mdspan.hpp states.
+    #
+    # A single translation unit, and deliberately not through CMake: that is what a
+    # consumer's compile looks like. format.hpp's include closure is <charconv>,
+    # a few other standard headers and pantr/core/scalar.hpp, so -Icpp/include is
+    # the whole include path -- no Kokkos mdspan is reachable from it, which is the
+    # trap FELIGN/pantr#376 records for anyone probing a header by hand.
+    if [[ ! -x /usr/bin/g++-10 ]]; then
+        record FAIL "format.hpp refuses libstdc++ 10 directly" \
+               "/usr/bin/g++-10 absent; nothing below the floor to refuse"
+    else
+        printf '#include "pantr/core/format.hpp"\nint main() { return 0; }\n' \
+            >"$tmp/consumer_floor.cpp"
+        if /usr/bin/g++-10 -std=c++20 -I"$ROOT/cpp/include" -fsyntax-only \
+               "$tmp/consumer_floor.cpp" >"$tmp/consumer_floor.log" 2>&1; then
+            record FAIL "format.hpp refuses libstdc++ 10 directly" \
+                   "it compiled; the #error did not fire"
+        elif grep -q "pantr requires the floating-point overloads of std::to_chars" \
+                  "$tmp/consumer_floor.log"; then
+            record PASS "format.hpp refuses libstdc++ 10 directly"
+        else
+            record FAIL "format.hpp refuses libstdc++ 10 directly" \
+                   "rejected, but not by the #error"
+            tail -20 "$tmp/consumer_floor.log"
+        fi
+    fi
+
+    # The override still has to be HONOURED where it applies, because the version
+    # filter below the gates still rejects something and someone will need past it
+    # one day. Its subject used to be g++-10, which the raised floor now refuses
+    # outright; clang++-10 is the lowest toolchain that still configures, so it is
+    # what is left to try the flag against. There is nothing below version 10 on
+    # this machine -- g++ 9.5 is stopped earlier, by the concepts probe -- so this
+    # asserts only that the flag is accepted and does not itself break a configure.
+    if [[ ! -x /usr/bin/clang++-10 ]]; then
+        record FAIL "PANTR_ALLOW_UNTESTED_COMPILER is honoured" \
+               "/usr/bin/clang++-10 absent; no old compiler to try it against"
+    elif cmake -S . -B "$tmp/honoured" -G Ninja \
+               -DCMAKE_CXX_COMPILER=/usr/bin/clang++-10 \
+               -DPANTR_ALLOW_UNTESTED_COMPILER=ON \
+               -DPANTR_BUILD_TESTS=OFF -DPANTR_BUILD_BENCHMARK=OFF \
+               >"$tmp/honoured.log" 2>&1; then
+        record PASS "PANTR_ALLOW_UNTESTED_COMPILER is honoured"
+    else
+        record FAIL "PANTR_ALLOW_UNTESTED_COMPILER is honoured"
+        tail -20 "$tmp/honoured.log"
     fi
 
     # The offline escape. FETCHCONTENT_FULLY_DISCONNECTED with a populated
@@ -329,30 +417,40 @@ cxx() {
 
     # The version floor, built rather than merely accepted.
     #
-    # `gates` above asserts that the floor compilers CONFIGURE. That is the gate's
-    # behaviour, and it is not the claim the floor makes. The floor says version 10
-    # of both families builds this tree and passes its tests, and until that is
-    # re-checked it rests on one manual measurement taken the day the floor was
-    # set: the first commit using something GCC 10 lacks would break the claim with
-    # nothing to notice.
+    # `gates` above asserts what the floor's gates DO at configure time -- clang++-10
+    # accepted, g++-10 refused by the std::to_chars gate and by its message. That is
+    # the gates' behaviour, and it is not the claim the floor makes. The floor says
+    # the lowest toolchain the tree is exercised on builds it WHOLE and passes its
+    # tests, and this is the only place that is checked.
     #
-    # This is the ONLY place that check exists. .github/workflows/cpp.yaml runs
-    # GCC 14 only -- deliberately, as its own header says -- and ubuntu-24.04 does
-    # not package GCC 10, so covering the floor there needs an older image or a
-    # container -- more weight than a prototype should carry.
-    # design/toolchain_requirements.md records that the floor is verified locally
-    # and not by CI.
-    local floor_cxx floor_name floor_dir
-    for floor_cxx in /usr/bin/g++-10 /usr/bin/clang++-10; do
-        floor_name="$(basename "$floor_cxx")"
-        if [[ ! -x "$floor_cxx" ]]; then
-            record SKIP "floor: $floor_name" "$floor_cxx absent"
-            continue
-        fi
-        floor_dir="$ROOT/build/floor-$floor_name"
+    # ONE floor toolchain here rather than two, since FELIGN/pantr#376 raised the
+    # floor to libstdc++ 11. g++-10 carries libstdc++ 10, which has no
+    # floating-point std::to_chars, and cpp/include/pantr/core/format.hpp needs it;
+    # it is now refused at configure time instead of dying inside a header part way
+    # through a build, which is how #376 was found. clang++-10 is a front end of the
+    # same year that resolves to the system libstdc++ 12 and builds the tree
+    # unchanged -- so this row is also the evidence for the thing #376 turned on,
+    # that the bound is the standard LIBRARY and not the compiler.
+    #
+    # An ABSENT floor compiler is a FAILURE, not a SKIP, and that asymmetry is the
+    # other half of #376. .github/workflows/cpp.yaml deliberately does not run the
+    # floor -- ubuntu-24.04 packages neither of these compilers, so covering it
+    # there needs an older image or a container, more weight than a prototype
+    # should carry -- and design/toolchain_requirements.md records that the floor is
+    # guaranteed by this one machine. A guarantee made by one machine, on a check
+    # that vanishes when that machine lacks the compiler, is not a guarantee; it
+    # reported absence and success identically for a month while the claim was
+    # false.
+    local floor_cxx="/usr/bin/clang++-10"
+    local floor_name="clang++-10"
+    local floor_dir="$ROOT/build/floor-$floor_name"
+    if [[ ! -x "$floor_cxx" ]]; then
+        record FAIL "floor: $floor_name" \
+               "$floor_cxx absent; this machine cannot make the floor guarantee"
+    else
         rm -rf "$floor_dir"
-        # PANTR_ALLOW_UNTESTED_COMPILER is deliberately NOT passed: the floor is
-        # 10, so 10 must configure on its own. If it ever needs the override, the
+        # PANTR_ALLOW_UNTESTED_COMPILER is deliberately NOT passed: the floor
+        # toolchain must configure on its own. If it ever needs the override, the
         # floor moved and this check is what says so.
         check "floor: $floor_name configure" \
             cmake -S "$ROOT" -B "$floor_dir" -G Ninja \
@@ -361,7 +459,7 @@ cxx() {
                   -DPANTR_WERROR=ON -DPANTR_BUILD_PYTHON=OFF
         check "floor: $floor_name build (-Werror)" cmake --build "$floor_dir"
         check "floor: $floor_name ctest" ctest --test-dir "$floor_dir" --output-on-failure
-    done
+    fi
 
     # The mdspan toggle is a decision the build makes silently; print which way
     # it went, because "which mdspan am I actually using" is the first question
