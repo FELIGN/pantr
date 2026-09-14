@@ -130,8 +130,9 @@ def _tabulate_Bspline_Lagrange_1D_extraction_impl(  # noqa: PLR0913
     degree: int,
     tol: float,
     lagrange_variant: LagrangeVariant = LagrangeVariant.EQUISPACES,
-    order: int | None = None,
     out: npt.NDArray[np.float32 | np.float64] | None = None,
+    *,
+    order: int | None = None,
 ) -> npt.NDArray[np.float32 | np.float64]:
     """Create Lagrange extraction operators for a B-spline.
 
@@ -141,14 +142,13 @@ def _tabulate_Bspline_Lagrange_1D_extraction_impl(  # noqa: PLR0913
         tol (float): Tolerance for numerical comparisons.
         lagrange_variant (LagrangeVariant): Lagrange point distribution
             (e.g., equispaced, gauss lobatto legendre, etc). Defaults to LagrangeVariant.EQUISPACES.
-        order (int | None): Target order of the Lagrange basis. ``None`` (the
-            default) uses ``degree``, giving the square operator this function
-            has always returned. An order above ``degree`` elevates the Lagrange
-            side only, still reproducing this spline's own degree-``p`` basis
-            exactly. Must be at least ``degree``. Defaults to None.
         out (npt.NDArray[np.float32 | np.float64] | None): Optional output array where the result
             will be stored. If None, a new array is allocated. Must have the correct shape and dtype
             if provided. This follows NumPy's style for output arrays. Defaults to None.
+        order (int | None): Keyword-only. Target order of the Lagrange basis. ``None``
+            (the default) uses ``degree``, giving the square operator. An order above
+            ``degree`` elevates the Lagrange side only. Must be at least ``degree``.
+            Defaults to None.
 
     Returns:
         npt.NDArray[np.float32 | np.float64]: Array of extraction matrices with shape
@@ -185,22 +185,15 @@ def _tabulate_Bspline_Lagrange_1D_extraction_impl(  # noqa: PLR0913
 
         return out
 
-    # Elevated order (`target_order > degree`): the C++ Lagrange-to-Bernstein
-    # builder (`change_basis.hpp::lagrange_to_bernstein_1d`) is hardcoded to a
-    # square `(degree + 1, degree + 1)` matrix regardless of how many nodes it is
-    # given, so it cannot be reused here -- passing it `target_order + 1` nodes
-    # would silently truncate to the first `degree + 1` of them. This path is
-    # composed instead from two building blocks that each already carry their own
-    # cross-backend parity claim: the square Bézier operator, dispatched exactly
-    # as `tabulate_Bezier_extraction_operators` dispatches it, and the public
-    # Bernstein tabulation, which is bit-exact between backends because it runs no
-    # solve. Because the Lagrange basis is cardinal at its own nodes, evaluating
-    # the degree-`p` Bernstein basis at the `target_order + 1` elevated nodes is
-    # exactly the (degree+1, target_order+1) matrix `L[j, k] = B_j(x_k)` with
-    # `C_e @ L = A_e`, the same relation `_tabulate_Bspline_Lagrange_1D_extraction_core`
-    # uses for the square case, generalized to a non-square `L`. The final product
-    # is one `numpy.matmul`, run here rather than inside either backend, so it
-    # needs no C++ counterpart.
+    # Elevated order (`target_order > degree`). The square Lagrange-to-Bernstein
+    # builders only produce `(degree + 1, degree + 1)` matrices, so this path is
+    # composed from two pieces whose backends already have parity tests: the square
+    # Bézier operator `C_e`, and the Bernstein tabulation (see
+    # `tests/parity/test_basis_tabulations.py` for what its parity claim rests on).
+    # Since `order >= degree`, each degree-`p` Bernstein polynomial lies in the span
+    # of the order-`target_order` Lagrange basis and, the latter being cardinal at
+    # its nodes, `B_j = sum_k B_j(x_k) l_k`. So `L[j, k] = B_j(x_k)` and the
+    # operator is `A_e = C_e @ L`, the relation the square kernel uses too.
     n_elems = out.shape[0]
     bezier = np.empty((n_elems, degree + 1, degree + 1), dtype=knots.dtype)
     bezier_extraction_kernel()(knots, degree, tol, bezier)

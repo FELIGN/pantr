@@ -1239,8 +1239,9 @@ class BsplineSpace1D:
     def tabulate_Lagrange_extraction_operators(
         self,
         lagrange_variant: LagrangeVariant = LagrangeVariant.EQUISPACES,
-        order: int | None = None,
         out: npt.NDArray[np.float32 | np.float64] | None = None,
+        *,
+        order: int | None = None,
     ) -> npt.NDArray[np.float32 | np.float64]:
         """Create Lagrange extraction operators of the B-spline.
 
@@ -1248,19 +1249,18 @@ class BsplineSpace1D:
             lagrange_variant (LagrangeVariant): Lagrange point distribution to use
                 (e.g., equispaced, Gauss-Lobatto-Legendre, etc).
                 Defaults to `LagrangeVariant.EQUISPACES`.
-            order (int | None): Target order of the Lagrange basis the operator maps
-                from. `None` (the default) uses `degree`, which is the only value
-                every earlier release of this method accepted and reproduces its
-                square result unchanged. An `order` above `degree` elevates the
-                Lagrange side only: the returned operator still reproduces this
-                space's own degree-`p` basis exactly, now from `order + 1`
-                Lagrange nodes rather than `degree + 1`. Must be at least
-                `degree`, since a Lagrange basis of a lower order cannot
-                represent a degree-`p` polynomial exactly. Defaults to None.
             out (npt.NDArray[np.float32 | np.float64] | None): Optional output array where the
                 result will be stored. If None, a new array is allocated. Must have the correct
                 shape and dtype if provided. This follows NumPy's style for output arrays.
                 Defaults to None.
+            order (int | None): Keyword-only. Target order of the Lagrange basis the
+                operator maps from. `None` (the default) uses `degree` and returns the
+                square operator unchanged. An `order` above `degree` elevates the
+                Lagrange side only: the operator still represents this space's own
+                degree-`p` basis, now in terms of `order + 1` Lagrange nodes rather
+                than `degree + 1`. Must be at least `degree`, since a Lagrange basis
+                of a lower order cannot represent a degree-`p` polynomial. Defaults
+                to None.
 
         Returns:
             npt.NDArray[np.float32 | np.float64]: Array of extraction matrices with shape
