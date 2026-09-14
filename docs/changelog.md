@@ -208,7 +208,8 @@ user-facing, and the ports change what it affects.
   set that *is* a box can be named by one. Whether it is depends on the partitioner, and **for
   the default one it is**: `partition_grid`'s `block` backend gives every rank an exact
   axis-aligned box of cells, measured on three grids including non-square and non-divisible
-  ones. So the restriction is available for the common case and simply has not been made; what
+  ones. So the restriction is available for the common case and had simply not been made (it has
+  since been, see Performance); what
   is not available in general is the same thing for a graph or bisection partition, whose owned
   set need not be a box. Saying it was impossible would have been the easier sentence and the
   false one.
@@ -259,6 +260,14 @@ user-facing, and the ports change what it affects.
   failed.
 
 ### Performance
+- **`l2_project_bspline_distributed` evaluates `func` only on a rank's own cells when they form a
+  box.** Every rank used to evaluate the whole global quadrature lattice and mask the result, so
+  the points evaluated across a run grew with the rank count. A rank whose owned cells are an
+  axis-aligned box now hands `func` the lattice of that box alone, so the total matches the
+  serial count. That is every rank under the `block` partitioner, which
+  `create_distributed_space` selects when the rank count factors onto the grid's axes. A rank
+  whose owned set is not a box, or is empty, keeps the whole-lattice evaluation, with no warning;
+  the result is the same either way. No signature changed.
 - **`interpolate_bezier` and `fit_bezier` are several times faster on a tensor-product grid.**
   Both recovered the Bernstein coefficients through a truncated-SVD pseudo-inverse that they
   rebuilt from scratch on every call, once per parametric direction, and that factorization was
