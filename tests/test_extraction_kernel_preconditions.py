@@ -39,10 +39,10 @@ from tests.test_kernel_preconditions import _docstring_of
 # fails this test rather than passing by matching a generic phrase.
 _EXPECTED_MARKERS: dict[str, str] = {
     "apply_kron_1d": "M_0.shape[0] >= out.shape[0]",
-    "apply_kron_2d": "M_0.shape[1] * M_1.shape[1]",
+    "apply_kron_2d": "``M_0.shape[1] * M_1.shape[1]``",
     "apply_kron_3d": "M_0.shape[1] * M_1.shape[1] * M_2.shape[1]",
     "apply_kron_T_1d": "v.shape[0] >= M_0.shape[0]",
-    "apply_kron_T_2d": "M_0.shape[0] * M_1.shape[0]",
+    "apply_kron_T_2d": "``M_0.shape[0] * M_1.shape[0]``",
     "apply_kron_T_3d": "M_0.shape[0] * M_1.shape[0] * M_2.shape[0]",
     "apply_kron_MT_K_M_1d": "K.shape >= (M_0.shape[0], M_0.shape[0])",
     "apply_kron_MT_K_M_2d": "(M_0.shape[0] * M_1.shape[0]) ** 2",
@@ -66,7 +66,28 @@ _EXPECTED_MARKERS: dict[str, str] = {
 """Expected precondition marker per kernel. Also the module's cross-check set (AC1):
 a kernel added to ``_extraction_kernels`` without an entry here fails
 :func:`test_every_kernel_has_an_expected_marker` before it can fail anything else.
+The ``_2d`` markers carry their closing backticks so that none is a substring of its
+``_3d`` sibling's, which would let a ``_3d`` note pasted onto a ``_2d`` kernel pass.
 """
+
+_IDENTITY_BRANCH_MARKERS: dict[str, str] = {
+    "apply_kron_MT_K_M_1d": "out.shape >= (M_0.shape[0], M_0.shape[0])",
+    "apply_kron_M_K_MT_1d": "out.shape >= (M_0.shape[1], M_0.shape[1])",
+}
+"""The identity branch of the two ``_1d`` bilateral kernels copies ``K`` into ``out``
+over ``K``'s extent, not over ``out``'s non-identity extent, so ``out`` needs the other
+axis of ``M_0`` there. The two coincide only for a square identity operator.
+"""
+
+
+@pytest.mark.parametrize(
+    "name", sorted(_IDENTITY_BRANCH_MARKERS), ids=sorted(_IDENTITY_BRANCH_MARKERS)
+)
+def test_bilateral_1d_kernel_states_its_identity_branch_extent(name: str) -> None:
+    """A ``_1d`` bilateral kernel states the ``out`` extent its identity branch writes."""
+    doc = _docstring_of(getattr(extraction_core, name))
+    marker = _IDENTITY_BRANCH_MARKERS[name]
+    assert marker in doc, f"{name} does not state its identity-branch extent ({marker!r})"
 
 
 def _kernel_names_from_source() -> frozenset[str]:
