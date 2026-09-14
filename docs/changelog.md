@@ -281,6 +281,13 @@ user-facing, and the ports change what it affects.
 
   Fitting to **scattered** points is unchanged: its matrix is built from the caller's own
   points, so there is nothing to reuse between calls.
+- **`MultiLevelExtraction` no longer grows exponentially with hierarchy depth.** It built each
+  cell's multi-level operator through coefficient boxes spanning whole coarser levels, whose
+  size multiplied by about `2^d` per level. It now works in per-element windows of `prod(p + 1)`
+  functions per level, in a Numba kernel, so the working memory per cell grows linearly with
+  depth. Rows and their order are unchanged, identically zero rows included. The per-call
+  coefficient cache is gone with it. `THBSplineSpace` construction still uses the box recursion
+  and still grows with depth.
 
 ### Changed
 - **Breaking. `HierarchicalGrid` refinement returns a new grid instead of mutating.**
