@@ -20,6 +20,7 @@ from pantr.basis._basis_core import (
     _tabulate_Bernstein_basis_deriv_1D_core,
     _tabulate_Bernstein_basis_deriv_1D_serial_core,
 )
+from pantr.basis._basis_lagrange import _get_lagrange_points
 from pantr.bspline import (
     BsplineSpace1D,
     create_cardinal_knots,
@@ -52,7 +53,7 @@ from pantr.bspline._bspline_knots import (
     _is_in_domain_impl,
 )
 from pantr.change_basis import compute_lagrange_to_bernstein_1d
-from pantr.tolerance import get_strict
+from pantr.tolerance import get_default, get_strict
 
 
 class TestBsplineSpace1DInit:
@@ -1462,6 +1463,196 @@ class TestLagrangeExtractionVariants:
         for i in range(lagr_extraction.shape[0]):
             expected = bezier_extraction[i] @ lagr_to_bern
             np.testing.assert_allclose(lagr_extraction[i], expected, atol=1e-14)
+
+
+class TestLagrangeExtractionOrder:
+    """Tests for the ``order`` parameter of ``tabulate_Lagrange_extraction_operators``.
+
+    GitHub issue #441: the method gains a target-order argument (default the
+    spline's own degree), returning ``(n_intervals, degree + 1, order + 1)``.
+    """
+
+    # -------------------------------------------------------------- AC1: shape
+
+    @pytest.mark.parametrize("order_offset", [0, 1, 3])
+    @pytest.mark.parametrize("degree", [1, 2, 3, 4])
+    def test_shape_for_elevated_order(self, degree: int, order_offset: int) -> None:
+        """AC1: shape is (n_intervals, degree + 1, order + 1) for order >= degree."""
+        order = degree + order_offset
+        knots = [0.0] * (degree + 1) + [0.5, 1.0] + [2.0] * (degree + 1)
+        spline = BsplineSpace1D(knots, degree)
+        result = spline.tabulate_Lagrange_extraction_operators(order=order)
+        n_intervals = 3
+        assert result.shape == (n_intervals, degree + 1, order + 1)
+        assert result.dtype == np.float64
+
+    def test_default_order_is_degree(self) -> None:
+        """AC1: ``order=None`` (the default) behaves as ``order=degree``."""
+        degree = 3
+        knots = [0.0] * (degree + 1) + [1.0] * (degree + 1)
+        spline = BsplineSpace1D(knots, degree)
+        default_result = spline.tabulate_Lagrange_extraction_operators()
+        explicit_result = spline.tabulate_Lagrange_extraction_operators(order=degree)
+        assert default_result.shape == (1, degree + 1, degree + 1)
+        np.testing.assert_array_equal(default_result, explicit_result)
+
+    # ------------------------------------------------------- AC2: reproduction
+
+    def test_elevated_order_reproduces_basis_at_lagrange_nodes(self) -> None:
+        """AC2: a degree-3 spline elevated to order 4 reproduces its own basis.
+
+        Each column ``k`` of the operator must equal the spline's own basis
+        values at Lagrange node ``k`` -- the extraction identity
+        ``A_e[:, k] = N(x_k)`` that holds because the Lagrange basis is cardinal
+        at its own nodes. The oracle is ``tabulate_basis`` at the nodes' physical
+        coordinates, independent of the extraction machinery under test, as the
+        brief asks. The knot vector is a single Bezier-like element (multiplicity
+        ``degree + 1`` at both ends), so there is exactly one interval and no
+        boundary-node ambiguity about which span a node maps into.
+
+        Tolerance: both sides are short (O(degree)) computations -- the Bezier
+        knot-insertion recurrence feeding this operator, and the independent
+        Cox-de-Boor recursion behind ``tabulate_basis`` -- so ``get_default``
+        (``pantr.tolerance``'s tier for "a short algorithm plus build slack") is
+        the reused, already-derived factor. It is applied in the
+        ``atol + rtol * |x|`` shape the project's numerics discipline requires,
+        with the oracle value supplying the scale.
+        """
+        degree = 3
+        order = 4
+        knots = [0.0] * (degree + 1) + [1.0] * (degree + 1)
+        spline = BsplineSpace1D(knots, degree)
+        variant = LagrangeVariant.EQUISPACES
+
+        operators = spline.tabulate_Lagrange_extraction_operators(
+            lagrange_variant=variant, order=order
+        )
+        assert operators.shape == (1, degree + 1, order + 1)
+
+        nodes = _get_lagrange_points(variant, order + 1, np.float64)
+        basis_values, first_basis = spline.tabulate_basis(nodes)
+        assert np.all(first_basis == 0)  # the single element spans the whole domain
+
+        tol = get_default(np.float64)
+        for k in range(order + 1):
+            oracle = basis_values[k]
+            operator_column = operators[0, :, k]
+            bound = tol * (1.0 + np.abs(oracle))
+            assert np.all(np.abs(operator_column - oracle) <= bound), (
+                f"node {k}: operator column {operator_column} vs oracle {oracle}, bound {bound}"
+            )
+
+    @pytest.mark.parametrize(("degree", "order"), [(2, 3), (3, 5)])
+    def test_elevated_order_reproduces_basis_multi_interval(self, degree: int, order: int) -> None:
+        """AC2, multiple intervals: same reproducing property, per interval.
+
+        Gauss-Legendre nodes are used because they never coincide with an
+        interval boundary, so ``tabulate_basis``'s span selection at a shared
+        knot cannot confound which interval a node belongs to.
+        """
+        knots = [0.0] * (degree + 1) + [0.4, 0.7] + [1.0] * (degree + 1)
+        spline = BsplineSpace1D(knots, degree)
+        variant = LagrangeVariant.GAUSS_LEGENDRE
+
+        operators = spline.tabulate_Lagrange_extraction_operators(
+            lagrange_variant=variant, order=order
+        )
+        unique_knots, _ = spline.get_unique_knots_and_multiplicity(in_domain=True)
+        nodes = _get_lagrange_points(variant, order + 1, np.float64)
+        tol = get_default(np.float64)
+
+        for e in range(operators.shape[0]):
+            t0, t1 = unique_knots[e], unique_knots[e + 1]
+            physical = t0 + (t1 - t0) * nodes
+            basis_values, first_basis = spline.tabulate_basis(physical)
+            assert np.all(first_basis == first_basis[0]), (
+                "interior Gauss-Legendre nodes must all resolve to this interval's own span"
+            )
+            for k in range(order + 1):
+                oracle = basis_values[k]
+                operator_column = operators[e, :, k]
+                bound = tol * (1.0 + np.abs(oracle))
+                assert np.all(np.abs(operator_column - oracle) <= bound), (
+                    f"interval {e}, node {k}: operator column {operator_column} vs "
+                    f"oracle {oracle}, bound {bound}"
+                )
+
+    # ------------------------------------------------ AC3: default unchanged
+
+    def test_default_order_matches_pinned_values(self) -> None:
+        """AC3: with ``order`` left at its default, the numeric result is unchanged.
+
+        Values pinned from ``tabulate_Lagrange_extraction_operators`` before
+        #441 added the ``order`` parameter, for the same degree-3, two-interval
+        spline ``test_lagrange_is_bezier_times_change_of_basis`` above already
+        exercises. ``get_strict`` (a handful of roundings) is generous for a
+        code path this change leaves untouched; it is not bit-identity because
+        the doctrine this project follows treats bit-identity as a floating-point
+        acceptance criterion that forbids legitimate build-to-build movement.
+        """
+        degree = 3
+        knots = [0.0] * (degree + 1) + [0.5] + [1.0] * (degree + 1)
+        spline = BsplineSpace1D(knots, degree)
+        result = spline.tabulate_Lagrange_extraction_operators()
+
+        expected = np.array(
+            [
+                [
+                    [1.0, 0.2962962962962964, 0.03703703703703705, 0.0],
+                    [0.0, 0.564814814814815, 0.5185185185185186, 0.25],
+                    [0.0, 0.12962962962962962, 0.37037037037037035, 0.5],
+                    [0.0, 0.009259259259259257, 0.07407407407407406, 0.25],
+                ],
+                [
+                    [0.25, 0.0740740740740741, 0.009259259259259262, 0.0],
+                    [0.5, 0.37037037037037046, 0.12962962962962965, 0.0],
+                    [0.25, 0.5185185185185186, 0.5648148148148149, 0.0],
+                    [0.0, 0.03703703703703703, 0.2962962962962962, 1.0],
+                ],
+            ],
+            dtype=np.float64,
+        )
+        tol = get_strict(np.float64)
+        np.testing.assert_allclose(result, expected, rtol=tol, atol=tol)
+
+    # ---------------------------------------------------------------- AC4
+
+    def test_order_below_degree_raises(self) -> None:
+        """AC4: an order below the spline degree names the constraint it violates."""
+        degree = 3
+        knots = [0.0] * (degree + 1) + [1.0] * (degree + 1)
+        spline = BsplineSpace1D(knots, degree)
+        with pytest.raises(ValueError, match="order must be at least the spline degree"):
+            spline.tabulate_Lagrange_extraction_operators(order=degree - 1)
+
+    def test_impl_order_below_degree_raises(self) -> None:
+        """AC4, at the Layer 2 implementation: same message."""
+        knots = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float64)
+        degree = 2
+        with pytest.raises(ValueError, match="order must be at least the spline degree"):
+            _tabulate_Bspline_Lagrange_1D_extraction_impl(knots, degree, 1e-10, order=1)
+
+    # --------------------------------------------------------- out parameter
+
+    def test_out_parameter_with_elevated_order(self) -> None:
+        """Layer 2: ``out`` is accepted at the elevated ``(n, degree+1, order+1)`` shape."""
+        degree = 2
+        order = 4
+        knots = [0.0] * (degree + 1) + [1.0] * (degree + 1)
+        spline = BsplineSpace1D(knots, degree)
+        out = np.zeros((1, degree + 1, order + 1), dtype=np.float64)
+        result = spline.tabulate_Lagrange_extraction_operators(order=order, out=out)
+        assert result is out
+
+    def test_out_parameter_wrong_shape_for_elevated_order(self) -> None:
+        """Layer 2: an ``out`` array shaped for the old square result is refused."""
+        degree = 2
+        order = 4
+        knots = [0.0] * (degree + 1) + [1.0] * (degree + 1)
+        spline = BsplineSpace1D(knots, degree)
+        out = np.zeros((1, degree + 1, degree + 1), dtype=np.float64)
+        with pytest.raises(ValueError):
+            spline.tabulate_Lagrange_extraction_operators(order=order, out=out)
 
 
 class TestCreateBsplineCardinalExtractionOperators:
