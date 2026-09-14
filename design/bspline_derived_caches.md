@@ -378,7 +378,7 @@ otherwise take alone.
 | `THBSplineSpace._contrib_cache` | `dict[int, list[tuple]]`, unbounded, per cell id, `:492` | **one flat CSR table** (offsets + entries) filled for *all* cells behind one DCLP flag | #397 |
 | `THBSplineSpace._max_active_per_cell` | `int \| None` slot, `:493`, first call sweeps every cell | a field of that table, computed by the same sweep | #397 |
 | `MultiLevelExtraction._ext` | `dict[int, SpanwiseElementExtraction]`, `:114` | `std::vector<std::shared_ptr<const SpanwiseElementExtraction>>` indexed by level, one DCLP fill; levels are few | #400 |
-| `MultiLevelExtraction._coeffs_cache` | `dict[(int, tuple[int,...], int), ...]`, unbounded, `:112` | a hash map -- **legitimately**, its keys are data -- but it **needs a stated bound** and has none | #400 |
+| ~~`MultiLevelExtraction._coeffs_cache`~~ | **removed by #336**; replaced by `_tables`, frozen arrays built once at construction whose size is fixed by the space | eager fields; no bound left to state | #400 |
 | `Bspline._beziers_cache`, `_locate_cache` | `None`-guarded slots, three invalidation sites | two members of one derived block, replaced wholesale by an in-place method | #398 |
 | `SpanwiseElementExtraction.ops_1d` | `cached_property`, decompresses compact storage, `:273` | DCLP-lazy block; the accessor returns a **read-only view of the memo**, never a copy | #399 |
 | `SpanwiseElementExtraction.num_identity_elements` | `cached_property`, `:391` | eager field | #399 |
@@ -401,6 +401,12 @@ multi-index, so its size is bounded by the number of distinct queries a caller m
 anything about the object. Under a long-lived process that is leak-shaped. #400 must state the
 bound or add one; this note declines to pick a number, because the right bound is a function of
 the access pattern in `_element_coeffs` and nobody has measured it.
+
+**Superseded by #336.** The windowed per-element extraction removed `_coeffs_cache`,
+`_element_coeffs` and the dense two-scale matrices. What replaced them is `_tables`: per-level
+first-basis indices, window-restricted two-scale blocks and active sets, built once in the
+constructor and frozen (`writeable = False`). Their size is a function of the space alone, so the
+open question above no longer exists; #400 ports eager fields.
 
 **`ops_1d` returning a view of its memo rather than a copy is not an optimisation**, it is what
 keeps `tests/test_spanwise_element_extraction.py:1681`'s `np.shares_memory` assertion true and
@@ -483,8 +489,8 @@ is a C++ unit test under a sanitizer and nothing in `tests/` can stand in.
   invalidation sites collapse to one assignment.
 - **#399 the extraction machinery.** Two memos, one eager and one DCLP-lazy, plus the
   view-not-copy rule on `ops_1d`.
-- **#400 `THBSpline` / `MultiLevelExtraction`.** The level-indexed vector, and a stated bound on
-  `_coeffs_cache` -- which is a genuine open question, not a mechanical port.
+- **#400 `THBSpline` / `MultiLevelExtraction`.** The level-indexed vector, and the frozen
+  `_tables` that #336 put where `_coeffs_cache` was (eager fields, no bound to state).
 - **#401 scaffolding removal.** Nothing from this note is scaffolding; the memos are the design.
   What #401 should check is that no `cached_property` came back and no `__dict__` reappeared:
   a one-line test asserting `not hasattr(obj, "__dict__")` on each ported wrapper.
@@ -563,6 +569,7 @@ main decision is reversed.
   dicts**, and `_contrib_cache`'s docstring carries an unenforced "callers must not mutate the
   returned list" contract that two external call sites rely on. Both are pre-existing; both are
   removed by the port if #397 and #400 take the rows above, which is the argument for taking them.
+  (`_coeffs_cache` has since been removed by #336.)
 - **`CLAUDE.md`'s "Performance notes" say "change-of-basis matrices and unique knots are cached to
   avoid recomputation across calls".** After #396 that is no longer how unique knots work, and
   the sentence is the kind that outlives its subject. One line, when #396 lands.
@@ -609,7 +616,7 @@ main decision is reversed.
   `lru_cache`'s removal could be felt as a regression rather than as a cleanup. It is on the
   exposure list as a method of `BsplineSpace1D`, and the check is owed before #396 lands. Also
   not investigated: the footprint or hit rate of `_coeffs_cache` under any real workload, which
-  is what #400 needs to state its bound.
+  is what #400 needed to state its bound. Moot since #336 removed the cache.
 
 ## What was compiled, and how to reproduce it
 
