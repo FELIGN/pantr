@@ -30,6 +30,43 @@ Per-cell kernels are designed to be callable from other ``@njit`` code: they are
 module-level free functions with plain NumPy-array arguments, no optional
 parameters, and ``cache=True``. The batch kernels use ``parallel=True`` and
 dispatch to the per-cell kernels inside the ``prange`` body.
+
+**Precondition discipline shared by every kernel below** (each kernel's own
+``Note`` states its exact relation; this is the reasoning behind it):
+
+- Every loop here counts up from 0, so no index in this module can go negative --
+  the only per-array requirement is an upper bound on length. A caller-supplied
+  array reached through a ``.reshape()`` call is protected: a size mismatch
+  raises ``ValueError`` before any element is touched. An array indexed directly
+  (``out[i]``, ``out[i, j]``, ``K[i, j]``) carries no such protection; an
+  undersized one is read or written out of bounds -- silently without bounds
+  checking, as ``IndexError`` under ``NUMBA_BOUNDSCHECK=1``. Among the per-cell
+  kernels this is only the fully-identity branch for the ``_2d``/``_3d``
+  variants (every other branch reshapes); the ``_1d`` variants never reshape at
+  all, so both their branches carry it.
+- Every kernel's accumulator is ``M_0.dtype.type(0.0)`` specifically, not a
+  promoted common type, so ``M_1``, ``M_2``, ``v``/``K``, ``out`` and ``scratch``
+  are assumed to share ``M_0``'s dtype; a mismatch is not rejected, it silently
+  promotes or narrows through ordinary NumPy casting at each multiply and at the
+  final store into ``out``.
+- An ``is_id_k`` flag promises ``M_k``'s *values* are not read; its *shape* is
+  read regardless in every kernel except :func:`apply_kron_1d`, which reads
+  neither shape nor values of ``M_0`` when ``is_id_0``. Where the shape is read,
+  only one of ``M_k``'s two extents is ever used for an identity direction -- the
+  other is computed and discarded -- so **an identity-flagged ``M_k`` is not
+  required to be square by this module**, unlike the C++ port's
+  ``PANTR_PRECONDITION(identity_modes_are_square(...))`` (see
+  ``cpp/include/pantr/bspline/extraction_kernels.hpp``).
+- The batch (``_many_``) kernels add one precondition of their own:
+  ``cell_indices[cell, k]`` and ``idx_map_k[cell_indices[cell, k]]`` are both
+  read before ``is_id_k`` can short-circuit anything, so both must lie
+  in-bounds *including the lower bound* -- NumPy's ordinary negative-index
+  wraparound only covers ``[-len, -1]``, and a more negative entry reads outside
+  the array the same as one too large. Under ``NUMBA_BOUNDSCHECK=1`` this
+  surfaces as ``SystemError`` rather than the ``IndexError`` a non-batch kernel
+  raises for the same violation, because the raise happens inside the
+  ``prange`` body; without bounds checking it is silent, as everywhere else in
+  this module.
 """
 
 from __future__ import annotations
@@ -65,7 +102,13 @@ def apply_kron_1d(
             zero-size buffer or a dummy array.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        ``M_0.shape[0] >= out.shape[0]`` and ``M_0.shape[1] >= v.shape[0]``; when
+        ``is_id_0``, ``M_0`` is not read at all (not even its shape) and the
+        precondition is instead ``v.shape[0] >= out.shape[0]``. Violating either
+        is unspecified -- see the module docstring's precondition-discipline
+        paragraph for the reshape/dtype/aliasing rules this kernel shares with
+        the rest of the ``apply`` family.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -113,7 +156,15 @@ def apply_kron_2d(  # noqa: PLR0913, PLR0912 -- kernel fan-in and identity branc
             unused when any direction is identity.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        ``v.size`` and ``out.size`` equal the exact products
+        ``M_0.shape[1] * M_1.shape[1]`` and ``M_0.shape[0] * M_1.shape[0]``
+        implied by the directions that are not identity (a mismatch there raises
+        via ``.reshape()``). When both directions are identity, ``out`` and ``v``
+        are instead indexed directly at ``M_0.shape[0] * M_1.shape[0]`` elements
+        with no such check. See the module docstring's precondition-discipline
+        paragraph for the reshape/dtype/is_id rules shared across this family.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -203,7 +254,16 @@ def apply_kron_3d(  # noqa: PLR0913, PLR0912 -- kernel fan-in and identity branc
             ``2 * max(prod(input_shape), prod(output_shape))``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        ``v.size`` and ``out.size`` equal the exact products
+        ``M_0.shape[1] * M_1.shape[1] * M_2.shape[1]`` and
+        ``M_0.shape[0] * M_1.shape[0] * M_2.shape[0]`` implied by the directions
+        that are not identity (a mismatch there raises via ``.reshape()``). When
+        all three directions are identity, ``out`` and ``v`` are instead indexed
+        directly at ``M_0.shape[0] * M_1.shape[0] * M_2.shape[0]`` elements with
+        no such check. See the module docstring's precondition-discipline
+        paragraph for the reshape/dtype/is_id rules shared across this family.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -308,7 +368,13 @@ def apply_kron_T_1d(
         scratch (npt.NDArray[np.float32 | np.float64]): Unused for d=1.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        ``v.shape[0] >= M_0.shape[0]`` and ``out.shape[0] >= M_0.shape[1]``;
+        ``M_0``'s shape is read either way (unlike :func:`apply_kron_1d`), and
+        only its values are skipped when ``is_id_0``. Violating either bound is
+        unspecified -- see the module docstring's precondition-discipline
+        paragraph for the reshape/dtype/aliasing rules this kernel shares with
+        the rest of the ``apply_T`` family.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -355,7 +421,15 @@ def apply_kron_T_2d(  # noqa: PLR0913, PLR0912 -- kernel fan-in and identity bra
             least ``n_in_0 * n_out_1`` when neither direction is identity.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        ``v.size`` and ``out.size`` equal the exact products
+        ``M_0.shape[0] * M_1.shape[0]`` and ``M_0.shape[1] * M_1.shape[1]``
+        implied by the directions that are not identity (a mismatch there raises
+        via ``.reshape()``). When both directions are identity, ``out`` and ``v``
+        are instead indexed directly at ``M_0.shape[1] * M_1.shape[1]`` elements
+        with no such check. See the module docstring's precondition-discipline
+        paragraph for the reshape/dtype/is_id rules shared across this family.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -444,7 +518,16 @@ def apply_kron_T_3d(  # noqa: PLR0913, PLR0912 -- kernel fan-in and identity bra
             for the ``"apply_T"`` kind.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        ``v.size`` and ``out.size`` equal the exact products
+        ``M_0.shape[0] * M_1.shape[0] * M_2.shape[0]`` and
+        ``M_0.shape[1] * M_1.shape[1] * M_2.shape[1]`` implied by the directions
+        that are not identity (a mismatch there raises via ``.reshape()``). When
+        all three directions are identity, ``out`` and ``v`` are instead indexed
+        directly at ``M_0.shape[1] * M_1.shape[1] * M_2.shape[1]`` elements with
+        no such check. See the module docstring's precondition-discipline
+        paragraph for the reshape/dtype/is_id rules shared across this family.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -537,8 +620,15 @@ def apply_kron_MT_K_M_1d(
             least ``n_in_0 * n_out_0`` when not identity.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        ``K.shape >= (M_0.shape[0], M_0.shape[0])`` and
+        ``out.shape >= (M_0.shape[1], M_0.shape[1])``, both read and written by
+        direct indexing with no ``.reshape()`` size check, in both the identity
+        and the non-identity branch (this ``_1d`` kernel never reshapes). See the
+        module docstring's precondition-discipline paragraph for the dtype/is_id
+        rules shared across this family.
         ``out`` must not alias ``K`` except in the all-identity case.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -591,8 +681,15 @@ def apply_kron_M_K_MT_1d(
             least ``n_out_0 * n_in_0`` when not identity.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        ``K.shape >= (M_0.shape[1], M_0.shape[1])`` and
+        ``out.shape >= (M_0.shape[0], M_0.shape[0])``, both read and written by
+        direct indexing with no ``.reshape()`` size check, in both the identity
+        and the non-identity branch (this ``_1d`` kernel never reshapes). See the
+        module docstring's precondition-discipline paragraph for the dtype/is_id
+        rules shared across this family.
         ``out`` must not alias ``K`` except in the all-identity case.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -653,8 +750,17 @@ def apply_kron_MT_K_M_2d(  # noqa: PLR0913, PLR0912 -- kernel fan-in and identit
             for the ``"MT_K_M"`` kind.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        ``K.size`` and ``out.size`` equal the squared products
+        ``(M_0.shape[0] * M_1.shape[0]) ** 2`` and
+        ``(M_0.shape[1] * M_1.shape[1]) ** 2`` in every branch but the
+        all-identity one (a mismatch there raises via ``.reshape()``). In the
+        all-identity branch, ``K`` and ``out`` are instead indexed directly at
+        ``(M_0.shape[0] * M_1.shape[0],) * 2`` with no such check. See the
+        module docstring's precondition-discipline paragraph for the dtype/is_id
+        rules shared across this family.
         ``out`` must not alias ``K`` except in the all-identity case.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -778,8 +884,17 @@ def apply_kron_M_K_MT_2d(  # noqa: PLR0913, PLR0912 -- kernel fan-in and identit
             for the ``"M_K_MT"`` kind.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        ``K.size`` and ``out.size`` equal the squared products
+        ``(M_0.shape[1] * M_1.shape[1]) ** 2`` and
+        ``(M_0.shape[0] * M_1.shape[0]) ** 2`` in every branch but the
+        all-identity one (a mismatch there raises via ``.reshape()``). In the
+        all-identity branch, ``K`` and ``out`` are instead indexed directly at
+        ``(M_0.shape[1] * M_1.shape[1],) * 2`` with no such check. See the
+        module docstring's precondition-discipline paragraph for the dtype/is_id
+        rules shared across this family.
         ``out`` must not alias ``K`` except in the all-identity case.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -903,8 +1018,17 @@ def apply_kron_MT_K_M_3d(  # noqa: PLR0913, PLR0912, PLR0915 -- kernel fan-in an
             for the ``"MT_K_M"`` kind.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        ``K.size`` and ``out.size`` equal the squared products
+        ``(M_0.shape[0] * M_1.shape[0] * M_2.shape[0]) ** 2`` and
+        ``(M_0.shape[1] * M_1.shape[1] * M_2.shape[1]) ** 2`` in every branch but
+        the all-identity one (a mismatch there raises via ``.reshape()``). In the
+        all-identity branch, ``K`` and ``out`` are instead indexed directly at
+        ``(M_0.shape[0] * M_1.shape[0] * M_2.shape[0],) * 2`` with no such check.
+        See the module docstring's precondition-discipline paragraph for the
+        dtype/is_id rules shared across this family.
         ``out`` must not alias ``K`` except in the all-identity case.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -1091,8 +1215,17 @@ def apply_kron_M_K_MT_3d(  # noqa: PLR0913, PLR0912, PLR0915 -- kernel fan-in an
             for the ``"M_K_MT"`` kind.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        ``K.size`` and ``out.size`` equal the squared products
+        ``(M_0.shape[1] * M_1.shape[1] * M_2.shape[1]) ** 2`` and
+        ``(M_0.shape[0] * M_1.shape[0] * M_2.shape[0]) ** 2`` in every branch but
+        the all-identity one (a mismatch there raises via ``.reshape()``). In the
+        all-identity branch, ``K`` and ``out`` are instead indexed directly at
+        ``(M_0.shape[1] * M_1.shape[1] * M_2.shape[1],) * 2`` with no such check.
+        See the module docstring's precondition-discipline paragraph for the
+        dtype/is_id rules shared across this family.
         ``out`` must not alias ``K`` except in the all-identity case.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -1268,7 +1401,15 @@ def apply_kron_apply_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
             ``(n_cells, scratch_size)``; unused for d=1.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        for every ``cell``, ``cell_indices[cell, 0]`` and
+        ``idx_map_0[cell_indices[cell, 0]]`` must both lie in-bounds including
+        the lower bound, and ``v``/``out``/``scratch`` must have
+        ``shape[0] >= cell_indices.shape[0]``; each selected cell then carries
+        :func:`apply_kron_1d`'s own precondition. See the module docstring's
+        precondition-discipline paragraph for the batch-kernel rule (a violation
+        here raises ``SystemError`` under bounds checking, not ``IndexError``).
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -1315,7 +1456,16 @@ def apply_kron_apply_many_2d(  # noqa: PLR0913
             ``(n_cells, scratch_size)``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        for every ``cell``, ``cell_indices[cell, k]`` and
+        ``idx_map_k[cell_indices[cell, k]]`` (``k`` in ``{0, 1}``) must both lie
+        in-bounds including the lower bound, and ``v``/``out``/``scratch`` must
+        have ``shape[0] >= cell_indices.shape[0]``; each selected cell then
+        carries :func:`apply_kron_2d`'s own precondition. See the module
+        docstring's precondition-discipline paragraph for the batch-kernel rule
+        (a violation here raises ``SystemError`` under bounds checking, not
+        ``IndexError``).
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -1381,7 +1531,16 @@ def apply_kron_apply_many_3d(  # noqa: PLR0913
             ``(n_cells, scratch_size)``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        for every ``cell``, ``cell_indices[cell, k]`` and
+        ``idx_map_k[cell_indices[cell, k]]`` (``k`` in ``{0, 1, 2}``) must both
+        lie in-bounds including the lower bound, and ``v``/``out``/``scratch``
+        must have ``shape[0] >= cell_indices.shape[0]``; each selected cell then
+        carries :func:`apply_kron_3d`'s own precondition. See the module
+        docstring's precondition-discipline paragraph for the batch-kernel rule
+        (a violation here raises ``SystemError`` under bounds checking, not
+        ``IndexError``).
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -1430,7 +1589,15 @@ def apply_kron_apply_T_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional
             ``(n_cells, scratch_size)``; unused for d=1.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        for every ``cell``, ``cell_indices[cell, 0]`` and
+        ``idx_map_0[cell_indices[cell, 0]]`` must both lie in-bounds including
+        the lower bound, and ``v``/``out``/``scratch`` must have
+        ``shape[0] >= cell_indices.shape[0]``; each selected cell then carries
+        :func:`apply_kron_T_1d`'s own precondition. See the module docstring's
+        precondition-discipline paragraph for the batch-kernel rule (a violation
+        here raises ``SystemError`` under bounds checking, not ``IndexError``).
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -1477,7 +1644,16 @@ def apply_kron_apply_T_many_2d(  # noqa: PLR0913
             ``(n_cells, scratch_size)``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        for every ``cell``, ``cell_indices[cell, k]`` and
+        ``idx_map_k[cell_indices[cell, k]]`` (``k`` in ``{0, 1}``) must both lie
+        in-bounds including the lower bound, and ``v``/``out``/``scratch`` must
+        have ``shape[0] >= cell_indices.shape[0]``; each selected cell then
+        carries :func:`apply_kron_T_2d`'s own precondition. See the module
+        docstring's precondition-discipline paragraph for the batch-kernel rule
+        (a violation here raises ``SystemError`` under bounds checking, not
+        ``IndexError``).
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -1543,7 +1719,16 @@ def apply_kron_apply_T_many_3d(  # noqa: PLR0913
             ``(n_cells, scratch_size)``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        for every ``cell``, ``cell_indices[cell, k]`` and
+        ``idx_map_k[cell_indices[cell, k]]`` (``k`` in ``{0, 1, 2}``) must both
+        lie in-bounds including the lower bound, and ``v``/``out``/``scratch``
+        must have ``shape[0] >= cell_indices.shape[0]``; each selected cell then
+        carries :func:`apply_kron_T_3d`'s own precondition. See the module
+        docstring's precondition-discipline paragraph for the batch-kernel rule
+        (a violation here raises ``SystemError`` under bounds checking, not
+        ``IndexError``).
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -1594,8 +1779,17 @@ def apply_kron_MT_K_M_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
             ``(n_cells, scratch_size)``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        for every ``cell``, ``cell_indices[cell, 0]`` and
+        ``idx_map_0[cell_indices[cell, 0]]`` must both lie in-bounds including
+        the lower bound, and ``K``/``out``/``scratch`` must have
+        ``shape[0] >= cell_indices.shape[0]``; each selected cell then carries
+        :func:`apply_kron_MT_K_M_1d`'s own precondition. See the module
+        docstring's precondition-discipline paragraph for the batch-kernel rule
+        (a violation here raises ``SystemError`` under bounds checking, not
+        ``IndexError``).
         ``out[c]`` must not alias ``K[c]`` except in the all-identity case.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -1644,8 +1838,17 @@ def apply_kron_MT_K_M_many_2d(  # noqa: PLR0913
             ``(n_cells, scratch_size)``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        for every ``cell``, ``cell_indices[cell, k]`` and
+        ``idx_map_k[cell_indices[cell, k]]`` (``k`` in ``{0, 1}``) must both lie
+        in-bounds including the lower bound, and ``K``/``out``/``scratch`` must
+        have ``shape[0] >= cell_indices.shape[0]``; each selected cell then
+        carries :func:`apply_kron_MT_K_M_2d`'s own precondition. See the module
+        docstring's precondition-discipline paragraph for the batch-kernel rule
+        (a violation here raises ``SystemError`` under bounds checking, not
+        ``IndexError``).
         ``out[c]`` must not alias ``K[c]`` except in the all-identity case.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -1713,8 +1916,17 @@ def apply_kron_MT_K_M_many_3d(  # noqa: PLR0913
             ``(n_cells, scratch_size)``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        for every ``cell``, ``cell_indices[cell, k]`` and
+        ``idx_map_k[cell_indices[cell, k]]`` (``k`` in ``{0, 1, 2}``) must both
+        lie in-bounds including the lower bound, and ``K``/``out``/``scratch``
+        must have ``shape[0] >= cell_indices.shape[0]``; each selected cell then
+        carries :func:`apply_kron_MT_K_M_3d`'s own precondition. See the module
+        docstring's precondition-discipline paragraph for the batch-kernel rule
+        (a violation here raises ``SystemError`` under bounds checking, not
+        ``IndexError``).
         ``out[c]`` must not alias ``K[c]`` except in the all-identity case.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -1765,8 +1977,17 @@ def apply_kron_M_K_MT_many_1d(  # noqa: PLR0913 -- kernel fan-in is intentional.
             ``(n_cells, scratch_size)``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        for every ``cell``, ``cell_indices[cell, 0]`` and
+        ``idx_map_0[cell_indices[cell, 0]]`` must both lie in-bounds including
+        the lower bound, and ``K``/``out``/``scratch`` must have
+        ``shape[0] >= cell_indices.shape[0]``; each selected cell then carries
+        :func:`apply_kron_M_K_MT_1d`'s own precondition. See the module
+        docstring's precondition-discipline paragraph for the batch-kernel rule
+        (a violation here raises ``SystemError`` under bounds checking, not
+        ``IndexError``).
         ``out[c]`` must not alias ``K[c]`` except in the all-identity case.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -1815,8 +2036,17 @@ def apply_kron_M_K_MT_many_2d(  # noqa: PLR0913
             ``(n_cells, scratch_size)``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        for every ``cell``, ``cell_indices[cell, k]`` and
+        ``idx_map_k[cell_indices[cell, k]]`` (``k`` in ``{0, 1}``) must both lie
+        in-bounds including the lower bound, and ``K``/``out``/``scratch`` must
+        have ``shape[0] >= cell_indices.shape[0]``; each selected cell then
+        carries :func:`apply_kron_M_K_MT_2d`'s own precondition. See the module
+        docstring's precondition-discipline paragraph for the batch-kernel rule
+        (a violation here raises ``SystemError`` under bounds checking, not
+        ``IndexError``).
         ``out[c]`` must not alias ``K[c]`` except in the all-identity case.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
@@ -1884,8 +2114,17 @@ def apply_kron_M_K_MT_many_3d(  # noqa: PLR0913
             ``(n_cells, scratch_size)``.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        Inputs are assumed to be correct (no validation performed). Precondition:
+        for every ``cell``, ``cell_indices[cell, k]`` and
+        ``idx_map_k[cell_indices[cell, k]]`` (``k`` in ``{0, 1, 2}``) must both
+        lie in-bounds including the lower bound, and ``K``/``out``/``scratch``
+        must have ``shape[0] >= cell_indices.shape[0]``; each selected cell then
+        carries :func:`apply_kron_M_K_MT_3d`'s own precondition. See the module
+        docstring's precondition-discipline paragraph for the batch-kernel rule
+        (a violation here raises ``SystemError`` under bounds checking, not
+        ``IndexError``).
         ``out[c]`` must not alias ``K[c]`` except in the all-identity case.
+        Violating this precondition is unspecified.
         For general use, call the Layer-2 dispatcher in
         :mod:`pantr.bspline._extraction_helpers` instead.
     """
