@@ -20,6 +20,7 @@ from pantr.bspline import (
     create_uniform_space,
 )
 from pantr.grid import HierarchicalGrid, hierarchical_grid, uniform_grid
+from tests._parity_harness import unit_roundoff
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -414,8 +415,8 @@ class TestWindowedKernelBookkeeping:
 # unity and depth
 # ──────────────────────────────────────────────────────────────────────────────
 
-_UNIT_ROUNDOFF = float(np.finfo(np.float64).eps) / 2.0
-"""Unit roundoff ``u`` of binary64."""
+_UNIT_ROUNDOFF = unit_roundoff(np.float64)
+"""Unit roundoff ``u`` of binary64, from the parity harness rather than spelled out again."""
 
 _OSLO_STAGE_OPS = 5
 """Rounded operations per stage of a nonnegative knot-insertion recurrence.
@@ -684,6 +685,9 @@ class TestDeepHierarchy:
         # coefficient box of width 2^level (p + 1) - p per direction, which at this depth
         # is two orders of magnitude above that.  The fixed MiB covers interpreter and
         # array-header overhead, which no derivation reaches: a heuristic allowance.
+        # tracemalloc sees only NumPy/Python allocations, not the Numba kernel's own
+        # scratch; that scratch is O(level * n_single) by construction, and a box built
+        # inside the kernel would escape this test.
         window_bytes = 2 * (level + 1) * n_single * n_single * 8
         cap = window_bytes + 2**20
         tracemalloc.start()
