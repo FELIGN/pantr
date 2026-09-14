@@ -11,8 +11,19 @@
 #
 #   hard gate      concepts. The scalar-generic design rests entirely on them and
 #                  there is no fallback, so a compiler without them is rejected.
+#   hard gate      the floating-point overloads of std::to_chars. Exactly one
+#                  function needs them, and a second spelling of what it does is
+#                  the thing that must not happen, so a standard library without
+#                  them is rejected.
 #   feature toggle <mdspan>. The Kokkos reference implementation is a drop-in, so
 #                  its absence selects a fallback rather than ending the build.
+#
+# The two hard gates bound different things, and that is why both exist. Concepts
+# are a property of the compiler front end; std::to_chars is a property of the
+# standard LIBRARY it happens to be paired with, and a toolchain can pass either
+# gate while failing the other. Measured here: clang++ 10 passes both, because it
+# resolves to the system libstdc++ 12, while g++ 10 passes the first and fails
+# the second against its own libstdc++ 10.
 #
 # Caveat worth knowing before it costs an afternoon: probe results are cached in
 # CMakeCache.txt, so switching compilers inside an existing build directory
@@ -100,6 +111,74 @@ if(NOT PANTR_HAS_CONCEPTS)
 endif()
 
 # --------------------------------------------------------------------------
+# Hard gate: the floating-point overloads of std::to_chars.
+# --------------------------------------------------------------------------
+#
+# pantr::detail::format_repr (cpp/include/pantr/core/format.hpp) reproduces
+# Python's repr() of a float for the port's exception messages, which a parity
+# test compares character for character. It gets the shortest round-tripping
+# digits from std::to_chars and then picks the notation by Python's positional
+# rule, and the digits are the half no other facility in the standard library
+# provides.
+#
+# libstdc++ 10 implements std::to_chars for INTEGERS only. The floating-point
+# overloads arrived in libstdc++ 11, and 10 defines no __cpp_lib_to_chars at all.
+# Without this gate the refusal arrives as an overload-resolution error inside a
+# header, part way through a build -- which is how FELIGN/pantr#376 was found,
+# and the failure mode the rest of this file exists to convert into a message.
+#
+# This gate is deliberately NOT behind PANTR_ALLOW_UNTESTED_COMPILER. That flag
+# says "I know this version is untested"; this is a facility that is absent, so
+# opening the gate would buy nothing but the template error back.
+#
+# Reimplementing format_repr instead was considered and rejected in #376: the
+# repr rule went wrong once as a local copy, and a second copy is how that
+# happens again. format_general and format_fixed alongside it go through
+# snprintf deliberately, which the old library does have, so this gate names one
+# function rather than a file.
+#
+# The probe consults the feature-test macro first and then compiles the two calls
+# format_repr actually makes -- the shortest-form overload at
+# std::chars_format::scientific and at std::chars_format::fixed, neither taking a
+# precision. Keep those two in step with format_repr, for the reason the concepts
+# probe above gives.
+check_cxx_source_compiles("
+#include <version>
+#if !defined(__cpp_lib_to_chars)
+#  error \"the standard library does not implement std::to_chars for floating-point types\"
+#endif
+#include <array>
+#include <charconv>
+#include <system_error>
+int main() {
+    std::array<char, 64> buffer{};
+    const auto sci = std::to_chars(buffer.data(), buffer.data() + buffer.size(), 1.0,
+                                   std::chars_format::scientific);
+    if (sci.ec != std::errc{}) {
+        return 1;
+    }
+    const auto fixed = std::to_chars(buffer.data(), buffer.data() + buffer.size(), 1.0,
+                                     std::chars_format::fixed);
+    return fixed.ec == std::errc{} ? 0 : 1;
+}
+" PANTR_HAS_FP_TO_CHARS)
+
+if(NOT PANTR_HAS_FP_TO_CHARS)
+  message(FATAL_ERROR
+      "pantr requires the FLOATING-POINT overloads of std::to_chars (<charconv>), "
+      "and this standard library does not provide them. The bound is the standard "
+      "LIBRARY, not the compiler: libstdc++ 10 implements std::to_chars for "
+      "integers only and defines no __cpp_lib_to_chars, while libstdc++ 11 and "
+      "newer provide the floating-point overloads. A clang++ paired with a newer "
+      "libstdc++ satisfies this gate at any front-end version.\n"
+      "  Needed by: pantr::detail::format_repr, in "
+      "cpp/include/pantr/core/format.hpp, which reproduces Python's repr() of a "
+      "float exactly. There is no fallback: a second implementation of that rule "
+      "is what this arrangement exists to prevent.\n"
+      ${PANTR_TOOLCHAIN_REPORT})
+endif()
+
+# --------------------------------------------------------------------------
 # Feature toggle: <mdspan>.
 # --------------------------------------------------------------------------
 #
@@ -170,19 +249,45 @@ endif()
 # development server's system Clang 10 is shadowed by the conda environment, so
 # it was never actually tried.
 #
-# Measured 2026-08-19, against this tree rather than a toy:
+# What backs it is a measurement rather than a date. scripts/ci_local.sh
+# re-establishes the whole of it on EVERY run, and an absent toolchain is a
+# failure there rather than a skip, so the claim cannot quietly become vacuous:
 #
-#   g++ 9.5      rejected, and early -- it does not accept -std=c++20 at all, so
-#                the concepts probe above stops it before this check runs.
-#   g++ 10       configures, builds the whole tree under -Werror with the full
-#                warning set, and passes 3/3 ctest.
-#   clang++ 10   the same, once the override this block used to demand was given.
-#   g++ 14.4, clang++ 18.1.8   the development toolchains, likewise.
+#   clang++-10   configured, built whole under -Werror with the full warning set,
+#                and ctested. The lowest toolchain the tree is actually exercised
+#                on, and therefore what "floor" names.
+#   g++-10       asserted to be REFUSED at configure time, by the std::to_chars
+#                gate above and by that gate's own message. Below the floor, and
+#                checked as being below it.
+#   g++ 9.5      asserted to be refused by the concepts gate, which stops it
+#                before this check is ever reached.
+#   g++ 14.4, clang++ 18.1.8   the development toolchains, built and ctested by
+#                the same script on the same run.
 #
-# So the floor is 10 for both families, and it now means THE LOWEST VERSION
-# ACTUALLY EXERCISED rather than a guess about anyone's concepts implementation.
-# "Untested below this" is a claim about us and we can support it; "broken below
-# this" was a claim about the compiler and we could not.
+# The floor used to be 10 for both families, from a hand measurement taken
+# 2026-08-19 which recorded g++ 10 building the whole tree and passing 3/3 ctest.
+# That row stopped being true the day cpp/include/pantr/core/format.hpp began
+# needing floating-point std::to_chars, and nothing noticed, because the check
+# that would have said so reported an absent compiler and a passing one
+# identically. Both halves of that are FELIGN/pantr#376.
+#
+# So the floor is now two bounds, and they are not the same bound:
+#
+#   the standard library   binding, and raised: libstdc++ 11 or newer. Enforced by
+#                          the std::to_chars probe above, which is a feature test
+#                          rather than a version comparison.
+#   the compiler version   10 for GCC and Clang alike, unchanged, and still
+#                          meaning THE LOWEST VERSION ACTUALLY EXERCISED rather
+#                          than a guess about anyone's concepts implementation.
+#                          "Untested below this" is a claim about us and we can
+#                          support it; "broken below this" was a claim about the
+#                          compiler and we could not.
+#
+# clang++ 10 is what holds those two apart, and is why the GNU row of the check
+# below did not simply move to 11: a 2020 front end that satisfies the raised
+# floor, because it resolves to the system libstdc++ 12. Writing 11 here instead
+# would be a version number standing in for a library fact -- precisely the row
+# that lies.
 #
 # The check covers GNU as well as Clang, and that symmetry is the other half of
 # the correction. It was Clang-only because the guess was about Clang's concepts,
@@ -201,9 +306,10 @@ if((CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
    AND NOT PANTR_ALLOW_UNTESTED_COMPILER)
   message(FATAL_ERROR
       "pantr has never been built with ${CMAKE_CXX_COMPILER_ID} below version 10. "
-      "Version 10 of both GCC and Clang is measured to build this tree and pass "
-      "its tests; nothing older has been tried, and the probe above cannot tell a "
-      "compiler that miscompiles from one that does not.\n"
+      "Clang 10 is measured to build this tree and pass its tests, against a "
+      "libstdc++ new enough for the gate above; nothing older than 10 has been "
+      "tried in either family, and the probes above cannot tell a compiler that "
+      "miscompiles from one that does not.\n"
       ${PANTR_TOOLCHAIN_REPORT}
       "\n  Override with -DPANTR_ALLOW_UNTESTED_COMPILER=ON at your own risk.")
 endif()
