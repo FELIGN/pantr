@@ -34,16 +34,17 @@ from tests.test_kernel_preconditions import _docstring_of
 # One marker substring per kernel, taken verbatim from the ``Precondition:`` sentence
 # this ticket added to its docstring. A kernel sharing a shape with its siblings (the
 # ``_1d``/``_2d``/``_3d`` and ``_many_`` families) may state the reasoning once in the
-# module docstring and point to it, but each kernel's own marker below is still unique to
-# that kernel's own array names and dimension, so a copy-paste onto the wrong kernel
-# fails this test rather than passing by matching a generic phrase.
+# module docstring and point to it, but no marker below is a substring of another. That
+# does not make a pasted note fail: a kernel and its transpose sibling state the same two
+# sizes in opposite roles, so each one's docstring also contains the other's marker. What
+# this catches is a kernel whose own precondition is missing.
 _EXPECTED_MARKERS: dict[str, str] = {
     "apply_kron_1d": "M_0.shape[0] >= out.shape[0]",
     "apply_kron_2d": "``M_0.shape[1] * M_1.shape[1]``",
-    "apply_kron_3d": "M_0.shape[1] * M_1.shape[1] * M_2.shape[1]",
+    "apply_kron_3d": "``M_0.shape[1] * M_1.shape[1] * M_2.shape[1]``",
     "apply_kron_T_1d": "v.shape[0] >= M_0.shape[0]",
     "apply_kron_T_2d": "``M_0.shape[0] * M_1.shape[0]``",
-    "apply_kron_T_3d": "M_0.shape[0] * M_1.shape[0] * M_2.shape[0]",
+    "apply_kron_T_3d": "``M_0.shape[0] * M_1.shape[0] * M_2.shape[0]``",
     "apply_kron_MT_K_M_1d": "K.shape >= (M_0.shape[0], M_0.shape[0])",
     "apply_kron_MT_K_M_2d": "(M_0.shape[0] * M_1.shape[0]) ** 2",
     "apply_kron_MT_K_M_3d": "(M_0.shape[0] * M_1.shape[0] * M_2.shape[0]) ** 2",
@@ -66,8 +67,9 @@ _EXPECTED_MARKERS: dict[str, str] = {
 """Expected precondition marker per kernel. Also the module's cross-check set (AC1):
 a kernel added to ``_extraction_kernels`` without an entry here fails
 :func:`test_every_kernel_has_an_expected_marker` before it can fail anything else.
-The ``_2d`` markers carry their closing backticks so that none is a substring of its
-``_3d`` sibling's, which would let a ``_3d`` note pasted onto a ``_2d`` kernel pass.
+The ``apply_kron`` and ``apply_kron_T`` markers carry their backticks so that none is a
+substring of another kernel's marker, which would let that kernel's note pasted onto
+the shorter one pass.
 """
 
 _IDENTITY_BRANCH_MARKERS: dict[str, str] = {
