@@ -165,7 +165,7 @@ def _deboor_point(  # noqa: PLR0913
         coeffs (npt.NDArray[Any]): B-spline coefficients.
         degree (int): Polynomial degree.
         point (float): Evaluation point, inside ``[knots[span], knots[span+1]]``.
-        span (int): Knot span index of ``point``.
+        span (int): Knot span index of ``point``, with ``degree <= span``.
         work (npt.NDArray[Any]): Scratch buffer of at least ``degree + 1`` entries.
 
     Returns:
@@ -173,12 +173,14 @@ def _deboor_point(  # noqa: PLR0913
 
     Note:
         Inputs are assumed to be correct (no validation performed). The
-        preconditions that disclaimer stands on are ``len(coeffs) >= span + 1``,
-        since the algorithm reads ``coeffs[span - degree]`` through
-        ``coeffs[span]``, and ``len(knots) >= span + degree + 1``, since the
-        Cox-de Boor recursion reads as far as ``knots[span + degree]``. This
-        kernel reads past a shorter array in either case; behavior there is
-        unspecified.
+        preconditions that disclaimer stands on are ``degree <= span``, since
+        the algorithm reads ``coeffs[span - degree]`` and ``knots[span - degree + 1]``
+        and a negative index wraps to the end of the array rather than failing,
+        ``len(coeffs) >= span + 1``, since it reads up to ``coeffs[span]``, and
+        ``len(knots) >= span + degree + 1``, since the Cox-de Boor recursion reads
+        as far as ``knots[span + degree]``. Violating the first returns a value
+        computed from the wrong coefficients; violating either length reads past
+        the array. Behavior in all three cases is unspecified.
         For general use, call :func:`pantr.bspline.find_roots` instead.
     """
     for i in range(degree + 1):
