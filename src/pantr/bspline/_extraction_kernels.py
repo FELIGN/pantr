@@ -621,10 +621,12 @@ def apply_kron_MT_K_M_1d(
 
     Note:
         Inputs are assumed to be correct (no validation performed). Precondition:
-        ``K.shape >= (M_0.shape[0], M_0.shape[0])`` and
-        ``out.shape >= (M_0.shape[1], M_0.shape[1])``, both read and written by
-        direct indexing with no ``.reshape()`` size check, in both the identity
-        and the non-identity branch (this ``_1d`` kernel never reshapes). See the
+        ``K.shape >= (M_0.shape[0], M_0.shape[0])``, and
+        ``out.shape >= (M_0.shape[1], M_0.shape[1])`` when ``is_id_0`` is False but
+        ``out.shape >= (M_0.shape[0], M_0.shape[0])`` when it is True, since the
+        identity branch copies ``K`` over its own extent. The two coincide only
+        for a square ``M_0``. Both arrays are read and written by direct indexing
+        with no ``.reshape()`` size check (this ``_1d`` kernel never reshapes). See the
         module docstring's precondition-discipline paragraph for the dtype/is_id
         rules shared across this family.
         ``out`` must not alias ``K`` except in the all-identity case.
@@ -682,10 +684,12 @@ def apply_kron_M_K_MT_1d(
 
     Note:
         Inputs are assumed to be correct (no validation performed). Precondition:
-        ``K.shape >= (M_0.shape[1], M_0.shape[1])`` and
-        ``out.shape >= (M_0.shape[0], M_0.shape[0])``, both read and written by
-        direct indexing with no ``.reshape()`` size check, in both the identity
-        and the non-identity branch (this ``_1d`` kernel never reshapes). See the
+        ``K.shape >= (M_0.shape[1], M_0.shape[1])``, and
+        ``out.shape >= (M_0.shape[0], M_0.shape[0])`` when ``is_id_0`` is False but
+        ``out.shape >= (M_0.shape[1], M_0.shape[1])`` when it is True, since the
+        identity branch copies ``K`` over its own extent. The two coincide only
+        for a square ``M_0``. Both arrays are read and written by direct indexing
+        with no ``.reshape()`` size check (this ``_1d`` kernel never reshapes). See the
         module docstring's precondition-discipline paragraph for the dtype/is_id
         rules shared across this family.
         ``out`` must not alias ``K`` except in the all-identity case.
