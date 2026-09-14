@@ -1585,10 +1585,12 @@ class TestLagrangeExtractionOrder:
         Values pinned from ``tabulate_Lagrange_extraction_operators`` before
         #441 added the ``order`` parameter, for the same degree-3, two-interval
         spline ``test_lagrange_is_bezier_times_change_of_basis`` above already
-        exercises. ``get_strict`` (a handful of roundings) is generous for a
-        code path this change leaves untouched; it is not bit-identity because
-        the doctrine this project follows treats bit-identity as a floating-point
-        acceptance criterion that forbids legitimate build-to-build movement.
+        exercises. The pinned quantity is the output of a whole kernel chain
+        (knot insertion composed with a change of basis, under either backend),
+        so the tolerance is ``get_default``, whose tier covers a short algorithm
+        plus build slack (contraction, vector width, libm), rather than
+        ``get_strict``'s handful of roundings. It is not bit-identity, which build
+        differences legitimately break.
         """
         degree = 3
         knots = [0.0] * (degree + 1) + [0.5] + [1.0] * (degree + 1)
@@ -1612,7 +1614,7 @@ class TestLagrangeExtractionOrder:
             ],
             dtype=np.float64,
         )
-        tol = get_strict(np.float64)
+        tol = get_default(np.float64)
         np.testing.assert_allclose(result, expected, rtol=tol, atol=tol)
 
     # ---------------------------------------------------------------- AC4
@@ -1631,6 +1633,24 @@ class TestLagrangeExtractionOrder:
         degree = 2
         with pytest.raises(ValueError, match="order must be at least the spline degree"):
             _tabulate_Bspline_Lagrange_1D_extraction_impl(knots, degree, 1e-10, order=1)
+
+    @pytest.mark.parametrize("bad_order", [3.5, 4.0, True, "4"])
+    def test_non_integer_order_raises(self, bad_order: object) -> None:
+        """A non-integer ``order`` (a ``bool`` included) is refused with a message naming it."""
+        degree = 3
+        knots = [0.0] * (degree + 1) + [1.0] * (degree + 1)
+        spline = BsplineSpace1D(knots, degree)
+        with pytest.raises(TypeError, match="order must be an integer or None"):
+            spline.tabulate_Lagrange_extraction_operators(order=bad_order)  # type: ignore[arg-type]
+
+    def test_numpy_integer_order_is_accepted(self) -> None:
+        """A NumPy integer ``order`` behaves as the equal Python ``int``."""
+        degree = 3
+        knots = [0.0] * (degree + 1) + [1.0] * (degree + 1)
+        spline = BsplineSpace1D(knots, degree)
+        result = spline.tabulate_Lagrange_extraction_operators(order=np.int64(5))  # type: ignore[arg-type]
+        expected = spline.tabulate_Lagrange_extraction_operators(order=5)
+        np.testing.assert_array_equal(result, expected)
 
     # --------------------------------------------------------- out parameter
 

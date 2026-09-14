@@ -1275,6 +1275,7 @@ class BsplineSpace1D:
                 If `out` was provided, returns the same array.
 
         Raises:
+            TypeError: If `order` is neither `None` nor an integer (a `bool` is refused).
             ValueError: If `order` is below `degree`, or if `out` is provided and has
                 incorrect shape or dtype.
         """

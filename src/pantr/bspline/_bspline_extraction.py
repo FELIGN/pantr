@@ -9,9 +9,11 @@ live in :mod:`pantr.bspline._bspline_extraction_core`, and
 :mod:`pantr.bspline._extraction_backend` chooses between them and their C++ twins
 in ``cpp/include/pantr/bspline/extraction.hpp``.
 
-The **Bézier** and **Lagrange** builders are dispatched. The cardinal one is not:
-it needs the cardinal-interval scan on top of a change-of-basis matrix, and that
-scan is not ported, so it still runs the Bézier builder and post-multiplies here.
+The **Bézier** and square **Lagrange** builders are dispatched. The cardinal one is
+not: it needs the cardinal-interval scan on top of a change-of-basis matrix, and that
+scan is not ported, so it still runs the Bézier builder and post-multiplies here. A
+Lagrange operator of elevated order (``order > degree``) is not dispatched either: it
+runs the Bézier builder and post-multiplies by a Bernstein tabulation here.
 """
 
 from __future__ import annotations
@@ -155,17 +157,20 @@ def _tabulate_Bspline_Lagrange_1D_extraction_impl(  # noqa: PLR0913
             (n_intervals, degree+1, order+1) where each matrix transforms
             Lagrange basis functions to B-spline basis functions for that interval.
 
-            Each matrix C[i, :, :] transforms Bernstein basis functions
+            Each matrix C[i, :, :] transforms Lagrange basis functions
             to B-spline basis functions for the i-th interval as
                 C[i, :, :] @ [Lagrange values] = [B-spline values in interval].
             If `out` was provided, returns the same array.
 
     Raises:
+        TypeError: If `order` is neither ``None`` nor an integer (a ``bool`` is refused).
         ValueError: If the knot vector or degree fails basic validation, if tol is
             negative, if `order` is below `degree`, or if `out` is provided and has
             incorrect shape or dtype.
     """
-    target_order = degree if order is None else order
+    if order is not None and (isinstance(order, bool) or not isinstance(order, int | np.integer)):
+        raise TypeError(f"order must be an integer or None; got {order!r}")
+    target_order = degree if order is None else int(order)
     if target_order < degree:
         raise ValueError(
             f"order must be at least the spline degree ({degree}); got order={target_order}"
