@@ -177,9 +177,13 @@ section becomes mandatory**: an absent floor compiler is now a `FAIL`. The two a
 and why not:
 
 - *Run the floor in GitHub Actions.* This reverses a decision recorded in
-  `.github/workflows/cpp.yaml` whose reason still holds -- `ubuntu-24.04` packages neither
-  Clang 10 nor GCC 10, so it needs an older image or a container. That reason was about cost,
-  and #376 did not change the cost. It only changed how much the local check is worth.
+  `.github/workflows/cpp.yaml` whose reason still holds, though not for the reason first
+  written here. `ubuntu-24.04` does not package Clang 10, which is the half that builds the
+  tree *at* the floor; it does list `g++-10` in `universe`, so the refusal half could run
+  there. What could not run is the acceptance half, and a floor check that only ever watches
+  something fail is not the claim the floor makes -- so it still needs an older image or a
+  container. That reason was about cost, and #376 did not change the cost. It only changed how
+  much the local check is worth.
 - *Keep it local-only and write down that the claim is best-effort.* Honest, and strictly
   weaker: it records the vacuity instead of removing it, and nothing then obliges the one
   machine to run the check at all.

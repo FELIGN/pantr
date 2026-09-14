@@ -51,10 +51,13 @@
 # build observes that.
 #
 # The version floor is NOT checked here, and that decision is unchanged by
-# FELIGN/pantr#376. `ubuntu-24.04` packages neither of the compilers the floor
-# section needs -- Clang 10 to build the tree at the floor, GCC 10 to be refused
-# below it -- so covering it here would need an older image or a container, which
-# is more weight than a prototype should carry. `ci_local.sh` covers it on every
+# FELIGN/pantr#376. The floor section needs two compilers: Clang 10 to build the
+# tree at the floor, and GCC 10 to be refused below it. `ubuntu-24.04` does not
+# package Clang 10 at all; it does list `g++-10` in `universe`, so the refusal half
+# could run here. The acceptance half could not, and a floor check that only ever
+# watches something fail is not the claim the floor makes -- so covering this
+# properly needs an older image or a container, which is more weight than a
+# prototype should carry. `ci_local.sh` covers it on every
 # run and design/toolchain_requirements.md records that the floor is guaranteed by
 # one machine.
 #

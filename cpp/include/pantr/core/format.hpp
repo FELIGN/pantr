@@ -53,11 +53,20 @@
 /// into one file a probe can name, and `format_general` and `format_fixed`
 /// deliberately go through `snprintf` instead, which the floor does have.
 ///
-/// #376 raised the floor to **libstdc++ 11** on that basis and added the probe,
-/// in `cmake/PantrCompilerProbes.cmake`. The `#error` below is the other half of
-/// it, for the reason `pantr/core/mdspan.hpp` gives at length: the probe measures
-/// the toolchain that *built* the package, and this library is header-only and
-/// installable, so a consumer may be compiling with a different one.
+/// #376 raised the floor to **libstdc++ 11** on that basis and added the probe, in
+/// `cmake/PantrCompilerProbes.cmake`. That probe decides by **compiling the call**,
+/// not by a feature-test macro, and the difference is not pedantry: libc++ implements
+/// these overloads and leaves `__cpp_lib_to_chars` undefined, so a macro test refuses
+/// a working toolchain -- and with it every AppleClang there is.
+///
+/// A matching guard in this header was written and then removed, for that reason and
+/// one more. A header cannot compile a probe, so it would have had to test the macro,
+/// and refusing every macOS consumer to spare them one error message is a bad trade.
+/// Measured, besides, that it would not have spared them: GCC prints an `#error` and
+/// then carries on to the overload-resolution dump anyway. So the configure-time gate
+/// is where this is enforced, and a consumer compiling against the installed package
+/// with too old a library meets the overload error -- which is the state #376 found,
+/// and widening the fix to cover it needs a mechanism a header does not have.
 
 #include <array>
 #include <charconv>
@@ -67,24 +76,8 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
-#include <version>  // __cpp_lib_to_chars, and nothing else
 
 #include "pantr/core/scalar.hpp"
-
-// The header decides, not the build -- `pantr/core/mdspan.hpp` states the reason
-// and it applies unchanged here. Unlike that one there is no second branch to
-// select: reproducing Python's `repr` needs the shortest round-tripping digits,
-// and no other facility in the standard library produces them. So this refuses
-// rather than adapts, and it refuses HERE rather than twenty lines below, where
-// the same gap arrives as an overload-resolution failure listing every integer
-// overload of `std::to_chars` -- which is how FELIGN/pantr#376 was found.
-#if !defined(__cpp_lib_to_chars)
-#  error "pantr requires the floating-point overloads of std::to_chars, and this \
-standard library does not provide them. The bound is the standard LIBRARY, not the \
-compiler: libstdc++ 10 implements std::to_chars for integers only, while libstdc++ \
-11 and newer provide the floating-point overloads. Build against libstdc++ 11 or \
-newer; a clang++ of any version paired with one will do."
-#endif
 
 namespace pantr::detail {
 

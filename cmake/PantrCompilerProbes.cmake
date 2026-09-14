@@ -137,16 +137,21 @@ endif()
 # snprintf deliberately, which the old library does have, so this gate names one
 # function rather than a file.
 #
-# The probe consults the feature-test macro first and then compiles the two calls
-# format_repr actually makes -- the shortest-form overload at
-# std::chars_format::scientific and at std::chars_format::fixed, neither taking a
-# precision. Keep those two in step with format_repr, for the reason the concepts
-# probe above gives.
+# The probe compiles the two calls format_repr actually makes -- the shortest-form
+# overload at std::chars_format::scientific and at std::chars_format::fixed, neither
+# taking a precision. Keep those two in step with format_repr, for the reason the
+# concepts probe above gives.
+#
+# It does NOT consult __cpp_lib_to_chars, and that is the whole point. An earlier
+# version of this probe tested the macro first and short-circuited before the calls,
+# which refuses a working toolchain: libc++ implements the floating-point overloads
+# and leaves the macro undefined -- measured on libc++ 19.1.7, whose <version> has
+# every __cpp_lib_to_chars line commented out while the call below compiles clean.
+# That would have refused every Clang paired with libc++, which on macOS is every
+# AppleClang there is. Compiling the call is the only test that is right in both
+# directions, and it is also what design/toolchain_requirements.md already asks for:
+# probe the feature, never a version or a stand-in for one.
 check_cxx_source_compiles("
-#include <version>
-#if !defined(__cpp_lib_to_chars)
-#  error \"the standard library does not implement std::to_chars for floating-point types\"
-#endif
 #include <array>
 #include <charconv>
 #include <system_error>
@@ -168,9 +173,9 @@ if(NOT PANTR_HAS_FP_TO_CHARS)
       "pantr requires the FLOATING-POINT overloads of std::to_chars (<charconv>), "
       "and this standard library does not provide them. The bound is the standard "
       "LIBRARY, not the compiler: libstdc++ 10 implements std::to_chars for "
-      "integers only and defines no __cpp_lib_to_chars, while libstdc++ 11 and "
-      "newer provide the floating-point overloads. A clang++ paired with a newer "
-      "libstdc++ satisfies this gate at any front-end version.\n"
+      "integers only, while libstdc++ 11 and newer provide the floating-point "
+      "overloads. A clang++ paired with a newer libstdc++, or with libc++, "
+      "satisfies this gate at any front-end version.\n"
       "  Needed by: pantr::detail::format_repr, in "
       "cpp/include/pantr/core/format.hpp, which reproduces Python's repr() of a "
       "float exactly. There is no fallback: a second implementation of that rule "

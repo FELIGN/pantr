@@ -252,38 +252,6 @@ gates() {
         tail -20 "$tmp/override.log"
     fi
 
-    # The same floor, from the consumer's side. The CMake gate above measures the
-    # toolchain that BUILDS this tree, and pantr is header-only and installable --
-    # cmake/pantrConfig.cmake.in runs no probes -- so someone who installed the
-    # package and compiles against it with libstdc++ 10 never meets that gate at
-    # all. cpp/include/pantr/core/format.hpp carries an #error for them, on the
-    # pattern and for the reason cpp/include/pantr/core/mdspan.hpp states.
-    #
-    # A single translation unit, and deliberately not through CMake: that is what a
-    # consumer's compile looks like. format.hpp's include closure is <charconv>,
-    # a few other standard headers and pantr/core/scalar.hpp, so -Icpp/include is
-    # the whole include path -- no Kokkos mdspan is reachable from it, which is the
-    # trap FELIGN/pantr#376 records for anyone probing a header by hand.
-    if [[ ! -x /usr/bin/g++-10 ]]; then
-        record FAIL "format.hpp refuses libstdc++ 10 directly" \
-               "/usr/bin/g++-10 absent; nothing below the floor to refuse"
-    else
-        printf '#include "pantr/core/format.hpp"\nint main() { return 0; }\n' \
-            >"$tmp/consumer_floor.cpp"
-        if /usr/bin/g++-10 -std=c++20 -I"$ROOT/cpp/include" -fsyntax-only \
-               "$tmp/consumer_floor.cpp" >"$tmp/consumer_floor.log" 2>&1; then
-            record FAIL "format.hpp refuses libstdc++ 10 directly" \
-                   "it compiled; the #error did not fire"
-        elif grep -q "pantr requires the floating-point overloads of std::to_chars" \
-                  "$tmp/consumer_floor.log"; then
-            record PASS "format.hpp refuses libstdc++ 10 directly"
-        else
-            record FAIL "format.hpp refuses libstdc++ 10 directly" \
-                   "rejected, but not by the #error"
-            tail -20 "$tmp/consumer_floor.log"
-        fi
-    fi
-
     # The override still has to be HONOURED where it applies, because the version
     # filter below the gates still rejects something and someone will need past it
     # one day. Its subject used to be g++-10, which the raised floor now refuses

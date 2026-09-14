@@ -203,7 +203,9 @@ time by CMake, and separately at compile time by the header, each naming the fac
 skip, which is the other half of #376 -- it used to skip, so on a machine without these
 compilers the guarantee was vacuous and read as passing.
 
-**The GitHub workflow does not run any of it**: it runs GCC 14, and `ubuntu-24.04` packages
-neither Clang 10 nor GCC 10. So the floor is guaranteed by one machine, and that is a
-deliberate trade rather than an oversight -- covering it in CI needs an older runner image or
-a container, which is more than this prototype should carry.
+**The GitHub workflow does not run any of it**: it runs GCC 14, and `ubuntu-24.04` does not
+package Clang 10 -- the half that would build the tree *at* the floor. It does list `g++-10`
+in `universe`, so the refusal half could run there; what cannot is the acceptance half, and a
+floor check that only ever watches something fail is not the claim the floor makes. So the
+floor is guaranteed by one machine: a deliberate trade rather than an oversight, since
+covering it properly needs an older runner image or a container.
