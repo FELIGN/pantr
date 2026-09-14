@@ -185,8 +185,10 @@ def _windowed_multilevel_rows(  # noqa: PLR0912, PLR0913, PLR0915
         two-scale coefficient is nonnegative and truncation only zeroes entries: a row
         flagged ``True`` has a structurally non-zero entry.  It is also non-zero in
         floating point unless a product of two-scale coefficients along the chain
-        underflows, which needs a chain far deeper than any representable hierarchy of
-        moderate degree.
+        underflows.  Under uniform dyadic subdivision every non-zero coefficient is at
+        least ``2**-p``, and a level step multiplies one per direction, so that needs
+        ``L * sum(p_k)`` beyond about 1022; non-uniform knots can give smaller
+        coefficients and a shallower limit, which is not bounded here.
     """
     dim = cell_multi.shape[0]
     num_windows = cell_level + 1
@@ -203,14 +205,14 @@ def _windowed_multilevel_rows(  # noqa: PLR0912, PLR0913, PLR0915
     # Pass 1: each level's ancestor cell and the global dof of each window function
     # (-1 when it is not active at that level).
     level_cell = np.empty((num_windows, dim), dtype=np.int64)
+    level_cell[cell_level, :] = cell_multi
+    for m in range(cell_level - 1, -1, -1):
+        for k in range(dim):
+            level_cell[m, k] = level_cell[m + 1, k] // factor[k]
     window_dof = np.empty((num_windows, n), dtype=np.int64)
     window_first = np.empty(dim, dtype=np.int64)
     for m in range(num_windows):
         for k in range(dim):
-            div = 1
-            for _ in range(cell_level - m):
-                div *= factor[k]
-            level_cell[m, k] = cell_multi[k] // div
             window_first[k] = first_basis[first_basis_offset[m, k] + level_cell[m, k]]
         lo = func_offset[m]
         hi = func_offset[m + 1]
