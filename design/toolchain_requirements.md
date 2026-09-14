@@ -1,7 +1,9 @@
 # Toolchain requirements and configure-time gating
 
-**Status:** decided. Not implemented; belongs in the infrastructure PR.
-**Date:** 2026-08-19.
+**Status:** decided, and implemented in `cmake/PantrCompilerProbes.cmake`.
+**Date:** 2026-08-19, amended 2026-09-14 by FELIGN/pantr#376 -- see *The floor is the
+standard library, not the compiler* below, which supersedes the floor this note originally
+recorded.
 **Scope:** what a compiler must provide to build pantr, how that is checked, and the flag
 decisions that live in the same CMake file.
 **Companions:** `design/simd.md` (which flags earn their place) and `design/isa_dispatch.md`
@@ -99,6 +101,106 @@ endif()
 The list should only grow from observed failures, never from speculation, or it becomes the
 version table this note exists to avoid.
 
+## The floor is the standard library, not the compiler
+
+**Amendment, 2026-09-14, from FELIGN/pantr#376.** Implemented.
+
+The floor set on 2026-08-19 was a pair of compiler versions, GCC 10 and Clang 10, and it was
+true the day it was measured. It stopped being true when `cpp/include/pantr/core/format.hpp`
+began calling the **floating-point** overloads of `std::to_chars`. libstdc++ 10 implements
+`std::to_chars` for integers only and defines no `__cpp_lib_to_chars`; the floating-point
+overloads arrived in libstdc++ 11.
+
+What that exposed is that a compiler version was never the quantity being bounded:
+
+| toolchain | front end | standard library | builds pantr |
+|---|---|---|---|
+| `g++-10` | GCC 10 | libstdc++ 10 | **no** |
+| `clang++-10` | Clang 10 | libstdc++ 12, the system's | **yes** |
+
+Same year, same language level, opposite answers, and the front-end version predicts neither.
+A compiler does not carry a standard library, it is *paired* with one, and on Linux a Clang
+picks up whichever libstdc++ is installed. So the binding bound is the library:
+
+> **libstdc++ 11 or newer** -- more precisely, any standard library that provides
+> `__cpp_lib_to_chars` and the floating-point `std::to_chars` overloads.
+
+That is a raise, and it is the raise this ticket's own Non-goal forbade before its owner's
+ruling amended it. The three constraints cannot all hold: `AC1` demands that a library without
+the facility be refused, `AC5` demands that the local gate pass in full, and refusing `g++-10`
+*is* moving the declared floor. Two ways out were considered and rejected. Warning instead of
+failing makes the breakage legible without making libstdc++ 10 compile, so the floor build
+stays red and nothing is fixed. Reimplementing `format_repr` without `std::to_chars` was
+already rejected by the tree: `format.hpp`'s file comment records that a second copy of the
+repr rule is exactly how the first one went wrong, and the file is shaped so that a probe can
+name one function -- `format_general` and `format_fixed` beside it go through `snprintf`,
+which the old library does have.
+
+**It is enforced as a probe, not as a version number**, per the decision at the top of this
+note. `cmake/PantrCompilerProbes.cmake` gains a second hard gate beside concepts. It compiles
+the two `std::to_chars` calls `format_repr` actually makes and fails with a message naming the
+facility, so the refusal arrives at configure time rather than as an overload-resolution error
+inside a header part way through a build -- which is how #376 was found.
+
+**And a second time in the header, for the consumer.** A configure-time probe measures the
+toolchain that *built* the package. pantr is header-only and installable, `pantrConfig.cmake.in`
+runs no probes, and someone who installs the package and compiles against it with libstdc++ 10
+never meets the CMake gate at all -- they meet the overload-resolution error, which is the exact
+outcome the ticket's item 1 says the gate exists to prevent. So
+`cpp/include/pantr/core/format.hpp` carries an `#error` on `__cpp_lib_to_chars`, on the pattern
+and for the reason `cpp/include/pantr/core/mdspan.hpp` already states: *the header decides, not
+the build*. It differs from the mdspan case in having no second branch to select -- there is
+nothing to adapt to, so it refuses.
+
+This is one step beyond the ticket's literal Specification, which names a configure-time probe
+and stops there. It is recorded here rather than folded in quietly.
+
+No version comparison was added, and the existing one did not move. The GNU row cannot become
+11 without asserting a *library* fact through a *front-end* number, and `clang++-10` is the
+standing counterexample sitting on the machine that would have made the assertion. The version
+check keeps its unchanged meaning: nothing below 10 in either family has ever been tried.
+
+The gate is deliberately outside `PANTR_ALLOW_UNTESTED_COMPILER`. That flag says "I know this
+version is untested"; an absent facility is a different claim, and opening the gate for it
+would return exactly the template error the gate exists to replace.
+
+## Keeping it true: an absent floor compiler is a failure, not a skip
+
+The second half of #376 was not the floor but the report. `scripts/ci_local.sh` was the only
+thing checking the floor anywhere, and it `record SKIP`ped when a floor compiler was absent --
+so on any machine without one the guarantee was vacuous and read as passing. A check that
+reports absence and success identically is worse than no check, because it is believed.
+
+Of the three ways to close that, the one taken is **the floor stays local-only, and its
+section becomes mandatory**: an absent floor compiler is now a `FAIL`. The two alternatives,
+and why not:
+
+- *Run the floor in GitHub Actions.* This reverses a decision recorded in
+  `.github/workflows/cpp.yaml` whose reason still holds -- `ubuntu-24.04` packages neither
+  Clang 10 nor GCC 10, so it needs an older image or a container. That reason was about cost,
+  and #376 did not change the cost. It only changed how much the local check is worth.
+- *Keep it local-only and write down that the claim is best-effort.* Honest, and strictly
+  weaker: it records the vacuity instead of removing it, and nothing then obliges the one
+  machine to run the check at all.
+
+Promoting it costs nothing on the machine that makes the claim, where both compilers are
+present, and it turns "guaranteed by one machine" from a conditional into something that
+machine's own gate enforces. `cpp.yaml`'s trade is not reversed; its premise is made true, and
+its header now says so.
+
+The floor is therefore established by these rows, on every run of `scripts/ci_local.sh`:
+
+| row | what it asserts |
+|---|---|
+| `clang++-10 is accepted` | the gates do not stand in the way of a toolchain that works |
+| `the to_chars gate refuses g++-10` | the gate fires, and the refusal carries its own message |
+| `PANTR_ALLOW_UNTESTED_COMPILER does not open the to_chars gate` | the two are not wired together |
+| `format.hpp refuses libstdc++ 10 directly` | the consumer's half fires too, compiling one TU outside CMake |
+| `floor: clang++-10` configure / build (`-Werror`) / ctest | the tree is built whole and tested at the floor |
+
+Every one of them is a `FAIL` rather than a `SKIP` when its compiler is missing, and the
+detail line says which compiler and what it would have proved.
+
 ## The message is the deliverable
 
 A `FATAL_ERROR` naming the detected compiler, its version, the missing capability and a
@@ -178,9 +280,11 @@ lines of CMake, and the day it is needed is the day nobody wants to be writing t
   `clang++` and `x86_64-conda-linux-gnu-g++` pass a C++20 concepts probe**. `<mdspan>` is
   **absent** there, confirming on the actual build machine that the Kokkos fallback is
   required and not merely a precaution. CMake 4.4.2, Ninja 1.13.2, ccache 4.13.6.
-- **Consequently unanswered and now mostly moot:** what the probe reports on the *system*
-  GCC 10 and Clang 10, since the environment shadows them and the build will not use them.
-  What that would have told us is where the real floor sits.
+- **Measured 2026-09-14, on the system compilers the 2026-08-19 pass could not reach** (they
+  are shadowed by the conda environment, so each was named explicitly): `g++-10` passes the
+  concepts gate and **fails** the floating-point `std::to_chars` gate; `clang++-10` passes
+  both, against the system libstdc++ 12. Re-established by `scripts/ci_local.sh` on every run
+  rather than held as a dated result.
 - **Stated from knowledge and explicitly uncertain:** the exact C++20 feature matrix of GCC 10
   and Clang 10, and the version at which Clang's concepts support became reliable. The
   Clang 14 floor above is a starting guess and should be replaced by whatever the probe run on
@@ -190,8 +294,11 @@ lines of CMake, and the day it is needed is the day nobody wants to be writing t
 
 ## Open questions
 
-1. What does the probe report on the development server's GCC 10 and Clang 10? That result
-   replaces the guessed Clang 14 floor with a measured one.
+1. ~~What does the probe report on the development server's GCC 10 and Clang 10?~~
+   **Answered**, in two passes. 2026-08-19: both pass the concepts probe, which replaced the
+   guessed Clang 14 floor with a measured 10 for both families. 2026-09-14 (#376): `g++-10`
+   fails the `std::to_chars` gate and `clang++-10` passes it, which is what moved the binding
+   bound off the compiler and onto the standard library.
 2. Which compiler does `manylinux_2_28` provide? If it is older than the gate, the wheel build
    fails and either the image or the gate has to move.
 3. Should the gate run in the Python build path too, or only for a direct CMake configure?
