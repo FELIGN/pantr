@@ -474,6 +474,11 @@ def test_the_l2_projection_evaluates_only_the_owned_box_under_the_default_partit
     """
     comm = MPI.COMM_WORLD
     space = create_uniform_space(degrees, n_intervals)
+    try:
+        partition_grid(tensor_product_grid(space), comm.size, backend="block")
+    except ValueError:
+        # `auto` falls back to `rcb` exactly when `block` raises, and rcb need not give boxes.
+        pytest.skip(f"{comm.size} ranks do not factor onto {n_intervals}: the default is rcb")
     seen: list[int] = []
     counted = _counted_l2_func(seen)
 
@@ -506,10 +511,14 @@ def test_the_l2_projection_evaluates_the_whole_lattice_where_the_owned_set_is_no
     if comm.size == 1:
         pytest.skip("a single rank owns the whole grid, which is a box")
 
-    space = create_uniform_space([2, 2], [8, 8])
+    # A (2n)x(2n) grid split into n blocks leaves every block at least two cells wide in
+    # both directions. Taking a corner cell from such a box leaves a non-box, and the cell
+    # lies outside rank 0's box, so adding it grows that box by more than one cell.
+    n_side = 2 * comm.size
+    space = create_uniform_space([2, 2], [n_side, n_side])
     owner = np.array(partition_grid(tensor_product_grid(space), comm.size).cell_owner)
-    # Every block on an 8x8 grid at up to four ranks is at least 2x4 cells, so taking one
-    # corner cell away leaves rank 1 a non-box, and one cell cannot complete rank 0's box.
+    rows, cols = np.unravel_index(np.flatnonzero(owner == 1), (n_side, n_side))
+    assert np.ptp(rows) >= 1 and np.ptp(cols) >= 1, "rank 1's block is one cell wide"
     owner[int(np.flatnonzero(owner == 1).max())] = 0
     ds = DistributedSpace(space, Partition(owner, comm.size), comm)
 
