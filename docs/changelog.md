@@ -219,9 +219,11 @@ user-facing, and the ports change what it affects.
   quasi-interpolant over owned-plus-halo and discards the halo coefficients afterwards, so the
   halo is evaluated on both sides of every partition boundary: measured at four ranks on a
   24-by-24 grid, every rank evaluates the same count while owning different numbers of DOFs,
-  which is what gives it away. The per-rank cost does fall as ranks are added, which is the real
-  difference from the L2 projection, and two MPI tests now pin that difference — a docstring
-  stating a performance property being the one kind of claim nothing else in the suite checks.
+  which is what gives it away. The per-rank cost does fall as ranks are added, which at the time
+  was the real difference from the L2 projection (the L2 projection has since been restricted
+  for box-shaped owned sets, see Performance), and two MPI tests now pin the behaviour -- a
+  docstring stating a performance property being the one kind of claim nothing else in the
+  suite checks.
 - **The seven Bernstein-coefficient kernels in `pantr.bezier._root_finding_core` now state
   the precondition their Layer 3 disclaimer stands on**, `len(coeff) >= 1`. *"Inputs are
   assumed to be correct (no validation performed)"* is correct policy and was the whole of
