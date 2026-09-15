@@ -503,6 +503,33 @@ def _deep_corner_thb(*, truncate: bool = True) -> THBSplineSpace:
     return THBSplineSpace(BsplineSpace([sp, sp]), grid, truncate=truncate)
 
 
+@pytest.mark.parametrize("n_parts", [2, 3, 5])
+def test_build_local_thb_ownership_where_functions_vanish(n_parts: int) -> None:
+    # Ownership follows the filtered active lists. On a hierarchy where truncated functions
+    # vanish on many cells, every active dof still has exactly one owner and is non-zero
+    # on at least one cell its owner owns. Coverage, not a regression test: on this
+    # fixture no function vanishes on the lowest-id cell of its support, so ownership by
+    # first supported cell would give the same answer.
+    g = _deep_corner_thb()
+    hb = _deep_corner_thb(truncate=False)
+    assert sum(g.active_basis(c).size for c in range(g.grid.num_cells)) < sum(
+        hb.active_basis(c).size for c in range(hb.grid.num_cells)
+    ), "no function vanishes anywhere; the case adds nothing to the shallow one"
+    part = Partition(np.arange(g.grid.num_cells, dtype=np.int32) % n_parts, n_parts=n_parts)
+    global_owner = _thb_dof_owner(g, part)
+    owned_dofs: list[int] = []
+    for rank in range(part.n_parts):
+        loc = build_local(g, part, rank)
+        od = loc.local_to_global_dof[loc.owned_dof_mask]
+        np.testing.assert_array_equal(global_owner[od], rank)
+        owned_dofs.extend(int(d) for d in od)
+        rank_cells = np.flatnonzero(part.cell_owner == rank)
+        nonzero_here = np.unique(np.concatenate([g.active_basis(int(c)) for c in rank_cells]))
+        assert np.isin(od, nonzero_here).all(), f"rank {rank} owns a dof vanishing on its cells"
+    assert sorted(owned_dofs) == list(range(g.num_total_basis))
+    assert len(owned_dofs) == len(set(owned_dofs))
+
+
 def test_thb_halo_is_the_tensor_product_support_closure() -> None:
     # The halo must cover every function whose tensor-product support meets an owned cell,
     # including a truncated one that vanishes there: its Kraft status still shapes the
