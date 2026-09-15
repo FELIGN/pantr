@@ -392,6 +392,18 @@ class TestWindowedKernelBookkeeping:
             flagged_zero += int((~nonzero).sum())
         assert flagged_zero > 0, "the hierarchy should contain vanishing truncated functions"
 
+    def test_disagreeing_routes_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ``multilevel_operator`` keeps the kernel's flagged rows and cross-checks their
+        # count against the space; if the two routes ever disagreed (e.g. an underflowed
+        # coefficient) the rows would no longer line up with ``active_basis``, so it raises.
+        thb = self._thb()
+        ext = MultiLevelExtraction(thb)
+        cid = next(c for c in range(thb.grid.num_cells) if thb.active_basis(c).size > 1)
+        real = type(thb)._cell_contributions
+        monkeypatch.setattr(type(thb), "_cell_contributions", lambda self, c: real(self, c)[1:])
+        with pytest.raises(RuntimeError, match="flags .* non-zero rows but the space lists"):
+            ext.multilevel_operator(cid)
+
     def test_zero_flags_match_direct_evaluation(self) -> None:
         # A nonnegative combination of B-splines that has a positive coefficient on one of
         # the cell's window functions is strictly positive in the cell's interior, and a

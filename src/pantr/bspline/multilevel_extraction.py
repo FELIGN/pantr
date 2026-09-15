@@ -428,10 +428,13 @@ class MultiLevelExtraction:
         r"""Return the rows of :math:`M^\epsilon` for the functions active on cell ``cid``.
 
         The kernel emits a row for every function whose tensor-product support covers the
-        cell; the ones kept are those :meth:`THBSplineSpace.active_basis` lists, selected by
-        dof, so the operators' rows follow that list by construction.  The kernel's own
-        ``nonzero`` flags decide the same set by a different route, and
-        ``tests/test_multilevel_extraction.py`` pins that they agree.
+        cell, in increasing dof order, with a structural ``nonzero`` flag computed on the
+        way; the rows kept are the flagged ones.  :meth:`THBSplineSpace.active_basis`
+        decides the same set by a different route (the stored truncated coefficients), and
+        ``tests/test_multilevel_extraction.py`` pins that the two agree.  The count is
+        compared here as well, against the space's memoized contribution list, so a
+        disagreement (for instance a positive coefficient underflowing to ``0.0`` in the
+        space but not in the kernel's pattern) raises instead of misaligning rows and dofs.
 
         Args:
             cid (int): Active cell flat id in ``[0, num_elements)``.
@@ -441,9 +444,18 @@ class MultiLevelExtraction:
 
         Raises:
             IndexError: If ``cid`` is out of range.
+            RuntimeError: If the kernel's flagged rows and the space's active functions on
+                ``cid`` differ in number.
         """
-        rows, dofs, _ = self._windowed_rows(cid)
-        return rows[np.isin(dofs, self._space.active_basis(cid), assume_unique=True)]
+        rows, _, nonzero = self._windowed_rows(cid)
+        kept = rows[nonzero]
+        expected = len(self._space._cell_contributions(cid))
+        if kept.shape[0] != expected:
+            raise RuntimeError(
+                f"cell {cid}: the extraction kernel flags {kept.shape[0]} non-zero rows but "
+                f"the space lists {expected} active functions"
+            )
+        return kept
 
     def _windowed_rows(
         self, cid: int
