@@ -934,7 +934,9 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(description="End-to-end cp_size dispatch timing, #481 AC1.")
     parser.add_argument("--child", metavar="SO", help=argparse.SUPPRESS)
-    parser.add_argument("--commit", default="HEAD", help="commit to export and build both arms of")
+    parser.add_argument(
+        "--commit", default="HEAD", help="commit for shipped, and variant unless --against"
+    )
     parser.add_argument("--against", help="build the variant from this commit, unpatched")
     parser.add_argument("--cpu", type=int, help="pin every timed process to this CPU")
     parser.add_argument("--blocks", type=int, default=3, help="fresh sets of processes")
