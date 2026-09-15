@@ -666,6 +666,7 @@ class TestNoZeroRows:
         thb = _corner_space(case)
         ext = MultiLevelExtraction(thb)
         n_single = int(np.prod([p + 1 for p in thb.degrees]))
+        dropped = 0
         for cid in range(thb.grid.num_cells):
             k = thb.active_basis(cid).size
             m_op = ext.multilevel_operator(cid)
@@ -674,6 +675,10 @@ class TestNoZeroRows:
             assert c_op.shape == (k, n_single)
             assert np.all(np.any(m_op != 0.0, axis=1)), f"cell {cid}: M^e has a zero row"
             assert np.all(np.any(c_op != 0.0, axis=1)), f"cell {cid}: C^e has a zero row"
+            dropped += ext._windowed_rows(cid)[0].shape[0] - k
+        # A truncated case must have had rows to drop, or it tests nothing; an untruncated
+        # one must have had none.
+        assert (dropped > 0) == case.truncate, f"{dropped} rows dropped"
 
 
 class TestDeepHierarchy:

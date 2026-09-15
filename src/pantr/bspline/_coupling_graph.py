@@ -2,7 +2,10 @@
 
 Builds the graph whose vertices are the cells of a space's grid and whose edges
 join cells that share at least one basis function (DOF), weighted by the number
-of shared functions. This is the input a graph partitioner (METIS / Scotch)
+of shared functions. On a THB space a function is shared by two cells when it is
+non-zero on both, which is what couples their element matrices; the distributed halo
+(:func:`~pantr.bspline.build_local`) is wider, since it covers every function whose
+tensor-product support meets an owned cell. This is the input a graph partitioner (METIS / Scotch)
 needs to minimize cross-rank DOF coupling; it is produced serially with no MPI
 and no external dependency, and consumed later by the optional graph-partition
 backends.
