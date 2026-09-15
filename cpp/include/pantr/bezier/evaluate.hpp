@@ -113,6 +113,7 @@
 #include "pantr/bezier/bezier.hpp"
 #include "pantr/bezier/kernels_1d.hpp"
 #include "pantr/core/mdspan.hpp"
+#include "pantr/core/precondition.hpp"
 #include "pantr/core/scalar.hpp"
 
 namespace pantr::bezier {
@@ -149,21 +150,65 @@ void tabulate_direction(std::size_t degree, span2d<const T> points, std::size_t 
 /// adds terms in ascending index order, which is what the oracle does; see the
 /// file comment for why both halves of that sentence are load-bearing.
 ///
+/// `Stride` fixes the block size at compile time; the default, `std::dynamic_extent`,
+/// leaves it to `stride`. Both read this one body, so a fixed instantiation performs
+/// the same operations in the same order and differs only in what the compiler knows
+/// about the inner trip count. `contract_lattice_direction` says who fixes it.
+///
 /// \param weights One weight per term of the contracted axis, `n_terms` of them.
 /// \param block The values, `(n_terms, stride)` row-major.
-/// \param stride The size of one term's block.
+/// \param stride The size of one term's block. Must equal `Stride` where that is
+///        fixed, since `block` and `out` are sized by it.
 /// \param out The contracted block, `stride` values.
-template <Real T>
+template <Real T, std::size_t Stride = std::dynamic_extent>
 void contract_leading_axis(std::span<const T> weights, std::span<const T> block,
                            std::size_t stride, std::span<T> out) {
-    for (std::size_t t = 0; t < stride; ++t) {
+    PANTR_PRECONDITION(Stride == std::dynamic_extent || stride == Stride,
+                       "a fixed Stride must equal the block size the spans are sized by");
+    const std::size_t width = Stride == std::dynamic_extent ? stride : Stride;
+    for (std::size_t t = 0; t < width; ++t) {
         out[t] = T(0);
     }
     for (std::size_t term = 0; term < weights.size(); ++term) {
         const T weight = weights[term];
-        const std::size_t offset = term * stride;
-        for (std::size_t t = 0; t < stride; ++t) {
+        const std::size_t offset = term * width;
+        for (std::size_t t = 0; t < width; ++t) {
             out[t] = static_cast<T>(out[t] + weight * block[offset + t]);
+        }
+    }
+}
+
+/// Contract one direction of the lattice schedule, for every outer block and point.
+///
+/// The loop nest `evaluate_on_lattice` runs per direction, lifted out so it can be
+/// instantiated with the block size fixed. The lattice schedule contracts its last
+/// direction against `cp_size` values, one to four in pantr, once per lattice point,
+/// so nearly every call has a trip count too short to reach a vectorised body; a
+/// compile-time count turns each call into a few unrolled statements (issue #481).
+///
+/// **`evaluate` does not come through here**, and that is deliberate. Its per-point
+/// schedule calls the runtime kernel unchanged, because the alternative, a switch
+/// inside the kernel that both schedules would reach, was measured to cost that
+/// path; `scripts/measure_bezier_cp_size_dispatch.py` carries the measurement.
+///
+/// \param basis The direction's tabulated basis, `(m_pts, n_terms)` row-major.
+/// \param front The running result before this direction, `(outer, n_terms, inner)`.
+/// \param outer The product of the extents already contracted.
+/// \param m_pts The number of points in this direction.
+/// \param n_terms The number of terms of the contracted axis.
+/// \param inner The block size: the extents still to come, times `cp_size`. Must
+///        equal `Stride` where that is fixed.
+/// \param back The running result after this direction, `(outer, m_pts, inner)`.
+template <Real T, std::size_t Stride = std::dynamic_extent>
+void contract_lattice_direction(std::span<const T> basis, std::span<const T> front,
+                                std::size_t outer, std::size_t m_pts, std::size_t n_terms,
+                                std::size_t inner, std::span<T> back) {
+    for (std::size_t o = 0; o < outer; ++o) {
+        for (std::size_t m = 0; m < m_pts; ++m) {
+            contract_leading_axis<T, Stride>(
+                std::span<const T>(&basis[m * n_terms], n_terms),
+                std::span<const T>(&front[o * n_terms * inner], n_terms * inner), inner,
+                std::span<T>(&back[((o * m_pts) + m) * inner], inner));
         }
     }
 }
@@ -384,13 +429,33 @@ void evaluate_on_lattice(const Bezier<T>& bezier,
         tabulate_bernstein_1d<T>(static_cast<int>(bezier.degree(d)), column,
                                  span2d<T>(basis.data(), m_pts, n_terms));
 
-        for (std::size_t o = 0; o < outer; ++o) {
-            for (std::size_t m = 0; m < m_pts; ++m) {
-                detail::contract_leading_axis<T>(
-                    std::span<const T>(&basis[m * n_terms], n_terms),
-                    std::span<const T>(&front[o * n_terms * inner], n_terms * inner), inner,
-                    std::span<T>(&back[((o * m_pts) + m) * inner], inner));
-            }
+        // Once per direction. The fixed widths are `cp_size`'s range in pantr, from a
+        // scalar field to a rational curve or surface in 3-D, which is the block the
+        // last direction always has; every other width takes the runtime body.
+        const std::span<const T> basis_view(basis);
+        const std::span<const T> front_view(front);
+        const std::span<T> back_view(back);
+        switch (inner) {
+            case 1:
+                detail::contract_lattice_direction<T, 1>(basis_view, front_view, outer, m_pts,
+                                                         n_terms, inner, back_view);
+                break;
+            case 2:
+                detail::contract_lattice_direction<T, 2>(basis_view, front_view, outer, m_pts,
+                                                         n_terms, inner, back_view);
+                break;
+            case 3:
+                detail::contract_lattice_direction<T, 3>(basis_view, front_view, outer, m_pts,
+                                                         n_terms, inner, back_view);
+                break;
+            case 4:
+                detail::contract_lattice_direction<T, 4>(basis_view, front_view, outer, m_pts,
+                                                         n_terms, inner, back_view);
+                break;
+            default:
+                detail::contract_lattice_direction<T>(basis_view, front_view, outer, m_pts,
+                                                      n_terms, inner, back_view);
+                break;
         }
         front.swap(back);
         extents[d] = m_pts;
