@@ -41,6 +41,17 @@ shape the ticket's specification would ship. Both builds use the project's own
 CMake, so its numerical flags (``-O3``, ``-ffp-contract=on``, no ``-ffast-math``,
 no ``-march``) hold for both by construction.
 
+With ``--against <commit>`` nothing is patched: ``shipped`` is ``--commit`` and
+``variant`` is that second commit as committed. That is how the dispatch which
+landed is timed against the tree before it, with the same arms, controls and
+identity check::
+
+    python scripts/measure_bezier_cp_size_dispatch.py --commit <before> --against <after> --cpu <n>
+
+The patched mode reads the kernel's pre-dispatch shape and refuses a header where
+``contract_leading_axis`` is no longer a single-parameter template, so run it with
+``--commit`` at a tree from before the dispatch landed.
+
 How the timing is kept honest on a shared host
 ----------------------------------------------
 
@@ -924,6 +935,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="End-to-end cp_size dispatch timing, #481 AC1.")
     parser.add_argument("--child", metavar="SO", help=argparse.SUPPRESS)
     parser.add_argument("--commit", default="HEAD", help="commit to export and build both arms of")
+    parser.add_argument("--against", help="build the variant from this commit, unpatched")
     parser.add_argument("--cpu", type=int, help="pin every timed process to this CPU")
     parser.add_argument("--blocks", type=int, default=3, help="fresh sets of processes")
     parser.add_argument("--reps", type=int, default=10, help="repetitions per block")
@@ -961,6 +973,47 @@ def main() -> int:
         return measure(Path(scratch), args)
 
 
+def resolve(revision: str) -> str:
+    """Resolve a revision to the commit SHA both exports are taken from.
+
+    Args:
+        revision (str): Anything `git rev-parse` accepts.
+
+    Returns:
+        str: The full SHA.
+    """
+    return subprocess.run(
+        ["git", "rev-parse", "--verify", f"{revision}^{{commit}}"],
+        capture_output=True, text=True, check=True, cwd=repo_root(),
+    ).stdout.strip()  # fmt: skip
+
+
+def export_arms(work: Path, commit: str, against: str | None) -> tuple[dict[str, Path], str, str]:
+    """Export the two source trees, patching the variant's unless it has its own commit.
+
+    Args:
+        work (Path): The directory the trees go under.
+        commit (str): The shipped arm's commit, and the variant's too when `against`
+            is None.
+        against (str | None): The variant's commit, exported unpatched, or None to
+            patch `commit`'s tree with :func:`specialise_kernel`.
+
+    Returns:
+        tuple[dict[str, Path], str, str]: The trees by arm name, the patched region
+        (empty when nothing was patched), and a line saying what each arm is.
+    """
+    trees = {name: work / f"{name}-src" for name in ("shipped", "variant")}
+    for name, tree in trees.items():
+        tree.mkdir(parents=True, exist_ok=False)
+        export_tree(against if name == "variant" and against is not None else commit, tree)
+    if against is not None:
+        return trees, "", f"shipped = commit {commit}; variant = commit {against}, unpatched"
+    header = trees["variant"] / _HEADER
+    patched, region = specialise_kernel(header.read_text())
+    header.write_text(patched)
+    return trees, region, f"commit {commit} (both arms); variant = that commit + the patch below"
+
+
 def measure(work: Path, args: argparse.Namespace) -> int:
     """Build both extensions, time them, and report.
 
@@ -973,21 +1026,12 @@ def measure(work: Path, args: argparse.Namespace) -> int:
         turned out identical, used different compilers, changed on disk, or computed
         different outputs.
     """
-    commit = subprocess.run(
-        ["git", "rev-parse", args.commit], capture_output=True, text=True, check=True,
-        cwd=repo_root(),
-    ).stdout.strip()  # fmt: skip
+    commit = resolve(args.commit)
+    against = resolve(args.against) if args.against is not None else None
     load_before = uptime()
     cells = sweep(args.dims, args.degrees, args.grids)
 
-    trees = {name: work / f"{name}-src" for name in ("shipped", "variant")}
-    for tree in trees.values():
-        tree.mkdir(parents=True, exist_ok=False)
-        export_tree(commit, tree)
-    header = trees["variant"] / _HEADER
-    patched, region = specialise_kernel(header.read_text())
-    header.write_text(patched)
-
+    trees, region, provenance = export_arms(work, commit, against)
     print("Building the shipped extension ...", file=sys.stderr)
     shipped = build_extension(trees["shipped"], work / "shipped-build", args.cmake_arg)
     print("Building the variant extension ...", file=sys.stderr)
@@ -997,7 +1041,7 @@ def measure(work: Path, args: argparse.Namespace) -> int:
         [*args.cmake_arg, *fetched_sources(work / "shipped-build")],
     )
     if sha256(shipped) == sha256(variant):
-        print("The two builds are identical: the patch changed nothing.", file=sys.stderr)
+        print("The two builds are identical: nothing differs to time.", file=sys.stderr)
         return 1
     compiler = cache_value(work / "shipped-build", "CMAKE_CXX_COMPILER")
     if cache_value(work / "variant-build", "CMAKE_CXX_COMPILER") != compiler:
@@ -1021,7 +1065,7 @@ def measure(work: Path, args: argparse.Namespace) -> int:
 
     print("\n#481 AC1: Bezier.evaluate end to end, shipped (A, A2) against variant (B)")
     print("=" * 100)
-    print(f"commit {commit} (both arms); variant = that commit + the patch below")
+    print(provenance)
     print(f"python {sys.version.split()[0]}, {platform.platform()}")
     print(f"cpu {cpu_model()}; timed processes pinned to CPU {args.cpu}, one thread each")
     print(f"compiler {compiler_version} ({compiler})")
@@ -1035,8 +1079,9 @@ def measure(work: Path, args: argparse.Namespace) -> int:
         "averages above); every spread below includes their load."
     )
     print(f"invocation: {' '.join([Path(sys.executable).name, *sys.argv])}")
-    print("\nThe variant's kernel, as built:\n")
-    print(region)
+    if region:
+        print("\nThe variant's kernel, as built:\n")
+        print(region)
 
     rows = summarise(cells, samples, counts)
     print(
@@ -1058,6 +1103,7 @@ def measure(work: Path, args: argparse.Namespace) -> int:
             json.dumps(
                 {
                     "commit": commit,
+                    "against": against,
                     "cells": [list(c) for c in cells],
                     "calls": counts,
                     "samples": {f"{i}:{arm}": v for (i, arm), v in samples.items()},
