@@ -232,6 +232,9 @@ nitpick_ignore = [
     ("py:class", "Path"),
     # Private structural protocol; not in __all__ and not cross-referenceable
     ("py:class", "_AffineMap"),
+    # Private NamedTuple of MultiLevelExtraction's frozen windowed tables, named in
+    # that class's `Attributes:` section; not in __all__ and not cross-referenceable.
+    ("py:class", "_WindowTables"),
     # The Python grid base, shown by :show-inheritance: on HierarchicalGrid and
     # TensorProductGrid. Private, and deliberately so: it is the port's parity
     # oracle and it goes away with the last Python grid. `_GridWrapper` is its
