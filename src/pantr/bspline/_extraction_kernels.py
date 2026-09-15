@@ -56,7 +56,9 @@ dispatch to the per-cell kernels inside the ``prange`` body.
   other is computed and discarded -- so **an identity-flagged ``M_k`` is not
   required to be square by this module**, unlike the C++ port's
   ``PANTR_PRECONDITION(identity_modes_are_square(...))`` (see
-  ``cpp/include/pantr/bspline/extraction_kernels.hpp``).
+  ``cpp/include/pantr/bspline/extraction_kernels.hpp``). The Layer 2 dispatchers in
+  :mod:`pantr.bspline._extraction_helpers` refuse a non-square identity operator
+  before any kernel runs, so the laxity is not reachable through them.
 - The batch (``_many_``) kernels add one precondition of their own:
   ``cell_indices[cell, k]`` and ``idx_map_k[cell_indices[cell, k]]`` are both
   read before ``is_id_k`` can short-circuit anything, so both must lie
