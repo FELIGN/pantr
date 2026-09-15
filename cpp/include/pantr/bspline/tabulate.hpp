@@ -109,57 +109,30 @@
 /// `pow` from `bernstein.hpp` and the falling factorial from `bernstein_deriv`, and
 /// both of those need the Rule 12 gates.
 ///
-/// **One input makes the two backends disagree about the KIND of failure, and it is
-/// not covered by any bound.** Step 1 of A2.3 guards its division against a zero
-/// denominator; step 2's three divisions by `ndu[...]` carry no guard, in either
-/// backend. Where one of them is zero the oracle raises `ZeroDivisionError` and this
-/// kernel returns `nan` -- an exception on one side and a silent non-finite value on
-/// the other.
+/// **Step 2 of A2.3 carries no guard against a zero denominator, in either backend.**
+/// Step 1 guards its division; step 2's three divisions by `ndu[...]` do not. Where one
+/// of them is zero the oracle raises `ZeroDivisionError` and this kernel returns `nan`:
+/// an exception on one side and a silent non-finite value on the other.
 ///
-/// Measured on the shipped build at both widths, and reproducible rather than quoted.
-/// Build the extension (`pip install -e .`, which configures with
-/// `PANTR_BUILD_PYTHON=ON`) and run:
+/// The input this was found on is no longer constructible. It was a knot vector whose
+/// last knot repeats more than `degree + 1` times, e.g.
+/// `BsplineSpace1D([0, 0, 0, 0, 0.5, 1, 1, 1, 1, 1], 3)`, evaluated at the right domain
+/// endpoint. Both backends' constructors now refuse it ("the last knot may repeat at
+/// most 4 times"), checked at `float64` and `float32`; the refusal landed in `f1a0ea0`,
+/// which closed this divergence the way this note had said an upstream fix would.
 ///
-/// ```py
-/// import numpy as np
-/// from pantr._backend import Backend, use_backend
-/// from pantr.bspline import BsplineSpace1D
-/// knots = np.array([0, 0, 0, 0, 0.5, 1, 1, 1, 1, 1], dtype=np.float64)  # or float32
-/// for backend in (Backend.PYTHON, Backend.CPP):
-///     with use_backend(backend):
-///         space = BsplineSpace1D(knots, 3)          # accepted: num_basis 6
-///         point = np.array([float(space.domain[1])], dtype=knots.dtype)
-///         try:
-///             block, _ = space.tabulate_basis_derivatives(point, 3)
-///             print(backend.name, "returned", np.count_nonzero(~np.isfinite(block)),
-///                   "non-finite of", block.size)
-///         except Exception as exc:
-///             print(backend.name, "raised", type(exc).__name__)
-/// ```
+/// No other constructible input is known to reach step 2's zero denominator. That is an
+/// observation, not a proof: a sweep over degrees 1 to 5, an interior knot of every
+/// multiplicity up to `degree + 1`, both widths and both backends, evaluating every
+/// derivative at every unique knot and next to the repeated one, returned finite values
+/// everywhere. A future change to what the constructor accepts should re-check it.
 ///
-/// What it printed here: `PYTHON raised ZeroDivisionError` and
-/// `CPP returned 9 non-finite of 16`, identically at `float64` and `float32`. Interior
-/// points on the same space come back finite under both, so the right domain endpoint
-/// is the trigger. The value tabulation agrees between the backends -- both return a
-/// finite row summing to zero -- because step 1's guard covers it.
-///
-/// **It is not guarded here, and the reason is that no narrow guard exists.** Guarding
-/// step 2's divisions the way step 1 guards its own is provably behaviour-preserving --
-/// it can only fire where the oracle divides by zero, and there the oracle returns
-/// nothing at all -- but it converts the `nan` into a finite zero, which is a quieter
-/// wrong answer rather than a fix. Detecting the case structurally does not work
-/// either: the condition is "the point's knot window contains a zero-width interval",
-/// and the parity suite's own `empty-span-p3` case has four such intervals in every
-/// window and is served correctly by both backends, so that test is over-broad by a
-/// wide margin.
-///
-/// The root cause is upstream of this header: the constructor accepts a space on which
-/// tabulation is not defined -- the values sum to zero rather than one there, in both
-/// backends -- and that is a pre-existing defect of the oracle, reproducible on the
-/// base commit with none of this port involved. It is reported rather than fixed here,
-/// per the project rule that a numerical wrong-answer bug is not folded into unrelated
-/// work. Closing it upstream closes this divergence with it, since the input stops
-/// being constructible.
+/// **It is still not guarded here.** Guarding step 2's divisions the way step 1 guards
+/// its own would only fire where the oracle divides by zero, but it would turn the
+/// `nan` into a finite zero, which is a quieter wrong answer rather than a fix. And
+/// "the point's knot window contains a zero-width interval" is not the condition: the
+/// parity suite's `empty-span-p3` case has such intervals in every window and both
+/// backends serve it correctly.
 ///
 /// ## Why the dispatch stays on the Python side
 ///
