@@ -2326,15 +2326,19 @@ class TestMaxActivePerCell:
         # A level interface makes some cell see more than the tensor-product count.
         assert loop_max > int(np.prod([d + 1 for d in thb.degrees]))
 
-    def test_thb_and_hb_agree(self) -> None:
-        """Truncation changes coefficients, not the active set, so the count is the same."""
+    def test_thb_is_narrower_than_hb(self) -> None:
+        """Truncation annihilates coarse functions inside the refined region, so THB lists fewer.
+
+        On this hierarchy the widest HB cell sees a coarse function whose every finer child
+        is active; truncated, it vanishes there and is not listed.
+        """
         grid = _grid_2d()
         grid = grid.refine(0, [0, 0], [2, 2])
         root = _root_2d()
 
         thb = THBSplineSpace(root, grid, truncate=True)
         hb = THBSplineSpace(root, grid, truncate=False)
-        assert thb.max_active_per_cell() == hb.max_active_per_cell()
+        assert thb.max_active_per_cell() < hb.max_active_per_cell()
 
     def test_cached_across_calls(self) -> None:
         """The result is memoized: a second call recomputes nothing."""
@@ -2347,6 +2351,162 @@ class TestMaxActivePerCell:
         thb._contrib_cache.clear()
         assert thb.max_active_per_cell() == first
         assert thb._contrib_cache == {}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Functions that vanish on a cell are not active there (#336 AC2, AC7)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _nonuniform_root_2d() -> BsplineSpace:
+    """Degree-(3, 2) open space on [0, 1]^2 with unequal spans in both directions."""
+    sp3 = BsplineSpace1D(np.array([0.0] * 4 + [0.1, 0.35, 0.5, 0.9] + [1.0] * 4), 3)
+    sp2 = BsplineSpace1D(np.array([0.0] * 3 + [0.2, 0.3, 0.7] + [1.0] * 3), 2)
+    return BsplineSpace([sp3, sp2])
+
+
+def _vanishing_cases() -> list[tuple[str, BsplineSpace, HierarchicalGrid, int | None]]:
+    """Hierarchies with truncated functions that vanish on some cells.
+
+    Returns:
+        list[tuple[str, BsplineSpace, HierarchicalGrid, int | None]]: ``(id, root, grid,
+        regularity)`` per case: dyadic and non-dyadic factors, reduced regularity,
+        unequal knot spans, one to three dimensions.
+    """
+    cases: list[tuple[str, BsplineSpace, HierarchicalGrid, int | None]] = []
+
+    grid = _grid_1d().refine(0, [0], [2]).refine(1, [0], [2])
+    cases.append(("1d-p2-dyadic", _root_1d(), grid, None))
+
+    grid = _grid_2d().refine(0, [0, 0], [2, 2]).refine(1, [0, 0], [2, 2])
+    cases.append(("2d-p2-dyadic", _root_2d(), grid, None))
+
+    root = create_uniform_space([2, 2], [4, 4])
+    grid = hierarchical_grid(uniform_grid([[0.0, 1.0]] * 2, [4, 4]), [3, 2])
+    grid = grid.refine(0, [0, 0], [3, 2]).refine(1, [0, 0], [6, 3])
+    cases.append(("2d-p2-factor32-c0", root, grid, 0))
+
+    root = _nonuniform_root_2d()
+    grid = hierarchical_grid(tensor_product_grid(root), 2)
+    grid = grid.refine(0, [1, 0], [4, 3]).refine(1, [2, 0], [6, 4])
+    cases.append(("2d-p32-unequal-spans", root, grid, None))
+
+    root = create_uniform_space([2, 2, 2], [4, 4, 4])
+    grid = hierarchical_grid(uniform_grid([[0.0, 1.0]] * 3, [4, 4, 4]), 2)
+    grid = grid.refine(0, [0, 0, 0], [2, 2, 2])
+    cases.append(("3d-p2-dyadic", root, grid, None))
+    return cases
+
+
+def _non_vanishing_supported(thb: THBSplineSpace, hb: THBSplineSpace, cid: int) -> list[int]:
+    """List the functions supported on ``cid`` that do not vanish there, by evaluation.
+
+    The oracle does not read the space's own zero-on-cell decision. ``hb`` (the same
+    hierarchy with ``truncate=False``) lists every active function whose tensor-product
+    support covers the cell, since nothing in it is truncated. Each truncated THB function
+    among them is then evaluated from its stored coefficients at the cell midpoint.
+
+    One interior point decides it exactly. On a level-``L`` cell every function is a
+    combination of the level-``L`` B-splines supported on the cell with nonnegative
+    coefficients (two-scale coefficients are nonnegative and truncation only zeroes), and
+    each of those B-splines is strictly positive in the cell's interior. So the function is
+    either identically zero there, and its value is an exact sum of zeros, or strictly
+    positive at every interior point.
+
+    Args:
+        thb (THBSplineSpace): The truncated space.
+        hb (THBSplineSpace): The same hierarchy, untruncated.
+        cid (int): Active cell id.
+
+    Returns:
+        list[int]: Sorted global dofs.
+    """
+    lo, hi = thb.grid.cell_bounds(cid)
+    mid = (0.5 * (np.asarray(lo) + np.asarray(hi))).reshape(1, thb.dim)
+    kept: list[int] = []
+    for dof in hb.active_basis(cid).tolist():
+        entry = thb._trunc.get(dof)
+        if entry is None:
+            kept.append(dof)
+            continue
+        value = thb._truncated_column(entry, (0,) * thb.dim, mid, {})
+        if value[0] != 0.0:
+            kept.append(dof)
+    return kept
+
+
+_VANISHING_CASES = _vanishing_cases()
+
+
+class TestVanishingFunctionsAreNotActive:
+    """A truncated function identically zero on a cell is not active on that cell."""
+
+    @pytest.mark.parametrize(
+        ("root", "grid", "regularity"),
+        [case[1:] for case in _VANISHING_CASES],
+        ids=[case[0] for case in _VANISHING_CASES],
+    )
+    def test_active_basis_drops_exactly_the_vanishing_functions(
+        self, root: BsplineSpace, grid: HierarchicalGrid, regularity: int | None
+    ) -> None:
+        thb = THBSplineSpace(root, grid, regularity=regularity)
+        hb = THBSplineSpace(root, grid, truncate=False, regularity=regularity)
+        dropped = 0
+        for cid in range(grid.num_cells):
+            expected = _non_vanishing_supported(thb, hb, cid)
+            np.testing.assert_array_equal(thb.active_basis(cid), expected, err_msg=f"cell {cid}")
+            dropped += hb.active_basis(cid).size - len(expected)
+        assert dropped > 0, "no function vanishes on any cell; the case tests nothing"
+
+    @pytest.mark.parametrize(
+        ("root", "grid", "regularity"),
+        [case[1:] for case in _VANISHING_CASES],
+        ids=[case[0] for case in _VANISHING_CASES],
+    )
+    def test_hb_lists_every_supported_function(
+        self, root: BsplineSpace, grid: HierarchicalGrid, regularity: int | None
+    ) -> None:
+        """Nothing is truncated in HB, so nothing is dropped: every listed value is positive."""
+        hb = THBSplineSpace(root, grid, truncate=False, regularity=regularity)
+        for cid in range(grid.num_cells):
+            lo, hi = grid.cell_bounds(cid)
+            mid = (0.5 * (np.asarray(lo) + np.asarray(hi))).reshape(1, hb.dim)
+            values, _ = hb.tabulate_basis(cid, mid)
+            assert np.all(values[0] > 0.0), f"cell {cid}"
+
+    @pytest.mark.parametrize(
+        ("root", "grid", "regularity"),
+        [case[1:] for case in _VANISHING_CASES],
+        ids=[case[0] for case in _VANISHING_CASES],
+    )
+    def test_no_tabulated_column_vanishes(
+        self, root: BsplineSpace, grid: HierarchicalGrid, regularity: int | None
+    ) -> None:
+        """Every column of ``tabulate_basis`` is positive at the cell midpoint."""
+        thb = THBSplineSpace(root, grid, regularity=regularity)
+        for cid in range(grid.num_cells):
+            lo, hi = grid.cell_bounds(cid)
+            mid = (0.5 * (np.asarray(lo) + np.asarray(hi))).reshape(1, thb.dim)
+            values, dofs = thb.tabulate_basis(cid, mid)
+            np.testing.assert_array_equal(dofs, thb.active_basis(cid))
+            derivs, deriv_dofs = thb.tabulate_basis_derivatives(cid, mid, 1)
+            np.testing.assert_array_equal(deriv_dofs, dofs)
+            assert derivs.shape == values.shape
+            assert np.all(values[0] > 0.0), f"cell {cid}: a listed function vanishes"
+
+    @pytest.mark.parametrize(
+        ("root", "grid", "regularity"),
+        [case[1:] for case in _VANISHING_CASES],
+        ids=[case[0] for case in _VANISHING_CASES],
+    )
+    def test_max_active_per_cell_is_the_non_vanishing_width(
+        self, root: BsplineSpace, grid: HierarchicalGrid, regularity: int | None
+    ) -> None:
+        thb = THBSplineSpace(root, grid, regularity=regularity)
+        hb = THBSplineSpace(root, grid, truncate=False, regularity=regularity)
+        widest = max(len(_non_vanishing_supported(thb, hb, c)) for c in range(grid.num_cells))
+        assert thb.max_active_per_cell() == widest
+        assert hb.max_active_per_cell() >= widest
 
 
 # ──────────────────────────────────────────────────────────────────────────────

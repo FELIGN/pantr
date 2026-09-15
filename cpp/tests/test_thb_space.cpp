@@ -168,22 +168,27 @@ double gamma_of(std::int64_t m) {
     return mu / (1.0 - mu);
 }
 
-/// How far the active basis is from summing to one, in the finest level's basis.
-///
-/// Pushes every active function's coefficient vector to the finest level by pure
-/// two-scale refinement -- no truncation -- and returns the largest deviation of the sum
-/// from one. See the file comment for what makes this an independent check.
-///
-/// \param space The space to grade.
-/// \return `max |sum_i c_i - 1|` over the finest tensor-product basis.
-double partition_of_unity_defect(const THBSplineSpace<double>& space) {
-    const auto d = static_cast<std::size_t>(space.dim());
-    const std::int64_t top = space.num_levels() - 1;
+/// One function's coefficient vector in the finest level's tensor-product basis.
+struct FinestBox {
+    std::vector<std::int64_t> box_lo;  ///< Per-direction lower function index.
+    std::vector<std::int64_t> shape;   ///< Per-direction box width.
+    std::vector<double> coeffs;        ///< Row-major over `shape`.
+};
 
-    // The two-scale matrices, one per level transition per direction.
-    std::vector<std::vector<std::vector<double>>> oslo;
-    std::vector<std::vector<std::int64_t>> cols;
-    for (std::int64_t m = 0; m < top; ++m) {
+/// The two-scale matrices of every level transition, and each one's column count.
+struct TwoScaleTables {
+    std::vector<std::vector<std::vector<double>>> oslo;  ///< `[m][k]`, row-major.
+    std::vector<std::vector<std::int64_t>> cols;         ///< `[m][k]`, the coarse count.
+};
+
+/// Build the two-scale matrices a space's level spaces define.
+///
+/// \param space The space.
+/// \return The matrices, indexed by transition and direction.
+TwoScaleTables two_scale_tables(const THBSplineSpace<double>& space) {
+    const auto d = static_cast<std::size_t>(space.dim());
+    TwoScaleTables tables;
+    for (std::int64_t m = 0; m + 1 < space.num_levels(); ++m) {
         std::vector<std::vector<double>> per_direction;
         std::vector<std::int64_t> per_direction_cols;
         for (std::size_t k = 0; k < d; ++k) {
@@ -195,9 +200,116 @@ double partition_of_unity_defect(const THBSplineSpace<double>& space) {
                 old_space.degree(), old_space.knots(), new_space.knots()));
             per_direction_cols.push_back(old_space.num_basis());
         }
-        oslo.push_back(std::move(per_direction));
-        cols.push_back(std::move(per_direction_cols));
+        tables.oslo.push_back(std::move(per_direction));
+        tables.cols.push_back(std::move(per_direction_cols));
     }
+    return tables;
+}
+
+/// Push one active function to the finest level by pure two-scale refinement.
+///
+/// A truncated function starts from its stored box, any other from a unit coefficient at
+/// its own level. No truncation is applied on the way: what is pushed is the function the
+/// space stores, expressed in a finer basis.
+///
+/// \param space The space.
+/// \param tables Its two-scale matrices.
+/// \param dof The global dof.
+/// \return The finest-level coefficient box.
+FinestBox pushed_to_finest(const THBSplineSpace<double>& space, const TwoScaleTables& tables,
+                           std::int64_t dof) {
+    const auto d = static_cast<std::size_t>(space.dim());
+    const std::int64_t top = space.num_levels() - 1;
+    const std::optional<pantr::bspline::TruncatedView> view = space.truncated(dof);
+    std::int64_t start = 0;
+    FinestBox box{std::vector<std::int64_t>(d), std::vector<std::int64_t>(d, 1), {}};
+    if (view.has_value()) {
+        start = view->rep_level;
+        for (std::size_t k = 0; k < d; ++k) {
+            box.box_lo[k] = view->box_lo[k];
+            box.shape[k] = view->shape[k];
+        }
+        box.coeffs.assign(view->coeffs.begin(), view->coeffs.end());
+    } else {
+        start = space.dof_level(dof);
+        const std::span<const std::int64_t> active = space.active_function_indices(start);
+        const std::int64_t position = dof - space.level_offsets()[static_cast<std::size_t>(start)];
+        std::int64_t flat = active[static_cast<std::size_t>(position)];
+        for (std::size_t k = d; k > 0; --k) {
+            const std::int64_t n =
+                space.level_space_ref(start).space_ref(static_cast<std::int64_t>(k - 1)).num_basis();
+            box.box_lo[k - 1] = flat % n;
+            flat /= n;
+        }
+        box.coeffs.assign(1, 1.0);
+    }
+
+    for (std::int64_t level = start; level < top; ++level) {
+        const auto m = static_cast<std::size_t>(level);
+        for (std::size_t k = 0; k < d; ++k) {
+            const std::vector<double>& alpha = tables.oslo[m][k];
+            const std::int64_t num_cols = tables.cols[m][k];
+            const std::int64_t rows = static_cast<std::int64_t>(alpha.size()) / num_cols;
+            std::int64_t new_lo = -1;
+            std::int64_t new_hi = -1;
+            for (std::int64_t row = 0; row < rows; ++row) {
+                bool non_zero = false;
+                for (std::int64_t col = box.box_lo[k]; col < box.box_lo[k] + box.shape[k];
+                     ++col) {
+                    non_zero =
+                        non_zero || alpha[static_cast<std::size_t>(row * num_cols + col)] != 0.0;
+                }
+                if (non_zero) {
+                    if (new_lo < 0) {
+                        new_lo = row;
+                    }
+                    new_hi = row + 1;
+                }
+            }
+            const std::int64_t new_width = new_hi - new_lo;
+            std::int64_t outer = 1;
+            for (std::size_t a = 0; a < k; ++a) {
+                outer *= box.shape[a];
+            }
+            std::int64_t inner = 1;
+            for (std::size_t a = k + 1; a < d; ++a) {
+                inner *= box.shape[a];
+            }
+            std::vector<double> next(static_cast<std::size_t>(outer * new_width * inner), 0.0);
+            for (std::int64_t o = 0; o < outer; ++o) {
+                for (std::int64_t i = 0; i < new_width; ++i) {
+                    for (std::int64_t j = 0; j < box.shape[k]; ++j) {
+                        const double a = alpha[static_cast<std::size_t>(
+                            (new_lo + i) * num_cols + box.box_lo[k] + j)];
+                        for (std::int64_t n = 0; n < inner; ++n) {
+                            next[static_cast<std::size_t>((o * new_width + i) * inner + n)] +=
+                                a
+                                * box.coeffs[static_cast<std::size_t>(
+                                    (o * box.shape[k] + j) * inner + n)];
+                        }
+                    }
+                }
+            }
+            box.coeffs.swap(next);
+            box.box_lo[k] = new_lo;
+            box.shape[k] = new_width;
+        }
+    }
+    return box;
+}
+
+/// How far the active basis is from summing to one, in the finest level's basis.
+///
+/// Pushes every active function's coefficient vector to the finest level by pure
+/// two-scale refinement -- no truncation -- and returns the largest deviation of the sum
+/// from one. See the file comment for what makes this an independent check.
+///
+/// \param space The space to grade.
+/// \return `max |sum_i c_i - 1|` over the finest tensor-product basis.
+double partition_of_unity_defect(const THBSplineSpace<double>& space) {
+    const auto d = static_cast<std::size_t>(space.dim());
+    const std::int64_t top = space.num_levels() - 1;
+    const TwoScaleTables tables = two_scale_tables(space);
 
     std::vector<std::int64_t> finest(d);
     std::int64_t finest_total = 1;
@@ -208,108 +320,27 @@ double partition_of_unity_defect(const THBSplineSpace<double>& space) {
     std::vector<double> total(static_cast<std::size_t>(finest_total), 0.0);
 
     for (std::int64_t dof = 0; dof < space.num_total_basis(); ++dof) {
-        const std::optional<pantr::bspline::TruncatedView> view = space.truncated(dof);
-        std::int64_t start = 0;
-        std::vector<std::int64_t> box_lo(d);
-        std::vector<std::int64_t> shape(d, 1);
-        std::vector<double> coeffs;
-        if (view.has_value()) {
-            start = view->rep_level;
-            for (std::size_t k = 0; k < d; ++k) {
-                box_lo[k] = view->box_lo[k];
-                shape[k] = view->shape[k];
-            }
-            coeffs.assign(view->coeffs.begin(), view->coeffs.end());
-        } else {
-            start = space.dof_level(dof);
-            const std::span<const std::int64_t> active =
-                space.active_function_indices(start);
-            const std::int64_t position =
-                dof - space.level_offsets()[static_cast<std::size_t>(start)];
-            std::int64_t flat = active[static_cast<std::size_t>(position)];
-            for (std::size_t k = d; k > 0; --k) {
-                const std::int64_t n = space.level_space_ref(start)
-                                           .space_ref(static_cast<std::int64_t>(k - 1))
-                                           .num_basis();
-                box_lo[k - 1] = flat % n;
-                flat /= n;
-            }
-            coeffs.assign(1, 1.0);
-        }
-
-        for (std::int64_t level = start; level < top; ++level) {
-            const auto m = static_cast<std::size_t>(level);
-            for (std::size_t k = 0; k < d; ++k) {
-                const std::vector<double>& alpha = oslo[m][k];
-                const std::int64_t num_cols = cols[m][k];
-                const std::int64_t rows =
-                    static_cast<std::int64_t>(alpha.size()) / num_cols;
-                std::int64_t new_lo = -1;
-                std::int64_t new_hi = -1;
-                for (std::int64_t row = 0; row < rows; ++row) {
-                    bool non_zero = false;
-                    for (std::int64_t col = box_lo[k]; col < box_lo[k] + shape[k]; ++col) {
-                        non_zero =
-                            non_zero
-                            || alpha[static_cast<std::size_t>(row * num_cols + col)] != 0.0;
-                    }
-                    if (non_zero) {
-                        if (new_lo < 0) {
-                            new_lo = row;
-                        }
-                        new_hi = row + 1;
-                    }
-                }
-                const std::int64_t new_width = new_hi - new_lo;
-                std::int64_t outer = 1;
-                for (std::size_t a = 0; a < k; ++a) {
-                    outer *= shape[a];
-                }
-                std::int64_t inner = 1;
-                for (std::size_t a = k + 1; a < d; ++a) {
-                    inner *= shape[a];
-                }
-                std::vector<double> next(
-                    static_cast<std::size_t>(outer * new_width * inner), 0.0);
-                for (std::int64_t o = 0; o < outer; ++o) {
-                    for (std::int64_t i = 0; i < new_width; ++i) {
-                        for (std::int64_t j = 0; j < shape[k]; ++j) {
-                            const double a = alpha[static_cast<std::size_t>(
-                                (new_lo + i) * num_cols + box_lo[k] + j)];
-                            for (std::int64_t n = 0; n < inner; ++n) {
-                                next[static_cast<std::size_t>((o * new_width + i) * inner + n)] +=
-                                    a
-                                    * coeffs[static_cast<std::size_t>((o * shape[k] + j) * inner
-                                                                      + n)];
-                            }
-                        }
-                    }
-                }
-                coeffs.swap(next);
-                box_lo[k] = new_lo;
-                shape[k] = new_width;
-            }
-        }
+        const FinestBox box = pushed_to_finest(space, tables, dof);
 
         // Scatter the box into the finest-level accumulator.
-        std::vector<std::int64_t> cursor(box_lo.begin(), box_lo.end());
+        std::vector<std::int64_t> cursor(box.box_lo.begin(), box.box_lo.end());
         std::size_t offset = 0;
         for (;;) {
             std::int64_t flat = 0;
             for (std::size_t k = 0; k < d; ++k) {
                 flat = flat * finest[k] + cursor[k];
             }
-            total[static_cast<std::size_t>(flat)] += coeffs[offset];
+            total[static_cast<std::size_t>(flat)] += box.coeffs[offset];
             ++offset;
             std::size_t axis = d;
             bool done = false;
             while (axis > 0) {
                 --axis;
                 ++cursor[axis];
-                if (cursor[axis] < box_lo[axis] + shape[axis]) {
+                if (cursor[axis] < box.box_lo[axis] + box.shape[axis]) {
                     break;
                 }
-                cursor[axis] = box_lo[axis];
+                cursor[axis] = box.box_lo[axis];
                 if (axis == 0) {
                     done = true;
                 }
@@ -420,6 +451,93 @@ void check_the_contribution_table() {
     PANTR_CHECK_MSG(space.grid_ref().num_cells() > 0 && widest > 0,
                     "this hierarchy has no cell with an active function, so the table was "
                     "never actually inspected");
+}
+
+/// A function identically zero on a cell is not listed there, and nothing else is dropped.
+///
+/// The oracle does not read the table's own decision: it starts from the untruncated
+/// space's list, which is every active function whose tensor-product support covers the
+/// cell, pushes each truncated function to the **finest** level with this file's own
+/// two-scale refinement, and keeps it iff a coefficient of a finest-level function
+/// supported inside the cell is non-zero. Those B-splines are linearly independent on the
+/// cell, so that is exactly "the function does not vanish there".
+void check_vanishing_functions_are_not_listed() {
+    const THBSplineSpace<double> space = reference_space(true);
+    const THBSplineSpace<double> plain = reference_space(false);
+    const auto d = static_cast<std::size_t>(space.dim());
+    const std::int64_t top = space.num_levels() - 1;
+    const TwoScaleTables tables = two_scale_tables(space);
+    const std::span<const std::int64_t> factor = space.grid_ref().factor();
+    std::vector<std::int64_t> midx(d);
+    std::vector<std::int64_t> window_lo(d);
+    std::vector<std::int64_t> window_hi(d);
+    std::int64_t dropped = 0;
+    std::int64_t widest = 0;
+
+    for (std::int64_t cid = 0; cid < space.grid_ref().num_cells(); ++cid) {
+        const std::int64_t level = space.grid_ref().cell_level(cid);
+        space.grid_ref().cell_multi_index(cid, std::span<std::int64_t>(midx));
+        for (std::size_t k = 0; k < d; ++k) {
+            std::int64_t scale = 1;
+            for (std::int64_t step = level; step < top; ++step) {
+                scale *= factor[k];
+            }
+            const std::span<const std::int64_t> first =
+                space.level_space_ref(top).space_ref(static_cast<std::int64_t>(k))
+                    .first_basis_per_interval();
+            window_lo[k] = first[static_cast<std::size_t>(midx[k] * scale)];
+            window_hi[k] = first[static_cast<std::size_t>((midx[k] + 1) * scale - 1)]
+                           + space.degrees()[k] + 1;
+        }
+
+        std::vector<std::int64_t> expected;
+        for (const std::int64_t dof : plain.active_basis(cid)) {
+            if (!space.truncated(dof).has_value()) {
+                expected.push_back(dof);
+                continue;
+            }
+            const FinestBox box = pushed_to_finest(space, tables, dof);
+            std::vector<std::int64_t> lo(d);
+            std::vector<std::int64_t> hi(d);
+            bool exhausted = false;
+            for (std::size_t k = 0; k < d; ++k) {
+                lo[k] = std::max(window_lo[k], box.box_lo[k]);
+                hi[k] = std::min(window_hi[k], box.box_lo[k] + box.shape[k]);
+                exhausted = exhausted || lo[k] >= hi[k];
+            }
+            bool non_zero = false;
+            std::vector<std::int64_t> cursor(lo);
+            while (!exhausted && !non_zero) {
+                std::int64_t offset = 0;
+                for (std::size_t k = 0; k < d; ++k) {
+                    offset = offset * box.shape[k] + (cursor[k] - box.box_lo[k]);
+                }
+                non_zero = box.coeffs[static_cast<std::size_t>(offset)] != 0.0;
+                exhausted = true;
+                for (std::size_t axis = d; axis > 0; --axis) {
+                    if (++cursor[axis - 1] < hi[axis - 1]) {
+                        exhausted = false;
+                        break;
+                    }
+                    cursor[axis - 1] = lo[axis - 1];
+                }
+            }
+            if (non_zero) {
+                expected.push_back(dof);
+            }
+        }
+
+        const std::span<const std::int64_t> listed = space.active_basis(cid);
+        PANTR_CHECK_MSG(std::equal(listed.begin(), listed.end(), expected.begin(), expected.end()),
+                        "cell " + std::to_string(cid)
+                            + ": the list must be the supported functions that do not vanish");
+        dropped += static_cast<std::int64_t>(plain.active_basis(cid).size() - expected.size());
+        widest = std::max(widest, static_cast<std::int64_t>(expected.size()));
+    }
+    PANTR_CHECK_MSG(space.max_active_per_cell() == widest,
+                    "max_active_per_cell must be the widest non-vanishing list");
+    PANTR_CHECK_MSG(dropped > 0, "the vacuity guard: no function vanishes on any cell of the "
+                                 "reference space, so nothing was tested");
 }
 
 /// The truncated basis sums to one; the untruncated one does not.
@@ -876,6 +994,7 @@ int main() {
     check_the_reference_space();
     check_dof_levels_partition_the_basis();
     check_the_contribution_table();
+    check_vanishing_functions_are_not_listed();
     check_the_truncation_is_a_partition_of_unity();
     check_the_coefficients_never_go_negative();
     check_the_root_space_is_shared_not_copied();
