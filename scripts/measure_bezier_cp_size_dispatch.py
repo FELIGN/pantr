@@ -20,8 +20,9 @@ checkout.
 What is built, and where
 ------------------------
 
-Two copies of the extension, from **one exported tree** (``git archive`` of the
-commit, default ``HEAD``) so the only difference between them is the patch:
+Two copies of the extension, each from its own ``git archive`` export of **one
+commit SHA** (resolved once, default ``HEAD``), so the only difference between them
+is the patch:
 
 ``shipped``
     The tree as committed.
@@ -73,9 +74,10 @@ What it cannot show
 A loaded host inflates the spread, so an effect near the noise floor is reported as
 unresolved rather than as absent: a failed check is not a disproof. It measures one
 compiler at the toolchain baseline and ``float64`` only. The output-identity check
-at the end compares the two builds' results over the sweep and is a sanity check
-that the variant computes the same thing, **not** the ticket's ``AC2``, which asks
-for both compilers, every ISA level and a control that can fail.
+at the end compares the two builds' results over the sweep, byte for byte. It is
+**not** the ticket's ``AC2``, which asks for both compilers, every ISA level and a
+control that can fail; but a difference means the variant timed is not the shipped
+arithmetic, so the script exits non-zero on one rather than report its speed.
 
 No figure from any run appears in this file. Numbers belong in the output, next to
 the commit, the compiler and the load average, which the script prints.
@@ -291,7 +293,7 @@ def specialise_kernel(header: str) -> tuple[str, str]:
     body = "\n".join(lines[opening + 1 : closing])
 
     fixed_body, count = re.subn(r"\bstride\b", "Stride", body)
-    if count == 0 or re.search(r"\bstride\b", fixed_body):
+    if count == 0:
         raise LookupError("the kernel body no longer reads `stride`; nothing to specialise")
     fixed = "contract_leading_axis_fixed_stride"
     cases = "\n".join(
@@ -326,7 +328,8 @@ def build_extension(source: Path, build: Path, cmake_args: Sequence[str]) -> Pat
     Args:
         source (Path): The exported tree.
         build (Path): The build directory.
-        cmake_args (Sequence[str]): Extra configure arguments, the same for both arms.
+        cmake_args (Sequence[str]): Extra configure arguments. Both arms get the
+            user's; the variant also gets the shipped build's fetched sources.
 
     Returns:
         Path: The built extension.
@@ -486,6 +489,9 @@ def _evaluation_call(cell: Cell, index: int) -> Callable[[], object]:
 def _calls_per_sample(call: Callable[[], object], seconds: float) -> int:
     """Size a sample so it lasts about `seconds`.
 
+    The doubling loop terminates because `main` refuses a non-positive `seconds` and
+    every `evaluate` call takes positive time, so `elapsed` grows with `n`.
+
     Args:
         call (Callable[[], object]): The timed call.
         seconds (float): The target duration.
@@ -638,10 +644,16 @@ class Arm:
         return answer
 
     def close(self) -> None:
-        """Close the request stream, which ends the child's loop, and reap it."""
+        """Close the request stream, which ends the child's loop, and reap it.
+
+        Raises:
+            RuntimeError: If the child exited with anything but 0.
+        """
         if self.process.stdin is not None:
             self.process.stdin.close()
-        self.process.wait()
+        code = self.process.wait()
+        if code != 0:
+            raise RuntimeError(f"arm {self.name} exited with {code}")
 
 
 # ---- statistics -----------------------------------------------------------------------------
@@ -935,6 +947,9 @@ def main() -> int:
     args = parse_arguments()
     if args.child is not None:
         child(args.child)
+    if args.seconds <= 0:
+        print("--seconds must be positive.", file=sys.stderr)
+        return 1
     # The interval can exclude anything only once x_(1) is itself inside it, which
     # needs P(all n samples on one side of the median) = 2^-n below the tail mass.
     if 0.5 ** (args.blocks * args.reps) > (1.0 - _CONFIDENCE) / 2.0:
@@ -955,7 +970,8 @@ def measure(work: Path, args: argparse.Namespace) -> int:
 
     Returns:
         int: 0 when the run completed with both arms verified, 1 when the two builds
-        turned out identical, changed on disk, or computed different outputs.
+        turned out identical, used different compilers, changed on disk, or computed
+        different outputs.
     """
     commit = subprocess.run(
         ["git", "rev-parse", args.commit], capture_output=True, text=True, check=True,
@@ -984,6 +1000,9 @@ def measure(work: Path, args: argparse.Namespace) -> int:
         print("The two builds are identical: the patch changed nothing.", file=sys.stderr)
         return 1
     compiler = cache_value(work / "shipped-build", "CMAKE_CXX_COMPILER")
+    if cache_value(work / "variant-build", "CMAKE_CXX_COMPILER") != compiler:
+        print("The two builds used different compilers.", file=sys.stderr)
+        return 1
     compiler_version = subprocess.run(
         [compiler, "--version"], capture_output=True, text=True, check=True
     ).stdout.splitlines()[0]
