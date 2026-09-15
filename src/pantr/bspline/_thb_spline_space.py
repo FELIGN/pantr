@@ -764,7 +764,7 @@ class THBSplineSpace:
         - no product of positive two-scale coefficients along a chain underflows to zero;
           :func:`~pantr.bspline._multilevel_extraction_core._windowed_multilevel_rows`
           bounds the depth at which that can happen under uniform dyadic subdivision and
-          states that no bound is derived for non-uniform knots, reduced regularity or other
+          states that no bound is derived for non-uniform knots or other
           factors.  If it did happen, the function would be dropped from the cell here,
           which is a stronger consequence than a zero row, and
           :class:`~pantr.bspline.MultiLevelExtraction` raises on the resulting mismatch.
