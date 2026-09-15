@@ -170,6 +170,21 @@ class TestThbReproduction:
         assert thb.num_levels == 3
         assert _thb_reproduction_error(thb) < 1e-10
 
+    def test_corner_with_functions_vanishing_on_cells(self) -> None:
+        # Truncated functions vanish on the deep corner cells and are not active there; the
+        # QI picks each function's leaf cells from the active lists, which must still offer
+        # every function a cell at its own level.
+        grid = _grid_2d()
+        grid = grid.refine(0, [0, 0], [2, 2])
+        grid = grid.refine(1, [0, 0], [2, 2])
+        grid = grid.refine(2, [0, 0], [2, 2])
+        thb = THBSplineSpace(_root_2d(), grid)
+        hb = THBSplineSpace(_root_2d(), grid, truncate=False)
+        assert any(
+            thb.active_basis(c).size < hb.active_basis(c).size for c in range(grid.num_cells)
+        ), "no function vanishes on any cell; the case tests nothing new"
+        assert _thb_reproduction_error(thb) < 1e-10
+
     def test_reproduces_polynomials_1d(self) -> None:
         grid = _grid_1d()
         grid = grid.refine(0, [0], [2])

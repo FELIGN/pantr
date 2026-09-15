@@ -743,27 +743,27 @@ class THBSplineSpace:
         """Decide exactly whether a truncated function is identically zero on a cell.
 
         On the cell, the function is the sum of its stored coefficients against the
-        level-``rep_level`` B-splines supported on the cell's level-``rep_level`` cells
-        (its descendants, or its ancestor when ``rep_level`` is coarser).  Those B-splines
-        are linearly independent on each such cell -- the ones supported on a non-empty
-        knot span span the polynomials of degree ``p`` there -- so the function vanishes on
-        the cell iff every stored coefficient in that window is zero.
+        level-``rep_level`` B-splines supported on the cell's level-``rep_level``
+        descendants.  (``rep_level >= L`` for every function supported on a level-``L``
+        cell: the cell's ancestors at the coarser levels are refined, so the truncation
+        chain in :meth:`_compute_truncated_coeffs` does not stop before level ``L``.)
+        Those B-splines are linearly independent on each descendant -- the ones supported
+        on a non-empty knot span span the polynomials of degree ``p`` there -- so the
+        stored function vanishes on the cell iff every stored coefficient in that window
+        is zero.  That is what :meth:`tabulate_basis` evaluates, so the two agree with no
+        further hypothesis.
 
-        Reading "is zero" off the stored ``float64`` values is exact, not a tolerance,
-        under two hypotheses:
+        That a stored ``0.0`` is a true zero, and that both backends store the same zeros,
+        needs two hypotheses:
 
         - every two-scale (Oslo) coefficient is nonnegative, which holds for any
           nondecreasing knot vector, any subdivision factor and any regularity, and
           truncation only sets entries to ``0.0``; so a stored coefficient is a
           cancellation-free sum of products and is ``0.0`` exactly when every product has
           a zero factor, whatever the summation order;
-        - no product of positive two-scale coefficients along a chain underflows to zero.
+        - no product of positive two-scale coefficients along a chain underflows to zero;
           :func:`~pantr.bspline._multilevel_extraction_core._windowed_multilevel_rows`
-          states when that can fail; where it does, the function's stored values on the
-          cell are zero too, so the decision still agrees with :meth:`tabulate_basis`.
-
-        The same argument makes the answer independent of the backend's summation order,
-        which is what lets the C++ contribution table agree with this one exactly.
+          states when that can fail.
 
         Args:
             entry (_TruncCoeffs): The function's stored representation.
@@ -778,8 +778,7 @@ class THBSplineSpace:
         for k in range(self.dim):
             fine = self._grid.factor[k] ** rep
             coarse = self._grid.factor[k] ** cell_level
-            # The level-`rep` cells covering the cell, as an inclusive range.  Exact integer
-            # floors, so one formula serves `rep >= L` (descendants) and `rep < L` (ancestor).
+            # The level-`rep` descendants of the cell, as an inclusive range of indices.
             first_cell = cell_midx[k] * fine // coarse
             last_cell = ((cell_midx[k] + 1) * fine - 1) // coarse
             first_basis = self._support[rep][k][0]

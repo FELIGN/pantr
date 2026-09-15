@@ -1724,10 +1724,10 @@ class THBSplineSpace {
     ///
     /// The oracle's `_vanishes_on_cell`, which carries the argument: on the cell the
     /// function is its stored coefficients against the level-`rep_level` B-splines
-    /// supported on the cell's level-`rep_level` cells, those are linearly independent
-    /// there, and every coefficient is a cancellation-free sum of non-negative products,
-    /// so it is `0.0` exactly when its true value is -- in any summation order, which is
-    /// why this and the oracle's BLAS contraction agree bit for bit on the answer. The one
+    /// supported on the cell's level-`rep_level` descendants (`rep_level >= L` for every
+    /// function supported on a level-`L` cell), those are linearly independent there, and
+    /// every coefficient is a cancellation-free sum of non-negative products, so it is
+    /// `0.0` in this backend exactly when it is in the oracle's BLAS contraction. The one
     /// hypothesis is that no product of positive two-scale coefficients underflows.
     ///
     /// \param entry The function's stored coefficients.
@@ -1740,51 +1740,42 @@ class THBSplineSpace {
         const std::span<const std::int64_t> factor = grid_->factor();
         const auto rep = static_cast<std::size_t>(entry.rep_level);
         std::vector<std::int64_t> lo(d);
-        std::vector<std::int64_t> hi(d);
+        std::vector<std::int64_t> extent(d);
+        std::int64_t count = 1;
         for (std::size_t k = 0; k < d; ++k) {
             const std::int64_t fine = level_power(factor[k], entry.rep_level);
             const std::int64_t coarse = level_power(factor[k], cell_level);
-            // The level-`rep_level` cells covering the cell, inclusive. Floors of
-            // non-negative integers, so one formula serves a finer representation level
-            // (descendants) and a coarser one (the ancestor). Each product is at most the
-            // cell count of one level times that of another, far inside `int64_t` for
-            // any grid whose level masks fit in memory.
+            // The level-`rep_level` descendants of the cell, an inclusive index range. Each
+            // product is at most the cell count of one level times that of another, far
+            // inside `int64_t` for any grid whose level masks fit in memory.
             const std::int64_t first_cell = cell_midx[k] * fine / coarse;
             const std::int64_t last_cell = ((cell_midx[k] + 1) * fine - 1) / coarse;
             const std::vector<std::int64_t>& first_basis = support_[rep][k].first_basis;
             lo[k] = std::max<std::int64_t>(
                 first_basis[static_cast<std::size_t>(first_cell)] - entry.box_lo[k], 0);
-            hi[k] = std::min<std::int64_t>(first_basis[static_cast<std::size_t>(last_cell)]
-                                               + degrees()[k] + 1 - entry.box_lo[k],
-                                           entry.shape[k]);
-            if (lo[k] >= hi[k]) {
-                // No stored coefficient on the cell in this direction: the oracle's numpy
-                // slice is empty there and `np.any` of it is false. The walk below would
-                // otherwise start outside the box.
-                return true;
-            }
+            const std::int64_t hi = std::min<std::int64_t>(
+                first_basis[static_cast<std::size_t>(last_cell)] + degrees()[k] + 1
+                    - entry.box_lo[k],
+                entry.shape[k]);
+            // Clipped to the box, as the oracle's numpy slice is; an empty range walks
+            // nothing, which is `np.any` of an empty slice.
+            extent[k] = std::max<std::int64_t>(hi - lo[k], 0);
+            count *= extent[k];
         }
-        std::vector<std::int64_t> cursor(lo);
-        for (;;) {
+        for (std::int64_t i = 0; i < count; ++i) {
+            std::int64_t rest = i;
             std::int64_t offset = 0;
+            std::int64_t stride = count;
             for (std::size_t k = 0; k < d; ++k) {
-                offset = offset * entry.shape[k] + cursor[k];
+                stride /= extent[k];
+                offset = offset * entry.shape[k] + lo[k] + rest / stride;
+                rest %= stride;
             }
             if (entry.coeffs[static_cast<std::size_t>(offset)] != 0.0) {
                 return false;
             }
-            std::size_t axis = d;
-            while (axis > 0) {
-                --axis;
-                if (++cursor[axis] < hi[axis]) {
-                    break;
-                }
-                cursor[axis] = lo[axis];
-                if (axis == 0) {
-                    return true;
-                }
-            }
         }
+        return true;
     }
 
     /// Sweep every cell and record the active functions that do not vanish on it.
