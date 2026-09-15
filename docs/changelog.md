@@ -130,6 +130,13 @@ user-facing, and the ports change what it affects.
   rather than dispatched to either backend's Lagrange kernel.
 
 ### Fixed
+- **Applying an extraction operator refuses an identity-flagged operator that is not square.**
+  Every extraction kernel's identity branch copies over one extent, which is the same as
+  applying the operator only when it is square, but the validation in front of the kernels sized
+  the operand and the output from the operator's shape whatever the flag said. An identity-flagged
+  `numpy.eye(3, 2)` therefore passed, and a one-dimensional kernel read past its operand. Both
+  the per-cell and the batch paths now raise a `ValueError` naming the direction. No public
+  entry point produced such an operator, since every extraction target is square.
 - **A `Bezier` is a value again: it copies its control points and hands back read-only views.**
   It did neither. `__init__` stored what `numpy.asarray` returned, which does not copy an array
   that is already float, and `control_points` handed that same object back, so a caller could
