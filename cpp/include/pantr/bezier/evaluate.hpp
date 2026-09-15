@@ -155,6 +155,8 @@ void tabulate_direction(std::size_t degree, span2d<const T> points, std::size_t 
 /// the same operations in the same order and differs only in what the compiler knows
 /// about the inner trip count. `contract_lattice_direction` says who fixes it.
 ///
+/// \tparam T Scalar type.
+/// \tparam Stride The block size, or `std::dynamic_extent` to read it from `stride`.
 /// \param weights One weight per term of the contracted axis, `n_terms` of them.
 /// \param block The values, `(n_terms, stride)` row-major.
 /// \param stride The size of one term's block. Must equal `Stride` where that is
@@ -191,6 +193,8 @@ void contract_leading_axis(std::span<const T> weights, std::span<const T> block,
 /// inside the kernel that both schedules would reach, was measured to cost that
 /// path; `scripts/measure_bezier_cp_size_dispatch.py` carries the measurement.
 ///
+/// \tparam T Scalar type.
+/// \tparam Stride The block size, or `std::dynamic_extent` to read it from `inner`.
 /// \param basis The direction's tabulated basis, `(m_pts, n_terms)` row-major.
 /// \param front The running result before this direction, `(outer, n_terms, inner)`.
 /// \param outer The product of the extents already contracted.
@@ -430,8 +434,9 @@ void evaluate_on_lattice(const Bezier<T>& bezier,
                                  span2d<T>(basis.data(), m_pts, n_terms));
 
         // Once per direction. The fixed widths are `cp_size`'s range in pantr, from a
-        // scalar field to a rational curve or surface in 3-D, which is the block the
-        // last direction always has; every other width takes the runtime body.
+        // scalar field to a rational curve or surface in 3-D, since the last direction's
+        // block is always `cp_size`; an earlier direction whose `inner` falls in the set
+        // takes the same path, and every other width takes the runtime body.
         const std::span<const T> basis_view(basis);
         const std::span<const T> front_view(front);
         const std::span<T> back_view(back);
