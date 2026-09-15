@@ -320,6 +320,55 @@ def test_mixed_batch_aliasing_is_still_refused(backend: Backend) -> None:
         _prepare_apply_many_call(ops, maps, masks, cells, operand, operand, None, "apply")
 
 
+# -- A non-square operator flagged identity -----------------------------------
+#
+# Every identity branch in the kernels is a copy over one extent, which equals
+# applying the operator only when it is square; the extents Layer 2 derives from
+# ``M_k.shape`` then disagree with what the copy reads. In 1D that is a read past
+# the operand in a kernel built without bounds checking, so the only defensible
+# outcome is a refusal before the kernel runs (the C++ port states the same
+# precondition, ``identity_modes_are_square``).
+
+
+@pytest.mark.parametrize("op_kind", ["apply", "apply_T", "MT_K_M", "M_K_MT"])
+@pytest.mark.parametrize("shape", [(3, 2), (2, 3)])
+def test_single_cell_nonsquare_identity_is_refused(op_kind: OpKind, shape: tuple[int, int]) -> None:
+    """A per-cell call with an identity-flagged non-square operator raises."""
+    M_0 = np.eye(*shape, dtype=np.float64)
+    in_op_shape, _ = _operation_shapes((shape[1],), (shape[0],), op_kind)
+    operand = RNG.standard_normal(in_op_shape)
+    with pytest.raises(ValueError, match="identity.*square"):
+        _prepare_apply_call((M_0,), (True,), operand, None, None, op_kind)
+
+
+def test_single_cell_nonsquare_identity_refused_in_any_direction() -> None:
+    """The refusal is per direction, not only for direction 0."""
+    ops = (np.eye(2, dtype=np.float64), np.eye(3, 2, dtype=np.float64))
+    operand = RNG.standard_normal(4)
+    with pytest.raises(ValueError, match=r"ops_1d_per_cell\[1\].*identity.*square"):
+        _prepare_apply_call(ops, (True, True), operand, None, None, "apply")
+
+
+def test_single_cell_nonsquare_without_identity_flag_is_accepted() -> None:
+    """A non-square operator is fine when it is not flagged identity (the control)."""
+    M_0 = np.eye(3, 2, dtype=np.float64)
+    operand = RNG.standard_normal(2)
+    kernel, args, out = _prepare_apply_call((M_0,), (False,), operand, None, None, "apply")
+    kernel(*args)
+    np.testing.assert_array_equal(out, M_0 @ operand)
+
+
+def test_batch_nonsquare_identity_is_refused() -> None:
+    """A batch whose mask flags an element identity on a non-square stack raises."""
+    ops = (np.zeros((1, 3, 2), dtype=np.float64),)
+    maps = (np.zeros(2, dtype=np.intp),)
+    masks = (np.array([True, False], dtype=np.bool_),)
+    cells = np.array([[1]], dtype=np.intp)
+    operand = RNG.standard_normal((1, 2))
+    with pytest.raises(ValueError, match=r"ops_1d\[0\].*identity.*square"):
+        _prepare_apply_many_call(ops, maps, masks, cells, operand, None, None, "apply")
+
+
 # -- Dispatcher errors --------------------------------------------------------
 
 
