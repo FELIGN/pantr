@@ -491,6 +491,68 @@ def _corner_refined_thb() -> THBSplineSpace:
     return THBSplineSpace(BsplineSpace([sp, sp]), grid)
 
 
+def _deep_corner_thb(*, truncate: bool = True) -> THBSplineSpace:
+    """Degree-2 6x6 hierarchy refined three times towards the origin corner.
+
+    Deep enough that truncated functions vanish on many cells inside the refined region.
+    """
+    knots = [0.0] * 3 + [float(i) for i in range(1, 6)] + [6.0] * 3
+    sp = BsplineSpace1D(knots, 2)
+    grid = hierarchical_grid(uniform_grid([[0.0, 6.0], [0.0, 6.0]], 6), 2)
+    grid = grid.refine(0, [0, 0], [3, 3]).refine(1, [0, 0], [4, 4]).refine(2, [0, 0], [4, 4])
+    return THBSplineSpace(BsplineSpace([sp, sp]), grid, truncate=truncate)
+
+
+def test_thb_halo_is_the_tensor_product_support_closure() -> None:
+    # The halo must cover every function whose tensor-product support meets an owned cell,
+    # including a truncated one that vanishes there: its Kraft status still shapes the
+    # truncation of the functions that do not. The untruncated space lists exactly those.
+    thb = _deep_corner_thb()
+    hb = _deep_corner_thb(truncate=False)
+    deep = [c for c in range(thb.grid.num_cells) if thb.grid.cell_level(c) == 3]
+    assert any(len(_non_vanishing(thb, c)) < hb.active_basis(c).size for c in deep), (
+        "no function vanishes on a deep cell; the case cannot tell the two closures apart"
+    )
+    for owned in ([deep[0]], deep[:5], [0, 1, 2]):
+        cells = np.asarray(owned, dtype=np.int64)
+        np.testing.assert_array_equal(_thb_halo(thb, cells), _thb_halo(hb, cells))
+
+
+def _non_vanishing(thb: THBSplineSpace, cid: int) -> list[int]:
+    """List the functions on ``cid`` positive at the cell midpoint.
+
+    A function that does not vanish on a cell is positive in its whole interior, because
+    it is a nonnegative combination of B-splines positive there.
+
+    Args:
+        thb (THBSplineSpace): The space.
+        cid (int): Active cell id.
+
+    Returns:
+        list[int]: The global dofs.
+    """
+    lo, hi = thb.grid.cell_bounds(cid)
+    values, dofs = thb.tabulate_basis(cid, (0.5 * (lo + hi)).reshape(1, -1))
+    return [int(d) for d, v in zip(dofs, values[0], strict=True) if v > 0.0]
+
+
+def test_build_local_thb_basis_matches_on_owned_cells_deep() -> None:
+    g = _deep_corner_thb()
+    part = Partition(np.arange(g.grid.num_cells, dtype=np.int32) % 5, n_parts=5)
+    for rank in range(part.n_parts):
+        loc = build_local(g, part, rank)
+        sub = loc.space
+        assert isinstance(sub, THBSplineSpace)
+        for lcid in np.flatnonzero(loc.owned_cell_mask):
+            gcid = int(loc.local_to_global_cell[lcid])
+            lo, hi = sub.grid.cell_bounds(int(lcid))
+            pt = (0.5 * (lo + hi)).reshape(1, -1)
+            vs, ds = sub.tabulate_basis(int(lcid), pt)
+            vg, dg = g.tabulate_basis(gcid, pt)
+            np.testing.assert_array_equal(loc.local_to_global_dof[ds], dg)
+            np.testing.assert_allclose(vs, vg, atol=1e-11)
+
+
 def test_build_local_thb_boundary_dofs_not_owned() -> None:
     # Local DOFs mapping to -1 (window-boundary THB functions) must never be marked owned.
     g = _corner_refined_thb()

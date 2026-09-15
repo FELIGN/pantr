@@ -376,14 +376,21 @@ class TestWindowedKernelBookkeeping:
         for name, array in ext._tables._asdict().items():
             assert not array.flags.writeable, f"table {name} is writeable"
 
-    def test_rows_are_labelled_by_active_basis(self) -> None:
+    def test_flagged_rows_are_the_active_basis(self) -> None:
+        # The kernel emits a row for every function whose tensor-product support covers
+        # the cell and flags the ones that vanish.  The space decides the same question
+        # from its stored truncation coefficients; the two routes must agree.
         thb = self._thb()
         ext = MultiLevelExtraction(thb)
+        flagged_zero = 0
         for cid in range(thb.grid.num_cells):
             rows, dofs, nonzero = ext._windowed_rows(cid)
-            np.testing.assert_array_equal(dofs, thb.active_basis(cid))
+            assert np.all(np.diff(dofs) > 0)
             assert rows.shape == (dofs.size, 9)
             assert nonzero.shape == dofs.shape
+            np.testing.assert_array_equal(dofs[nonzero], thb.active_basis(cid))
+            flagged_zero += int((~nonzero).sum())
+        assert flagged_zero > 0, "the hierarchy should contain vanishing truncated functions"
 
     def test_zero_flags_match_direct_evaluation(self) -> None:
         # A nonnegative combination of B-splines that has a positive coefficient on one of
@@ -395,10 +402,10 @@ class TestWindowedKernelBookkeeping:
         xi = _interior_points(thb)
         flagged_zero = 0
         for cid in range(thb.grid.num_cells):
-            rows, _, nonzero = ext._windowed_rows(cid)
+            rows, dofs, nonzero = ext._windowed_rows(cid)
             lo, hi = thb.grid.cell_bounds(cid)
-            vals, _ = thb.tabulate_basis(cid, lo + (hi - lo) * xi)
-            np.testing.assert_array_equal(nonzero, np.any(vals != 0.0, axis=0))
+            vals, tab_dofs = thb.tabulate_basis(cid, lo + (hi - lo) * xi)
+            np.testing.assert_array_equal(dofs[nonzero], tab_dofs[np.any(vals != 0.0, axis=0)])
             np.testing.assert_array_equal(nonzero, np.any(rows != 0.0, axis=1))
             flagged_zero += int((~nonzero).sum())
         assert flagged_zero > 0, "the hierarchy should contain vanishing truncated functions"
@@ -566,9 +573,8 @@ def _check_against_direct_evaluation(
 ) -> None:
     """Assert ``C^e B(xi)`` equals ``tabulate_basis`` on cell ``cid``, dof by dof.
 
-    The extraction's rows are matched to ``tabulate_basis`` columns by global dof, so the
-    check holds whether or not the extraction lists the functions that vanish on the
-    cell; any column the extraction does not list must evaluate to zero there.
+    The extraction's rows and the ``tabulate_basis`` columns must name the same dofs in the
+    same order: both list exactly the functions that do not vanish on the cell.
 
     Args:
         thb (THBSplineSpace): The space.
@@ -579,22 +585,14 @@ def _check_against_direct_evaluation(
     lo, hi = (np.asarray(a, dtype=np.float64) for a in thb.grid.cell_bounds(cid))
     tol = _oracle_tolerance(thb, cid, lo, hi)
     vals, dofs = thb.tabulate_basis(cid, lo + xi * (hi - lo))
-    ext_dofs = ext.active_basis(cid)
-    pos = np.searchsorted(dofs, ext_dofs)
-    assert np.all(pos < dofs.size), f"cell {cid}: extraction lists a dof the space does not"
-    np.testing.assert_array_equal(dofs[pos], ext_dofs)
+    np.testing.assert_array_equal(ext.active_basis(cid), dofs)
     c_op = ext.operator(cid)
-    assert c_op.shape == (ext_dofs.size, int(np.prod([p + 1 for p in thb.degrees])))
+    assert c_op.shape == (dofs.size, int(np.prod([p + 1 for p in thb.degrees])))
     from_extraction = tabulate_bernstein(list(thb.degrees), xi) @ c_op.T
-    residual = np.abs(from_extraction - vals[:, pos])
+    residual = np.abs(from_extraction - vals)
     assert float(residual.max()) <= tol, (
         f"cell {cid}: extraction residual {residual.max():.3e} exceeds {tol:.3e}"
     )
-    dropped = np.setdiff1d(np.arange(dofs.size), pos)
-    if dropped.size:
-        assert float(np.abs(vals[:, dropped]).max()) <= tol, (
-            f"cell {cid}: a dof omitted by the extraction is non-zero on the cell"
-        )
 
 
 _ORACLE_CASES = [
@@ -658,6 +656,24 @@ class TestWindowedPartitionOfUnity:
             assert m_defect <= m_tol, f"cell {cid}: M^e column-sum defect {m_defect:.3e}"
             assert c_defect <= c_tol, f"cell {cid}: C^e column-sum defect {c_defect:.3e}"
         assert levels_seen == set(range(thb.num_levels))
+
+
+class TestNoZeroRows:
+    """Every row of ``M^e`` and ``C^e`` has a non-zero entry (#336 AC2)."""
+
+    @pytest.mark.parametrize("case", _ORACLE_CASES, ids=_case_id)
+    def test_operators_have_no_zero_rows(self, case: _CornerCase) -> None:
+        thb = _corner_space(case)
+        ext = MultiLevelExtraction(thb)
+        n_single = int(np.prod([p + 1 for p in thb.degrees]))
+        for cid in range(thb.grid.num_cells):
+            k = thb.active_basis(cid).size
+            m_op = ext.multilevel_operator(cid)
+            c_op = ext.operator(cid)
+            assert m_op.shape == (k, n_single)
+            assert c_op.shape == (k, n_single)
+            assert np.all(np.any(m_op != 0.0, axis=1)), f"cell {cid}: M^e has a zero row"
+            assert np.all(np.any(c_op != 0.0, axis=1)), f"cell {cid}: C^e has a zero row"
 
 
 class TestDeepHierarchy:

@@ -873,6 +873,59 @@ def test_the_untruncated_basis_fails_the_identity(cpp_backend: None) -> None:
     )
 
 
+_VANISHING_CASES: Final = (
+    _reference_case(dim=1),
+    _reference_case(dim=2),
+    _reference_case(dim=3)._replace(refinements=((0, (0, 0, 0), (2, 2, 2)),)),
+    _reference_case()._replace(degrees=(3, 2), factor=(3, 2), regularity=(1, 0)),
+    _reference_case()._replace(dtype=np.float32),
+)
+"""Hierarchies in which some truncated functions vanish on some cells."""
+
+
+@pytest.mark.parametrize(
+    "case", _VANISHING_CASES, ids=["1d", "2d", "3d", "factor32-c1c0", "float32"]
+)
+def test_no_backend_lists_a_function_that_vanishes_on_the_cell(
+    cpp_backend: None, case: _Case
+) -> None:
+    """Both backends list, per cell, exactly the functions that do not vanish there.
+
+    The expected list does not come from either space's contribution table. It comes
+    from :class:`~pantr.bspline.MultiLevelExtraction`'s windowed kernel, which pushes each
+    function supported on the cell through the two-scale blocks restricted to the cell's
+    windows and flags the rows that come out structurally zero -- a different route over
+    different data from the stored truncation coefficients both spaces read. The kernel's
+    own flags are pinned against direct evaluation in
+    ``tests/test_multilevel_extraction.py``.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+        case (_Case): The hierarchy to build under both backends.
+    """
+    from pantr.bspline import MultiLevelExtraction  # noqa: PLC0415
+
+    py = _python_space(case)
+    cpp = _cpp_space(case)
+    with _the_oracle():
+        ext = MultiLevelExtraction(py)
+    dropped = 0
+    widest = 0
+    wrong: dict[str, list[int]] = {"python": [], "cpp": []}
+    for cid in range(py.grid.num_cells):
+        _, dofs, nonzero = ext._windowed_rows(cid)
+        expected = dofs[nonzero]
+        widest = max(widest, int(expected.size))
+        dropped += int((~nonzero).sum())
+        for name, space in (("python", py), ("cpp", cpp)):
+            if not np.array_equal(np.asarray(space.active_basis(cid)), expected):
+                wrong[name].append(cid)
+    assert dropped > 0, "no function vanishes on any cell of this case, so it tests nothing"
+    assert wrong == {"python": [], "cpp": []}, f"cells whose active list is wrong: {wrong}"
+    assert py.max_active_per_cell() == widest
+    assert cpp.max_active_per_cell() == widest
+
+
 def test_a_float32_root_space_over_a_float64_grid_agrees(cpp_backend: None) -> None:
     """The shipped pairing of a narrow root space with the always-`float64` grid.
 
