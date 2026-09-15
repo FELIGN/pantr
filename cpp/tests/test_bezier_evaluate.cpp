@@ -49,12 +49,18 @@
 ///  - **`dim() == 1` delegation, rejections, a degree-0 direction, and the
 ///    `out` contract.** Structural pins, most of them exact; see each
 ///    function.
+///  - **Fixed-`Stride` contractions match the runtime one bitwise.** The lattice
+///    schedule dispatches block sizes 1 to 4 to compile-time instantiations
+///    (issue #481); the same operations in the same order give the same bits,
+///    with a reversed-sum control showing the comparison can detect a reordering.
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <limits>
+#include <random>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -710,6 +716,92 @@ void check_lattice_out_is_written_in_full() {
     }
 }
 
+/// The fixed-`Stride` instantiations the lattice schedule dispatches to must give the
+/// same bits as the runtime one, since issue #481 ships them on that promise.
+///
+/// Compared with `memcmp`, not a tolerance: the two instantiations run the same
+/// operations in the same order, so any difference is a changed operation order. The
+/// control sums the terms in descending order on the same inputs and must differ
+/// somewhere, or a bitwise comparison over these inputs could not detect a reordering.
+template <class T>
+void check_fixed_stride_matches_runtime_bitwise() {
+    using pantr::bezier::detail::contract_leading_axis;
+    using pantr::bezier::detail::contract_lattice_direction;
+    std::mt19937 rng(481U);
+    std::uniform_real_distribution<T> dist(T(-1), T(1));
+    bool control_differed = false;
+    for (std::size_t stride = 1; stride <= 4; ++stride) {
+        for (std::size_t n_terms = 1; n_terms <= 7; ++n_terms) {
+            std::vector<T> weights(n_terms);
+            std::vector<T> block(n_terms * stride);
+            for (T& w : weights) {
+                w = dist(rng);
+            }
+            for (T& b : block) {
+                b = dist(rng);
+            }
+            std::vector<T> runtime(stride);
+            std::vector<T> fixed(stride);
+            contract_leading_axis<T>(weights, block, stride, runtime);
+            switch (stride) {
+                case 1: contract_leading_axis<T, 1>(weights, block, stride, fixed); break;
+                case 2: contract_leading_axis<T, 2>(weights, block, stride, fixed); break;
+                case 3: contract_leading_axis<T, 3>(weights, block, stride, fixed); break;
+                default: contract_leading_axis<T, 4>(weights, block, stride, fixed); break;
+            }
+            PANTR_CHECK_MSG(std::memcmp(runtime.data(), fixed.data(), stride * sizeof(T)) == 0,
+                            "a fixed-Stride contraction differs bitwise from the runtime one");
+
+            for (std::size_t t = 0; t < stride; ++t) {
+                T reversed = T(0);
+                for (std::size_t term = n_terms; term-- > 0;) {
+                    reversed = static_cast<T>(reversed + weights[term] * block[term * stride + t]);
+                }
+                control_differed = control_differed ||
+                                   std::memcmp(&reversed, &runtime[t], sizeof(T)) != 0;
+            }
+
+            const std::size_t outer = 3;
+            const std::size_t m_pts = 5;
+            std::vector<T> basis(m_pts * n_terms);
+            std::vector<T> front(outer * n_terms * stride);
+            for (T& b : basis) {
+                b = dist(rng);
+            }
+            for (T& f : front) {
+                f = dist(rng);
+            }
+            std::vector<T> back_runtime(outer * m_pts * stride);
+            std::vector<T> back_fixed(outer * m_pts * stride);
+            contract_lattice_direction<T>(basis, front, outer, m_pts, n_terms, stride,
+                                          back_runtime);
+            switch (stride) {
+                case 1:
+                    contract_lattice_direction<T, 1>(basis, front, outer, m_pts, n_terms, stride,
+                                                     back_fixed);
+                    break;
+                case 2:
+                    contract_lattice_direction<T, 2>(basis, front, outer, m_pts, n_terms, stride,
+                                                     back_fixed);
+                    break;
+                case 3:
+                    contract_lattice_direction<T, 3>(basis, front, outer, m_pts, n_terms, stride,
+                                                     back_fixed);
+                    break;
+                default:
+                    contract_lattice_direction<T, 4>(basis, front, outer, m_pts, n_terms, stride,
+                                                     back_fixed);
+                    break;
+            }
+            PANTR_CHECK_MSG(std::memcmp(back_runtime.data(), back_fixed.data(),
+                                        back_runtime.size() * sizeof(T)) == 0,
+                            "a fixed-Stride lattice direction differs bitwise from the runtime");
+        }
+    }
+    PANTR_CHECK_MSG(control_differed,
+                    "summing in reverse never changed a bit, so the bitwise check has no power");
+}
+
 }  // namespace
 
 int main() {
@@ -731,5 +823,7 @@ int main() {
     check_evaluate_out_is_written_in_full<float>();
     check_lattice_out_is_written_in_full<double>();
     check_lattice_out_is_written_in_full<float>();
+    check_fixed_stride_matches_runtime_bitwise<double>();
+    check_fixed_stride_matches_runtime_bitwise<float>();
     return pantr::test::summary("test_bezier_evaluate");
 }
