@@ -346,9 +346,10 @@ class SpanwiseElementExtraction:
 
         Reconstructs the full ``(n_elements_k, n_out_k, n_in_k)`` array from
         compact storage on first access and caches the result. Identity elements
-        are filled with ``numpy.eye(n_out, n_in)`` (rectangular identity for
-        non-square operators); non-identity elements are read from
-        :attr:`compact_ops_1d`.
+        are filled with ``numpy.eye(n_out, n_in)``; non-identity elements are read
+        from :attr:`compact_ops_1d`. Every extraction target builds square
+        per-direction operators, and :meth:`apply` and :meth:`apply_many` refuse an
+        identity-flagged operator that is not square.
 
         Returns:
             tuple[npt.NDArray[np.float32 | np.float64], ...]: Length-``d`` tuple
