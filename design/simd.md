@@ -323,7 +323,8 @@ another. It is not a performance option, it is a silent correctness change.
    - ~~whether the win survives at the level of `evaluate`.~~ **Measured by issue #481:
      on a lattice, yes; on a point array, no.** `scripts/measure_bezier_cp_size_dispatch.py`
      times `Bezier.evaluate` end to end against a null arm. With a switch on the block
-     size inside `contract_leading_axis`, built on the tree before #481's change, a `PointsLattice` at two and
+     size inside `contract_leading_axis`, built on the tree before #481's change, a
+     `PointsLattice` at two and
      three dimensions gains outside the setup's spread in nearly every cell at eight and
      thirty-two points per direction, more at the finer grid and the higher dimension, and
      in almost none at two. A point array gains a few percent at most, and some of its
@@ -338,13 +339,16 @@ another. It is not a performance option, it is a silent correctness change.
      inferred from the microcode revision rather than read from Intel's notes, and it is
      one CPU and one experiment: the mechanism for this host, not a rule.
 
-     So the specialization shipped for the lattice only, in the pull request for #481: `evaluate_on_lattice`
-     switches once per direction into `detail::contract_lattice_direction`, and `evaluate`
+     So the specialization shipped for the lattice only, in the pull request for #481:
+     `evaluate_on_lattice` switches once per direction into
+     `detail::contract_lattice_direction`, and `evaluate`
      calls the runtime kernel as before. The machine code of `evaluate` is
      instruction-identical to the tree before, on GCC and Clang at the baseline,
      `x86-64-v3` and `x86-64-v4`; results are bit-identical over the sweep with a
      reversed-order control that disagrees; and `--against` re-times the two commits. The
-     figures are in the pull request that closes #481.
+     figures come from `scripts/measure_bezier_cp_size_dispatch.py` and are recorded in the
+     pull request for #481; `cpp/tests/test_bezier_evaluate.cpp` keeps the bitwise
+     agreement as a test.
 
      The erratum finding reaches past this ticket. The padding also made the shipped
      point-array path itself clearly faster in that driver, and any change to that
