@@ -320,12 +320,43 @@ another. It is not a performance option, it is a silent correctness change.
    Three things this does **not** settle, and they belong to the follow-up rather than
    here:
 
-   - whether the win survives at the level of `evaluate`. The measurement timed the kernel
-     in isolation; that the small-block contraction carries nearly all the work is
-     *derived* from the two schedules, not measured end to end.
+   - ~~whether the win survives at the level of `evaluate`.~~ **Measured by issue #481:
+     on a lattice, yes; on a point array, no.** `scripts/measure_bezier_cp_size_dispatch.py`
+     times `Bezier.evaluate` end to end against a null arm. With a switch on the block
+     size inside `contract_leading_axis`, built on `d02a63f`, a `PointsLattice` at two and
+     three dimensions gains outside the setup's spread at eight and thirty-two points per
+     direction, more at the finer grid and the higher dimension, and stays inside it at
+     two. A point array gains a few percent at most, and some of its cells got slower.
+     That slowdown is **code placement, not the dispatch's arithmetic**. The switch made
+     GCC stop inlining the kernel into `evaluate`, which moved its hot loops, and the
+     measuring CPU is a Skylake-SP, the family whose jump-conditional-code erratum
+     mitigation stops a branch that crosses or ends on a 32-byte boundary from being
+     cached as decoded micro-ops. In a C++ driver linked against the binding object,
+     assembling both builds with `-Wa,-mbranches-within-32B-boundaries`, which pads such
+     branches off the boundary, removed the slowdown. That the mitigation is active is
+     inferred from the microcode revision rather than read from Intel's notes, and it is
+     one CPU and one experiment: the mechanism for this host, not a rule.
+
+     So the specialisation shipped for the lattice only (`3c84322`): `evaluate_on_lattice`
+     switches once per direction into `detail::contract_lattice_direction`, and `evaluate`
+     calls the runtime kernel as before. Its machine code is instruction-identical to the
+     tree before, on GCC and Clang at the baseline, `x86-64-v3` and `x86-64-v4`; results
+     are bit-identical over the sweep with a reversed-order control that disagrees; and
+     `--against` re-times the two commits. The figures are in the pull request that closes
+     #481.
+
+     The erratum finding reaches past this ticket. The padding also made the shipped
+     point-array path itself clearly faster in that driver, and any change to that
+     translation unit can move `evaluate`'s branches across a boundary, so a
+     before-and-after timing of it on this CPU family should check that the timed
+     function's code and alignment moved before reading a few percent either way. Whether
+     the build should pad branches is not decided here and has not been measured on
+     another CPU.
    - what to do about the cost, which is real. Instantiating a grid of widths multiplies
      compile time and emitted code for one translation unit, and then multiplies again by
-     the ISA-variant count this note plans for above.
+     the ISA-variant count this note plans for above. For the lattice-only closed set of
+     four, #481 reports compile time and emitted text of `cpp/bindings/bezier.cpp` before
+     and after at the three ISA levels.
    - whether `__restrict` on the kernel's parameters is the cheaper half of the same win.
      It needs no instantiation at all, and it helps under GCC roughly where the
      specialization stops helping. See "Auto-vectorize first".
