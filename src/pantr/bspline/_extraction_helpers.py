@@ -159,7 +159,9 @@ def _required_scratch_size(
 
     Computed by simulating the kernel's mode-contraction stages and taking
     twice the largest intermediate buffer (to hold two ping-pong halves).
-    The returned size is sufficient for any identity-flag pattern.
+    The returned size is sufficient for any identity-flag pattern, because an identity
+    direction has ``n_in_k == n_out_k``; :func:`_prepare_apply_call` and
+    :func:`_prepare_apply_many_call` refuse an identity-flagged operator that is not square.
 
     For ``d = 1`` and kind ``apply``/``apply_T`` the kernel does not use
     scratch and the returned size is 0.
