@@ -25,6 +25,11 @@ shape. Every one is an index, a count or a set membership, so no rounding takes 
 bit-identity is the only criterion that says anything. A bounded comparison could not even
 see two answers of different length.
 
+The ``active_basis`` lists leave out a truncated function that vanishes on the cell, and
+that decision reads zeros off the truncation coefficients, which below agree only within a
+bound. It is still exact: a coefficient is a sum of non-negative terms, so it is zero in
+both backends or in neither, as the section on the bound says of a zero coefficient.
+
 **Within a derived bound** -- the truncation coefficients, and *only* those. They are
 floating point, and bit-identity is not available for them: the oracle's ``_refine_box``
 contracts through :func:`numpy.tensordot`, which reshapes and calls BLAS, whose summation

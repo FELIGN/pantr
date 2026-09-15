@@ -366,10 +366,16 @@ def build_local(
 def _thb_halo(thb: THBSplineSpace, owned_cells: npt.NDArray[np.int64]) -> npt.NDArray[np.int64]:
     """Return the cross-level support-closure halo of ``owned_cells`` for a THB space.
 
-    A cell is in the halo iff it shares an active hierarchical function with an owned
-    cell, so every function touching an owned cell has its full support inside the owned
-    cells plus this halo (making the owned cells interior for
+    A cell is in the halo iff an active hierarchical function's tensor-product support
+    covers both it and an owned cell, so every such function has its full support inside
+    the owned cells plus this halo (making the owned cells interior for
     :meth:`THBSplineSpace.restrict`).
+
+    The closure is taken over tensor-product support, not over
+    :meth:`THBSplineSpace.active_basis`, which omits a truncated function on a cell where
+    it vanishes. Such a function still matters on that cell: whether it is active shapes
+    the truncation of the functions that do not vanish there, so its support must lie in
+    the window too.
 
     Args:
         thb (THBSplineSpace): The global hierarchical space.
@@ -377,9 +383,9 @@ def _thb_halo(thb: THBSplineSpace, owned_cells: npt.NDArray[np.int64]) -> npt.ND
             owned by the rank.
 
     Returns:
-        npt.NDArray[np.int64]: Sorted, read-only halo cell ids -- all cells that share an
-        active hierarchical function with any owned cell, excluding the owned cells
-        themselves. Empty if ``owned_cells`` is empty.
+        npt.NDArray[np.int64]: Sorted, read-only halo cell ids -- all cells whose
+        supported active functions include one supported on an owned cell, excluding the
+        owned cells themselves. Empty if ``owned_cells`` is empty.
 
     Raises:
         IndexError: If any cell id in ``owned_cells`` is out of range
@@ -388,11 +394,11 @@ def _thb_halo(thb: THBSplineSpace, owned_cells: npt.NDArray[np.int64]) -> npt.ND
     owned = {int(c) for c in owned_cells}
     owned_funcs: set[int] = set()
     for c in owned:
-        owned_funcs.update(int(d) for d in thb.active_basis(c))
+        owned_funcs.update(dof for dof, _, _ in thb._supported_functions(c))
     closure = [
         c
         for c in range(thb.grid.num_cells)
-        if any(int(d) in owned_funcs for d in thb.active_basis(c))
+        if any(dof in owned_funcs for dof, _, _ in thb._supported_functions(c))
     ]
     halo = np.array(sorted(set(closure) - owned), dtype=np.int64)
     halo.flags.writeable = False
@@ -403,7 +409,9 @@ def _thb_dof_owner(thb: THBSplineSpace, partition: Partition) -> npt.NDArray[np.
     """Return the owner rank of every global THB dof (lex-first-active-cell rule).
 
     Each hierarchical dof is owned by the rank owning the active cell with the smallest
-    flat id in the dof's support; ``-1`` for a dead dof whose support has no active cell.
+    flat id among the cells it is active on (:meth:`THBSplineSpace.active_basis`, which
+    omits a cell where a truncated function vanishes); ``-1`` for a dead dof whose cells
+    have no owner.
 
     Args:
         thb (THBSplineSpace): The global hierarchical space.

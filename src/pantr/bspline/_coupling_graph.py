@@ -145,9 +145,8 @@ def _thb_incidence(space: THBSplineSpace) -> tuple[npt.NDArray[np.int64], npt.ND
     """Build the cell -> DOF incidence (row, col) pairs for a THB-spline space.
 
     Uses :meth:`THBSplineSpace.active_basis` for the active global DOF ids on each cell.
-    ``active_basis`` returns all functions whose untruncated support intersects the cell,
-    including truncated functions that may evaluate to zero there; edge weights therefore
-    count support-intersecting functions, not just non-zero ones.
+    ``active_basis`` omits a truncated function on a cell where it vanishes, so edge
+    weights count the functions non-zero on both cells.
 
     Args:
         space (THBSplineSpace): The hierarchical space.

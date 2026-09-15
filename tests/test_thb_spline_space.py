@@ -646,11 +646,13 @@ class TestTruncation:
 
     def test_tabulate_basis_out_argument_truncated(self) -> None:
         thb = _refined_2d_corner()
-        cid = thb.grid.locate([0.1, 0.1])
+        # Beside the refinement boundary: deeper inside, every truncated function vanishes
+        # and is not listed.
+        cid = thb.grid.locate([0.45, 0.1])
         assert cid is not None
         active = thb.active_basis(cid)
         assert any(dof in thb._trunc for dof in active), "no truncated dof on this cell"
-        pts = np.array([[0.1, 0.1]])
+        pts = np.array([[0.45, 0.1]])
         out_basis = np.empty((1, active.shape[0]), dtype=np.float64)
         vals, _ = thb.tabulate_basis(cid, pts, out_basis=out_basis)
         assert vals is out_basis

@@ -206,7 +206,8 @@ class MultiLevelExtraction:
       ``(K, n)`` mapping the ``target`` reference basis (Bernstein on :math:`[0, 1]^d`
       for ``"bezier"``) to the active hierarchical functions.
 
-    The operators' rows are ordered as :meth:`active_basis` (sorted global dof).
+    The operators' rows are ordered as :meth:`active_basis` (sorted global dof), which
+    omits the functions that vanish on the cell, so no row is identically zero.
 
     References:
         Multi-level Bézier extraction for hierarchical local refinement
@@ -355,7 +356,7 @@ class MultiLevelExtraction:
             IndexError: If ``cid`` is out of range.
             ValueError: If ``out`` has the wrong shape, dtype, or is not writeable.
         """
-        rows, _, _ = self._windowed_rows(cid)
+        rows = self._active_rows(cid)
         result = cast(
             npt.NDArray[np.float64],
             _allocate_or_validate_out(out, rows.shape, np.float64),
@@ -394,15 +395,13 @@ class MultiLevelExtraction:
         cell_midx = space.grid.cell_multi_index(cid)
         level_ext = self._level_extraction(level)
         n_in = int(np.prod(level_ext.input_shape_per_dir))
-        multilevel, _, nonzero = self._windowed_rows(cid)
+        multilevel = self._active_rows(cid)
         result = cast(
             npt.NDArray[np.float64],
             _allocate_or_validate_out(out, (multilevel.shape[0], n_in), np.float64),
         )
         single_level_f64 = np.asarray(level_ext.operator(cell_midx), dtype=np.float64)
-        # A row of M^e that vanishes on the cell maps to a zero row of C^e.
-        result[...] = 0.0
-        result[nonzero] = multilevel[nonzero] @ single_level_f64
+        result[...] = multilevel @ single_level_f64
         return result
 
     # ------------------------------------------------------------------
@@ -425,6 +424,27 @@ class MultiLevelExtraction:
             self._ext[level] = ext
         return ext
 
+    def _active_rows(self, cid: int) -> npt.NDArray[np.float64]:
+        r"""Return the rows of :math:`M^\epsilon` for the functions active on cell ``cid``.
+
+        The kernel emits a row for every function whose tensor-product support covers the
+        cell; the ones kept are those :meth:`THBSplineSpace.active_basis` lists, selected by
+        dof, so the operators' rows follow that list by construction.  The kernel's own
+        ``nonzero`` flags decide the same set by a different route, and
+        ``tests/test_multilevel_extraction.py`` pins that they agree.
+
+        Args:
+            cid (int): Active cell flat id in ``[0, num_elements)``.
+
+        Returns:
+            npt.NDArray[np.float64]: Shape ``(K, n)`` with ``K = active_basis(cid).size``.
+
+        Raises:
+            IndexError: If ``cid`` is out of range.
+        """
+        rows, dofs, _ = self._windowed_rows(cid)
+        return rows[np.isin(dofs, self._space.active_basis(cid), assume_unique=True)]
+
     def _windowed_rows(
         self, cid: int
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], npt.NDArray[np.bool_]]:
@@ -435,11 +455,12 @@ class MultiLevelExtraction:
 
         Returns:
             tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], npt.NDArray[np.bool_]]:
-            ``(rows, dofs, nonzero)`` of shapes ``(K, n)``, ``(K,)`` and ``(K,)``: the
+            ``(rows, dofs, nonzero)`` of shapes ``(R, n)``, ``(R,)`` and ``(R,)``: the
             rows of :math:`M^\epsilon` for every active function whose tensor-product
-            support covers the cell, their global dofs in increasing order (equal to
-            :meth:`THBSplineSpace.active_basis`), and whether each row has a non-zero
-            entry (``False`` for a truncated function that vanishes on the cell).
+            support covers the cell, their global dofs in increasing order, and whether
+            each row has a non-zero entry (``False`` for a truncated function that
+            vanishes on the cell).  The flagged rows are those
+            :meth:`THBSplineSpace.active_basis` lists.
 
         Raises:
             IndexError: If ``cid`` is out of range.
