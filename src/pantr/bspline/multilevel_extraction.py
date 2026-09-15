@@ -355,6 +355,8 @@ class MultiLevelExtraction:
         Raises:
             IndexError: If ``cid`` is out of range.
             ValueError: If ``out`` has the wrong shape, dtype, or is not writeable.
+            RuntimeError: If the extraction kernel and the space disagree on which
+                functions are non-zero on ``cid`` (see ``_active_rows``).
         """
         rows = self._active_rows(cid)
         result = cast(
@@ -389,6 +391,8 @@ class MultiLevelExtraction:
         Raises:
             IndexError: If ``cid`` is out of range.
             ValueError: If ``out`` has the wrong shape, dtype, or is not writeable.
+            RuntimeError: If the extraction kernel and the space disagree on which
+                functions are non-zero on ``cid`` (see ``_active_rows``).
         """
         space = self._space
         level = space.grid.cell_level(cid)
@@ -432,9 +436,13 @@ class MultiLevelExtraction:
         way; the rows kept are the flagged ones.  :meth:`THBSplineSpace.active_basis`
         decides the same set by a different route (the stored truncated coefficients), and
         ``tests/test_multilevel_extraction.py`` pins that the two agree.  The count is
-        compared here as well, against the space's memoized contribution list, so a
-        disagreement (for instance a positive coefficient underflowing to ``0.0`` in the
-        space but not in the kernel's pattern) raises instead of misaligning rows and dofs.
+        compared here as well, against the space's memoized contribution list, and equal
+        counts mean equal sets: the kernel's flag is exact reachability over the zero
+        pattern of the two-scale table, and the space's coefficients are cancellation-free
+        sums over the same table, so a function the kernel flags zero is exactly zero in
+        the space too, and the space's set can only be smaller (a positive coefficient
+        underflowing to ``0.0``).  A disagreement therefore shows as a count mismatch and
+        raises instead of misaligning rows and dofs.
 
         Args:
             cid (int): Active cell flat id in ``[0, num_elements)``.
