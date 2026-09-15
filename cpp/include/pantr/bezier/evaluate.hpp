@@ -184,7 +184,9 @@ void contract_leading_axis(std::span<const T> weights, std::span<const T> block,
 ///
 /// The loop nest `evaluate_on_lattice` runs per direction, lifted out so it can be
 /// instantiated with the block size fixed. The lattice schedule contracts its last
-/// direction against `cp_size` values, one to four in pantr, once per lattice point,
+/// direction against `cp_size` values, usually one to four (a scalar field up to a
+/// rational geometry in 3D; nothing caps it, and wider blocks take the runtime path),
+/// once per lattice point,
 /// so nearly every call has a trip count too short to reach a vectorised body; a
 /// compile-time count turns each call into a few unrolled statements (issue #481).
 ///
