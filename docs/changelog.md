@@ -292,11 +292,22 @@ user-facing, and the ports change what it affects.
   cell's multi-level operator through coefficient boxes spanning whole coarser levels, whose
   size multiplied by about `2^d` per level. It now works in per-element windows of `prod(p + 1)`
   functions per level, in a Numba kernel, so the working memory per cell grows linearly with
-  depth. Rows and their order are unchanged, identically zero rows included. The per-call
+  depth. That rewrite left rows and their order unchanged; the identically zero rows are
+  dropped by a separate change, listed under *Changed*. The per-call
   coefficient cache is gone with it. `THBSplineSpace` construction still uses the box recursion
   and still grows with depth.
 
 ### Changed
+- **Behavior change. A THB function that vanishes on a cell is no longer active on that
+  cell.** `THBSplineSpace.active_basis`, `tabulate_basis`, `tabulate_basis_derivatives` and
+  `max_active_per_cell` used to list every active function whose tensor-product support
+  covers the cell, including truncated ones identically zero there; they now omit those, so
+  `MultiLevelExtraction.multilevel_operator` and `operator` emit no zero rows and
+  `max_active_per_cell` is the tighter non-zero width. The values of the functions still
+  listed are unchanged, and so is the HB basis (`truncate=False`), where nothing vanishes.
+  A caller that sized a dofmap from the old width, or matched columns to the old lists, sees
+  fewer entries on cells inside a refined region. The coupling graph and THB dof ownership
+  follow the new lists; the distributed halo still covers every supported function.
 - **Breaking. `HierarchicalGrid` refinement returns a new grid instead of mutating.**
   `refine`, `refine_cells`, `coarsen` and `coarsen_cells` all used to return `None` and change
   the receiver; each now leaves the receiver untouched and returns a new

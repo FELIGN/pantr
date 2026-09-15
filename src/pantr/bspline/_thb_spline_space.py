@@ -342,10 +342,10 @@ class THBSplineSpace:
     grid of its own, including when it refines or coarsens nothing.
 
     Note:
-        :meth:`active_basis` lists functions whose *untruncated* support covers a
-        cell; under truncation a few of those may evaluate to exactly zero on the
-        cell.  :meth:`tabulate_basis` always returns the correct (possibly zero)
-        values.
+        A function is active on a cell when its tensor-product support covers the cell
+        and it does not vanish identically there.  Under truncation a coarse function can
+        vanish on cells inside the refined region; :meth:`active_basis`,
+        :meth:`tabulate_basis` and :meth:`max_active_per_cell` omit it on those cells.
 
     References:
         Adaptive isogeometric algorithms for hierarchical splines
@@ -737,8 +737,63 @@ class THBSplineSpace:
                     trunc[offset + pos] = _TruncCoeffs(rep, tuple(box_lo), coeffs)
         return trunc
 
+    def _vanishes_on_cell(
+        self, entry: _TruncCoeffs, cell_level: int, cell_midx: tuple[int, ...]
+    ) -> bool:
+        """Decide exactly whether a truncated function is identically zero on a cell.
+
+        On the cell, the function is the sum of its stored coefficients against the
+        level-``rep_level`` B-splines supported on the cell's level-``rep_level`` cells
+        (its descendants, or its ancestor when ``rep_level`` is coarser).  Those B-splines
+        are linearly independent on each such cell -- the ones supported on a non-empty
+        knot span span the polynomials of degree ``p`` there -- so the function vanishes on
+        the cell iff every stored coefficient in that window is zero.
+
+        Reading "is zero" off the stored ``float64`` values is exact, not a tolerance,
+        under two hypotheses:
+
+        - every two-scale (Oslo) coefficient is nonnegative, which holds for any
+          nondecreasing knot vector, any subdivision factor and any regularity, and
+          truncation only sets entries to ``0.0``; so a stored coefficient is a
+          cancellation-free sum of products and is ``0.0`` exactly when every product has
+          a zero factor, whatever the summation order;
+        - no product of positive two-scale coefficients along a chain underflows to zero.
+          :func:`~pantr.bspline._multilevel_extraction_core._windowed_multilevel_rows`
+          states when that can fail; where it does, the function's stored values on the
+          cell are zero too, so the decision still agrees with :meth:`tabulate_basis`.
+
+        The same argument makes the answer independent of the backend's summation order,
+        which is what lets the C++ contribution table agree with this one exactly.
+
+        Args:
+            entry (_TruncCoeffs): The function's stored representation.
+            cell_level (int): Level ``L`` of the cell.
+            cell_midx (tuple[int, ...]): Per-axis index of the cell at level ``L``.
+
+        Returns:
+            bool: ``True`` iff the function is identically zero on the cell.
+        """
+        rep = entry.rep_level
+        window: list[slice] = []
+        for k in range(self.dim):
+            fine = self._grid.factor[k] ** rep
+            coarse = self._grid.factor[k] ** cell_level
+            # The level-`rep` cells covering the cell, as an inclusive range.  Exact integer
+            # floors, so one formula serves `rep >= L` (descendants) and `rep < L` (ancestor).
+            first_cell = cell_midx[k] * fine // coarse
+            last_cell = ((cell_midx[k] + 1) * fine - 1) // coarse
+            first_basis = self._support[rep][k][0]
+            lo = int(first_basis[first_cell]) - entry.box_lo[k]
+            hi = int(first_basis[last_cell]) + self.degrees[k] + 1 - entry.box_lo[k]
+            window.append(slice(max(lo, 0), max(hi, 0)))
+        return not bool(np.any(entry.coeffs[tuple(window)]))
+
     def _cell_contributions(self, cid: int) -> list[tuple[int, int, tuple[int, ...]]]:
-        """Return the active functions non-zero on cell ``cid``.
+        """Return the active functions that do not vanish on cell ``cid``.
+
+        A function qualifies iff its tensor-product support covers the cell and, when it is
+        truncated, it is not identically zero there (:meth:`_vanishes_on_cell`).  The
+        functions whose support merely covers the cell are :meth:`_supported_functions`.
 
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
@@ -756,6 +811,32 @@ class THBSplineSpace:
         cached = self._contrib_cache.get(cid)
         if cached is not None:
             return cached
+        supported = self._supported_functions(cid)  # validates cid
+        cell_level = self._grid.cell_level(cid)
+        cell_midx = self._grid.cell_multi_index(cid)
+        contribs = [
+            triple
+            for triple in supported
+            if (entry := self._trunc.get(triple[0])) is None
+            or not self._vanishes_on_cell(entry, cell_level, cell_midx)
+        ]
+        self._contrib_cache[cid] = contribs
+        return contribs
+
+    def _supported_functions(self, cid: int) -> list[tuple[int, int, tuple[int, ...]]]:
+        """Return the active functions whose tensor-product support covers cell ``cid``.
+
+        A superset of :meth:`_cell_contributions`: it also lists truncated functions that
+        vanish on the cell.  Its use is a support closure, where such a function still
+        matters because its Kraft status shapes the truncation of the others.  Not cached.
+
+        Args:
+            cid (int): Active cell flat id in ``[0, grid.num_cells)``.
+
+        Returns:
+            list[tuple[int, int, tuple[int, ...]]]: ``(global_dof, level, multi)``
+            triples sorted by ``global_dof``.
+        """
         cell_level = self._grid.cell_level(cid)
         cell_midx = self._grid.cell_multi_index(cid)
         factor = self._grid.factor
@@ -779,7 +860,6 @@ class THBSplineSpace:
                 if pos < active_at_level.shape[0] and int(active_at_level[pos]) == flat:
                     contribs.append((offset + pos, level, multi))
         contribs.sort(key=lambda triple: triple[0])
-        self._contrib_cache[cid] = contribs
         return contribs
 
     # ------------------------------------------------------------------
@@ -935,14 +1015,19 @@ class THBSplineSpace:
         return indices
 
     def active_basis(self, cid: int) -> npt.NDArray[np.int64]:
-        """Return the global dofs of the active functions whose support intersects cell ``cid``.
+        """Return the global dofs of the active functions that do not vanish on cell ``cid``.
+
+        A function is listed iff its tensor-product support covers the cell and it is not
+        identically zero there.  Only a truncated function can be supported on a cell and
+        vanish on it, which happens inside a refined region where truncation has removed
+        every component the function had on the cell.
 
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
 
         Returns:
             npt.NDArray[np.int64]: Sorted global hierarchical-dof indices of the
-            functions whose support intersects cell ``cid``.
+            functions non-zero on cell ``cid``.
 
         Raises:
             IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
@@ -963,23 +1048,20 @@ class THBSplineSpace:
             int: Maximum active-function count over all cells (``>= 1``).
 
         Note:
-            Counts exactly what :meth:`active_basis` returns, which selects on
-            tensor-product support. Truncation can only annihilate a function on a cell
-            it supports, never add one, so with ``truncate=True`` this is an upper bound
-            on the number of *non-zero* functions -- which is what a fixed-width dofmap
-            wants. The value is therefore the same for the THB and HB bases.
+            Counts exactly what :meth:`active_basis` returns, so functions that vanish on
+            a cell are not counted there. Truncation only annihilates functions, so with
+            ``truncate=True`` the value is at most the HB basis's on the same grid, and
+            strictly less wherever a coarse function vanishes on the widest cells.
 
-            What the bound costs at depth: a function supported on a level-``L`` cell
-            lies, at its own level ``m``, among the ``prod(degree + 1)`` level-``m``
-            functions supported on the cell's ancestor, so a cell lists at most
-            ``(L + 1) * prod(degree + 1)`` functions, and a hierarchy refined repeatedly
-            around one region makes the count on its deepest cells grow with every
-            level. Under truncation the functions actually non-zero on such a cell can be
-            far fewer, because a coarse function refined through several levels of active
-            finer functions vanishes there. A dofmap sized by this value on a deep THB
-            hierarchy therefore over-allocates by up to ``prod(degree + 1)`` entries per
-            level; :meth:`MultiLevelExtraction.multilevel_operator` still emits a row,
-            identically zero, for each such function.
+            A function supported on a level-``L`` cell lies, at its own level ``m``,
+            among the ``prod(degree + 1)`` level-``m`` functions supported on the cell's
+            ancestor, so a cell lists at most ``(L + 1) * prod(degree + 1)`` functions.
+            The HB basis reaches that growth on a hierarchy refined repeatedly around one
+            region. Under truncation a coarse function refined through several levels of
+            active finer functions vanishes on the deepest cells and is not listed, so the
+            THB count there stays far below the bound. It is not bounded by
+            ``prod(degree + 1)`` either: more functions than that can be non-zero on one
+            cell, and are then linearly dependent there.
 
             Visits every cell, so the first call populates the per-cell contribution
             cache for the whole grid -- the same cache :meth:`active_basis` fills lazily,
@@ -1300,8 +1382,8 @@ class THBSplineSpace:
         their 1D B-spline values).  Truncated functions are evaluated from their
         stored coefficients in the finest tensor-product basis their support reaches.
         The returned columns are ordered as ``dofs`` (the sorted global dofs, equal to
-        :meth:`active_basis`); a listed truncated function may evaluate to exactly zero
-        on the cell.  Mirrors the ``(basis, first_basis)`` two-return of
+        :meth:`active_basis`), so no column belongs to a function that vanishes on the
+        cell.  Mirrors the ``(basis, first_basis)`` two-return of
         :meth:`~pantr.bspline.BsplineSpace.tabulate_basis`.
 
         Args:

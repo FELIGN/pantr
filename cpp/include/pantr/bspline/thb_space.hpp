@@ -94,6 +94,13 @@
 /// per-*level* granularity as the fallback if the table is too large. The measurement
 /// is in the pull request rather than here, because a number in a comment rots.
 ///
+/// **An entry is a function that does not vanish on the cell**, not merely one whose
+/// tensor-product support covers it (FELIGN/pantr#336): a truncated function whose stored
+/// coefficients are all zero on the cell's window is left out. That decision reads zeros
+/// off the truncation coefficients, which this file compares to the oracle only within a
+/// bound, and it is still exact: every coefficient is a sum of non-negative terms, so it
+/// is zero in both backends or in neither. `vanishes_on_cell` carries the argument.
+///
 /// ## Sharing, and the one exception to `const`
 ///
 /// The root space is `shared_ptr<const BsplineSpace<T>>`, class **H** of
@@ -386,11 +393,10 @@ class THBSplineSpace {
         return std::span<const std::int64_t>(active_funcs_[static_cast<std::size_t>(level)]);
     }
 
-    /// The global dofs of the functions whose support intersects cell `cid`.
+    /// The global dofs of the active functions that do not vanish on cell `cid`.
     ///
-    /// Selects on tensor-product support, so under truncation a few of the functions
-    /// listed may evaluate to exactly zero on the cell. That is the oracle's contract
-    /// and it is what a fixed-width dofmap wants.
+    /// A function is listed iff its tensor-product support covers the cell and, when it
+    /// is truncated, it is not identically zero there -- the oracle's contract.
     ///
     /// \param cid Active cell flat id in `[0, grid().num_cells())`.
     /// \return Sorted global dofs, valid while this space is.
@@ -428,9 +434,9 @@ class THBSplineSpace {
 
     /// The largest number of active functions on any single cell.
     ///
-    /// The width a fixed-size dofmap needs. Truncation can annihilate a function on a
-    /// cell it supports but never add one, so this is the same for the THB and HB
-    /// bases. Fills the contribution table if it is not filled.
+    /// The width a fixed-size dofmap needs. Functions that vanish on a cell are not
+    /// counted there, so with truncation this is at most the HB basis's value on the same
+    /// grid. Fills the contribution table if it is not filled.
     ///
     /// \return The maximum over every active cell; zero for a grid with no cells.
     [[nodiscard]] std::int64_t max_active_per_cell() const {
@@ -1714,12 +1720,81 @@ class THBSplineSpace {
         return contributions_.get([this] { return build_contribution_table(); });
     }
 
-    /// Sweep every cell and record the active functions supported on it.
+    /// Whether a truncated function is identically zero on a cell.
+    ///
+    /// The oracle's `_vanishes_on_cell`, which carries the argument: on the cell the
+    /// function is its stored coefficients against the level-`rep_level` B-splines
+    /// supported on the cell's level-`rep_level` cells, those are linearly independent
+    /// there, and every coefficient is a cancellation-free sum of non-negative products,
+    /// so it is `0.0` exactly when its true value is -- in any summation order, which is
+    /// why this and the oracle's BLAS contraction agree bit for bit on the answer. The one
+    /// hypothesis is that no product of positive two-scale coefficients underflows.
+    ///
+    /// \param entry The function's stored coefficients.
+    /// \param cell_level The cell's level `L`.
+    /// \param cell_midx The cell's per-axis index at level `L`.
+    /// \return `true` iff every stored coefficient on the cell's window is zero.
+    [[nodiscard]] bool vanishes_on_cell(const TruncatedEntry& entry, std::int64_t cell_level,
+                                        std::span<const std::int64_t> cell_midx) const {
+        const auto d = static_cast<std::size_t>(dim());
+        const std::span<const std::int64_t> factor = grid_->factor();
+        const auto rep = static_cast<std::size_t>(entry.rep_level);
+        std::vector<std::int64_t> lo(d);
+        std::vector<std::int64_t> hi(d);
+        for (std::size_t k = 0; k < d; ++k) {
+            const std::int64_t fine = level_power(factor[k], entry.rep_level);
+            const std::int64_t coarse = level_power(factor[k], cell_level);
+            // The level-`rep_level` cells covering the cell, inclusive. Floors of
+            // non-negative integers, so one formula serves a finer representation level
+            // (descendants) and a coarser one (the ancestor). Each product is at most the
+            // cell count of one level times that of another, far inside `int64_t` for
+            // any grid whose level masks fit in memory.
+            const std::int64_t first_cell = cell_midx[k] * fine / coarse;
+            const std::int64_t last_cell = ((cell_midx[k] + 1) * fine - 1) / coarse;
+            const std::vector<std::int64_t>& first_basis = support_[rep][k].first_basis;
+            lo[k] = std::max<std::int64_t>(
+                first_basis[static_cast<std::size_t>(first_cell)] - entry.box_lo[k], 0);
+            hi[k] = std::min<std::int64_t>(first_basis[static_cast<std::size_t>(last_cell)]
+                                               + degrees()[k] + 1 - entry.box_lo[k],
+                                           entry.shape[k]);
+            if (lo[k] >= hi[k]) {
+                // No stored coefficient on the cell in this direction: the oracle's numpy
+                // slice is empty there and `np.any` of it is false. The walk below would
+                // otherwise start outside the box.
+                return true;
+            }
+        }
+        std::vector<std::int64_t> cursor(lo);
+        for (;;) {
+            std::int64_t offset = 0;
+            for (std::size_t k = 0; k < d; ++k) {
+                offset = offset * entry.shape[k] + cursor[k];
+            }
+            if (entry.coeffs[static_cast<std::size_t>(offset)] != 0.0) {
+                return false;
+            }
+            std::size_t axis = d;
+            while (axis > 0) {
+                --axis;
+                if (++cursor[axis] < hi[axis]) {
+                    break;
+                }
+                cursor[axis] = lo[axis];
+                if (axis == 0) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    /// Sweep every cell and record the active functions that do not vanish on it.
     ///
     /// A cell at level `L` is covered by the functions of every level `l <= L` whose
     /// support contains the cell's ancestor at `l`; those are `degree + 1` consecutive
     /// functions per direction, named by `first_basis`. Each candidate is looked up in
-    /// the level's sorted active set, and the ones present become entries.
+    /// the level's sorted active set, and the ones present become entries -- unless the
+    /// function is truncated and `vanishes_on_cell`, as the oracle's
+    /// `_cell_contributions` rules.
     ///
     /// \return The filled table, including `max_per_cell`.
     [[nodiscard]] ContributionTable build_contribution_table() const {
@@ -1760,10 +1835,17 @@ class THBSplineSpace {
                     const auto it =
                         std::lower_bound(active.begin(), active.end(), flat);
                     if (it != active.end() && *it == flat) {
-                        table.dof.push_back(offset
-                                            + static_cast<std::int64_t>(it - active.begin()));
-                        table.level.push_back(level);
-                        table.multi.insert(table.multi.end(), cursor.begin(), cursor.end());
+                        const std::int64_t dof =
+                            offset + static_cast<std::int64_t>(it - active.begin());
+                        const auto entry = std::lower_bound(
+                            truncated_.begin(), truncated_.end(), dof,
+                            [](const TruncatedEntry& e, std::int64_t key) { return e.dof < key; });
+                        if (entry == truncated_.end() || entry->dof != dof
+                            || !vanishes_on_cell(*entry, cell_level, cell_midx)) {
+                            table.dof.push_back(dof);
+                            table.level.push_back(level);
+                            table.multi.insert(table.multi.end(), cursor.begin(), cursor.end());
+                        }
                     }
                     std::size_t axis = d;
                     bool done = d == 0;

@@ -375,7 +375,7 @@ otherwise take alone.
 | cache | today | becomes | ticket |
 |---|---|---|---|
 | `_cached_unique_knots_and_multiplicity`, `lru_cache(128)` | `_bspline_space_1d.py:40`, process-global, byte-keyed | **deleted**, ahead of the C++ dispatch (F5, F6) | #396 |
-| `THBSplineSpace._contrib_cache` | `dict[int, list[tuple]]`, unbounded, per cell id, `:492` | **one flat CSR table** (offsets + entries) filled for *all* cells behind one DCLP flag | #397 |
+| `THBSplineSpace._contrib_cache` | `dict[int, list[tuple]]`, unbounded, per cell id, `:492` | **one flat CSR table** (offsets + entries) filled for *all* cells behind one DCLP flag; since #336 an entry is a function that does not vanish on the cell | #397 |
 | `THBSplineSpace._max_active_per_cell` | `int \| None` slot, `:493`, first call sweeps every cell | a field of that table, computed by the same sweep | #397 |
 | `MultiLevelExtraction._ext` | `dict[int, SpanwiseElementExtraction]`, `:114` | `std::vector<std::shared_ptr<const SpanwiseElementExtraction>>` indexed by level, one DCLP fill; levels are few | #400 |
 | ~~`MultiLevelExtraction._coeffs_cache`~~ | **removed by #336**; replaced by `_tables`, frozen arrays built once at construction whose size is fixed by the space | eager fields; no bound left to state | #400 |
