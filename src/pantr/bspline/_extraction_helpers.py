@@ -373,7 +373,8 @@ def _prepare_apply_call(  # noqa: PLR0913 -- each arg reflects a distinct kernel
         ``out``. ``out`` is the same array the caller can return.
 
     Raises:
-        ValueError: If shapes, dtypes, writability, or length invariants fail.
+        ValueError: If shapes, dtypes, writability, or length invariants fail, or if an
+            identity-flagged operator is not square.
         NotImplementedError: If ``d > 3``.
     """
     # `__init__.py` compiles the kernels on a background thread, and numba's default
@@ -397,6 +398,15 @@ def _prepare_apply_call(  # noqa: PLR0913 -- each arg reflects a distinct kernel
     for k, M_k in enumerate(ops_1d_per_cell):
         if M_k.ndim != 2:  # noqa: PLR2004
             raise ValueError(f"ops_1d_per_cell[{k}] must be 2D; got ndim={M_k.ndim}")
+        # Every kernel's identity branch copies over a single extent, which equals
+        # applying ``M_k`` only when it is square; the extents derived below from
+        # ``M_k.shape`` would otherwise size ``out`` for an operation the copy does not
+        # perform, and a 1D kernel reads past its operand.
+        if is_identity_per_dir[k] and M_k.shape[0] != M_k.shape[1]:
+            raise ValueError(
+                f"ops_1d_per_cell[{k}] is flagged identity but has shape {M_k.shape}; "
+                "an identity operator must be square"
+            )
     dtype = ops_1d_per_cell[0].dtype
     for k, M_k in enumerate(ops_1d_per_cell[1:], start=1):
         if M_k.dtype != dtype:
@@ -544,7 +554,8 @@ def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913, PLR0915
         ``kernel(*args)`` runs the batch operation, writing into ``out``.
 
     Raises:
-        ValueError: If shapes, dtypes, writability, or index-range invariants fail.
+        ValueError: If shapes, dtypes, writability, or index-range invariants fail, or
+            if a direction flags any element identity while its operators are not square.
         NotImplementedError: If ``d > 3``.
     """
     # `__init__.py` compiles the kernels on a background thread, and numba's default
@@ -577,6 +588,12 @@ def _prepare_apply_many_call(  # noqa: PLR0912, PLR0913, PLR0915
         zip(idx_maps_1d, is_identity_masks, ops_1d, strict=True)
     ):
         n_el_k = mask.shape[0]
+        # See ``_prepare_apply_call``: an identity branch is a copy over one extent.
+        if bool(np.any(mask)) and op.shape[1] != op.shape[2]:
+            raise ValueError(
+                f"ops_1d[{k}] is flagged identity for some element but its operators have "
+                f"shape {op.shape[1:]}; an identity operator must be square"
+            )
         if idx_map.ndim != 1:
             raise ValueError(f"idx_maps_1d[{k}] must be 1D; got ndim={idx_map.ndim}")
         if not np.issubdtype(idx_map.dtype, np.integer):
