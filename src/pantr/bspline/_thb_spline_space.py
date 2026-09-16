@@ -7,6 +7,43 @@ and a coefficient vector only for truncated functions.  Untruncated functions ar
 plain tensor-product B-splines.  Both the truncated (THB, default) and non-truncated
 (HB) bases are supported via the ``truncate`` flag.
 
+Since ``design/cross_backend_types.md`` the *value* is owned by C++
+(``cpp/include/pantr/bspline/thb_space.hpp``) and :class:`THBSplineSpace` is a wrapper
+holding one implementation of it, exactly as :mod:`pantr.bspline._bspline_space_nd`
+does for the tensor-product type. There are two implementations and they are not two
+spaces: :class:`_THBSplineSpacePython` is the oracle the port is checked against, and
+the C++ handle is the thing being checked. :func:`_impl_class` picks between them, per
+process and per dtype.
+
+**The oracle's public surface is exactly the C++ type's.** That is what lets the
+wrapper forward without asking which backend it holds, and it is why the oracle gained
+:attr:`~_THBSplineSpacePython.regularity`, :attr:`~_THBSplineSpacePython.level_offsets`,
+:attr:`~_THBSplineSpacePython.num_truncated`,
+:meth:`~_THBSplineSpacePython.contributions`, :meth:`~_THBSplineSpacePython.dof_level`
+and :meth:`~_THBSplineSpacePython.truncated` when the wrapper landed: each was already
+there as private state and had to become a member for the forward to have something to
+call.
+
+**What the wrapper computes rather than forwards, and why it is not left on the
+oracle.** Basis tabulation, the windowed :meth:`~THBSplineSpace.restrict` and the three
+prolongation operators have no C++ counterpart yet. They are *computations over* a
+space rather than properties *of* one, so they live on the wrapper and are written
+against the forwarded accessors alone -- :meth:`~THBSplineSpace.contributions`,
+:meth:`~THBSplineSpace.truncated`, :meth:`~THBSplineSpace.level_space`,
+:meth:`~THBSplineSpace.active_function_indices`, :attr:`~THBSplineSpace.level_offsets`
+and :meth:`~THBSplineSpace.dof_level` -- so that one body serves both backends. The
+alternative, a second always-Python space kept beside ``_impl`` to serve them, would
+duplicate the state and let the two drift after a :meth:`~THBSplineSpace.refine`, which
+is a wrong answer rather than a crash. This is the same line
+:mod:`pantr.bspline._bspline_space_nd` draws, and the mixed dispatch it produces is the
+temporary seam the type front introduces; a cleanup ticket removes it once the whole
+front lands.
+
+The wrapper keeps the root space and the grid it was built from, in ``_root_space`` and
+``_grid``, so that ``thb.grid is grid`` holds. ``design/bspline_ownership_lifetime.md``
+F6 records why that is an identity contract rather than a convenience, and it is what
+requires the C++ constructor to *share* its nested objects rather than copy them.
+
 Main exports:
 
 - :class:`THBSplineSpace`: hierarchical B-spline space on a
@@ -18,23 +55,35 @@ from __future__ import annotations
 import itertools
 import math
 import string
-from typing import TYPE_CHECKING, Final, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, NoReturn, TypeAlias, cast
 
 import numpy as np
 from scipy import sparse
 
+from .._backend import Backend, active_backend, available_backends
 from ..grid import HierarchicalGrid, hierarchical_grid, tensor_product_grid
 from ..tolerance import get_conservative, get_strict
 from ._bspline_knot_insertion_core import _compute_oslo_matrix_1d_core
-from ._bspline_space_nd import BsplineSpace
+from ._bspline_space_nd import BsplineSpace, _stored_dtype
+from ._bspline_space_nd import _impl_class as _space_impl_class
 from ._thb_eval_core import _combine_tp_values
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
     import numpy.typing as npt
 
+    from .._pantr_cpp import THBSplineSpace32 as _CppTHB32
+    from .._pantr_cpp import THBSplineSpace64 as _CppTHB64
     from ._bspline_space_1d import BsplineSpace1D
+
+    _Impl: TypeAlias = "_THBSplineSpacePython | _CppTHB32 | _CppTHB64"
+    """The implementation a :class:`THBSplineSpace` holds: the oracle, or a handle.
+
+    Type-checking only, and the same alias :mod:`pantr.bspline._bspline_space_nd`
+    declares for the tensor-product case: the three are unrelated nominal types that
+    happen to offer the same surface, which is the port's whole claim.
+    """
 
 _Support1D = tuple[
     "npt.NDArray[np.int64]",
@@ -315,8 +364,335 @@ def _func_support_1d(space: BsplineSpace1D) -> _Support1D:
     return first_basis, first_cell, last_cell
 
 
-class THBSplineSpace:
-    r"""Hierarchical B-spline space on a :class:`~pantr.grid.HierarchicalGrid`.
+def _refine_box(
+    coeffs: npt.NDArray[np.float64],
+    box_lo: list[int],
+    box_hi: list[int],
+    oslo_m: tuple[npt.NDArray[np.float64], ...],
+) -> tuple[npt.NDArray[np.float64], list[int], list[int]]:
+    """Refine a dense coefficient box from one level to the next.
+
+    Applies, per direction, the two-scale matrix restricted to the current
+    function box, growing the box to the band of non-zero finer functions.
+
+    Module-level rather than a method because both sides of the wrapper need it:
+    :meth:`_THBSplineSpacePython._compute_truncated_coeffs` builds the stored boxes
+    with it, and :meth:`THBSplineSpace._finest_tp_coeffs` replays the same refinement
+    for the prolongation, which has no C++ counterpart and therefore cannot reach the
+    oracle's own copy.
+
+    Args:
+        coeffs (npt.NDArray[np.float64]): Coefficients over the current box.
+        box_lo (list[int]): Per-direction lower function index of the box.
+        box_hi (list[int]): Per-direction upper (exclusive) function index.
+        oslo_m (tuple[npt.NDArray[np.float64], ...]): Per-direction two-scale
+            matrices for this level transition.
+
+    Returns:
+        tuple[npt.NDArray[np.float64], list[int], list[int]]: Refined
+        coefficients and fresh lists ``(box_lo, box_hi)`` for the next
+        level; the input lists are not modified.
+
+    Raises:
+        ValueError: If the Oslo matrix slice for any direction is entirely
+            zero, indicating a degenerate box or invalid knot refinement.
+    """
+    new_lo = list(box_lo)
+    new_hi = list(box_hi)
+    out = coeffs
+    for k in range(out.ndim):
+        alpha = oslo_m[k]
+        cols = alpha[:, box_lo[k] : box_hi[k]]
+        rows = np.nonzero(np.any(cols != 0.0, axis=1))[0]
+        if rows.size == 0:
+            raise ValueError(
+                f"_refine_box: Oslo matrix slice for direction {k} "
+                f"(columns [{box_lo[k]}:{box_hi[k]}]) is entirely zero — "
+                "degenerate or invalid knot refinement."
+            )
+        nlo, nhi = int(rows[0]), int(rows[-1]) + 1
+        sub = alpha[nlo:nhi, box_lo[k] : box_hi[k]]
+        contracted = np.tensordot(sub, out, axes=([1], [k]))
+        out = np.moveaxis(contracted, 0, k)
+        new_lo[k], new_hi[k] = nlo, nhi
+    return out, new_lo, new_hi
+
+
+def _build_oslo_matrices(
+    level_spaces: Sequence[BsplineSpace],
+) -> tuple[tuple[npt.NDArray[np.float64], ...], ...]:
+    """Build the per-direction two-scale (Oslo) matrices between consecutive levels.
+
+    Entry ``[m][k]`` is the refinement matrix ``alpha`` of shape
+    ``(num_basis_{m+1,k}, num_basis_{m,k})`` such that a level-``m`` B-spline
+    ``B_i`` equals ``sum_j alpha[j, i] B_j`` in the level-``(m+1)`` basis (the
+    identity when ``factor[k] == 1``).
+
+    Takes the level spaces rather than a THB space, for the reason :func:`_refine_box`
+    gives: the oracle holds them as a tuple and the wrapper reaches them one
+    :meth:`~THBSplineSpace.level_space` call at a time, and both need the same
+    matrices.
+
+    Args:
+        level_spaces (Sequence[BsplineSpace]): The per-level tensor-product spaces,
+            in level order.
+
+    Returns:
+        tuple[tuple[npt.NDArray[np.float64], ...], ...]: Matrices indexed by
+        ``[m][k]`` for ``m`` in ``[0, len(level_spaces) - 2]``.
+    """
+    mats: list[tuple[npt.NDArray[np.float64], ...]] = []
+    for m in range(len(level_spaces) - 1):
+        per_dir: list[npt.NDArray[np.float64]] = []
+        for old, new in zip(level_spaces[m].spaces, level_spaces[m + 1].spaces, strict=True):
+            alpha = _compute_oslo_matrix_1d_core(old.degree, old.knots, new.knots)
+            per_dir.append(np.asarray(alpha, dtype=np.float64))
+        mats.append(tuple(per_dir))
+    return tuple(mats)
+
+
+def _impl_class(dtype: np.dtype[Any]) -> type[_THBSplineSpacePython] | type[Any]:
+    """The implementation class the active backend and the dtype select.
+
+    The backend is per process rather than per instance, for the reason
+    :func:`pantr.bspline._bspline_space_nd._impl_class` gives. It bites here through
+    :meth:`THBSplineSpace.refine`, :meth:`THBSplineSpace.refine_region` and
+    :meth:`THBSplineSpace.coarsen`, each of which returns a space: a per-instance
+    choice would let a derived space cross implementations, which is the
+    reconciliation ``design/cross_backend_types.md`` forbids.
+
+    Args:
+        dtype (np.dtype[Any]): The root space's storage format.
+
+    Returns:
+        type: The oracle under the Python backend, and the C++ class for that
+        storage format otherwise.
+
+    Raises:
+        RuntimeError: If the C++ backend is requested and is not available.
+    """
+    if active_backend() is Backend.PYTHON:
+        return _THBSplineSpacePython
+    if Backend.CPP not in available_backends():
+        raise RuntimeError("the CPP backend is not available in this installation")
+    from pantr import _pantr_cpp  # noqa: PLC0415  (optional, imported only when selected)
+
+    if dtype == np.float32:
+        return _pantr_cpp.THBSplineSpace32
+    return _pantr_cpp.THBSplineSpace64
+
+
+def _new_impl(
+    root_space: BsplineSpace,
+    grid: HierarchicalGrid,
+    truncate: bool,
+    regularity: Sequence[int | None],
+    dtype: np.dtype[Any],
+) -> _Impl:
+    """Build a hierarchical space in whichever implementation the backend selects.
+
+    The two implementations take their nested objects differently, and the difference
+    is the whole reason this function exists rather than one expression. The C++ class
+    takes the root space's and the grid's **implementations**, which is what makes it
+    share them; the oracle takes the **wrappers**, because its own body is written
+    against their public surfaces -- ``grid.subdomain_mask``, ``space.subdivide`` and a
+    dozen more -- and rewriting two thousand lines of the parity oracle to work one
+    layer down would risk the very thing the oracle exists to be a fixed point for.
+
+    That asymmetry is what makes the cross-backend check below necessary, and it is
+    not symmetric either. Handing a Python oracle to the C++ class raises a nanobind
+    ``TypeError`` naming C++ types, which is loud but unreadable; handing a C++ handle
+    to the oracle **succeeds**, and yields a hybrid whose hierarchical logic runs in
+    Python over C++ values, which no parity claim covers and nothing announces.
+    ``design/cross_backend_types.md`` forbids exactly that second shape, so both
+    directions are refused here with one message.
+
+    Args:
+        root_space (BsplineSpace): The level-0 tensor-product space.
+        grid (HierarchicalGrid): The active-cell hierarchy.
+        truncate (bool): Whether to build the truncated (THB) basis.
+        regularity (Sequence[int | None]): Per-direction continuity, already
+            broadcast to one entry per direction by :class:`THBSplineSpace`.
+        dtype (np.dtype[Any]): The root space's storage format.
+
+    Returns:
+        _Impl: The implementation object; an oracle instance or a C++ handle.
+
+    Raises:
+        ValueError: If ``root_space`` or ``grid`` was built under a different backend.
+        RuntimeError: If the C++ backend is requested and is not available.
+    """
+    cls = _impl_class(dtype)
+    if not isinstance(root_space._impl, _space_impl_class(dtype)):
+        raise ValueError(
+            "root_space must come from the active backend; it was built under a different one."
+        )
+    if not isinstance(grid._impl, _grid_impl_class()):
+        raise ValueError(
+            "grid must come from the active backend; it was built under a different one."
+        )
+    if cls is _THBSplineSpacePython:
+        return _THBSplineSpacePython(root_space, grid, truncate, regularity)
+    # `cls` is one of the C++ classes here. The checker cannot narrow an identity test
+    # on a `type[...]` union, so it still admits the oracle and then reports the
+    # wrapper types as wrong for the handle parameters.
+    cpp_cls: Any = cls
+    return cast("_Impl", cpp_cls(root_space._impl, grid._impl, truncate, list(regularity)))
+
+
+def _grid_impl_class() -> type[Any]:
+    """The hierarchical-grid implementation class the active backend builds.
+
+    :mod:`pantr.grid` offers no per-dtype ``_impl_class`` the way the B-spline modules
+    do -- its hierarchy is ``float64``-only -- so the pair is reached here instead. The
+    imports are lazy for the reason every ``_pantr_cpp`` import in the tree is: the
+    extension is optional, and the oracle class is only needed on the branch that
+    names it.
+
+    Returns:
+        type[Any]: ``pantr.grid._hierarchical_grid._HierarchicalGridPython`` under the
+        Python backend, and the bound ``pantr._pantr_cpp.HierarchicalGrid`` otherwise.
+
+    Raises:
+        RuntimeError: If the C++ backend is requested and is not available.
+    """
+    if active_backend() is Backend.PYTHON:
+        from ..grid._hierarchical_grid import (  # noqa: PLC0415  (lazy, one branch only)
+            _HierarchicalGridPython,
+        )
+
+        return _HierarchicalGridPython
+    if Backend.CPP not in available_backends():
+        raise RuntimeError("the CPP backend is not available in this installation")
+    from pantr import _pantr_cpp  # noqa: PLC0415  (optional, imported only when selected)
+
+    return _pantr_cpp.HierarchicalGrid
+
+
+def _supported_functions(
+    space: _THBSplineSpacePython | THBSplineSpace, cid: int
+) -> list[tuple[int, int, tuple[int, ...]]]:
+    """Return the active functions whose tensor-product support covers cell ``cid``.
+
+    A superset of :meth:`THBSplineSpace.contributions`: it also lists truncated
+    functions that vanish on the cell.  Its use is a support closure, where such a
+    function still matters because its Kraft status shapes the truncation of the
+    others.  Not cached.
+
+    Module-level, and reading only the three private accessors both classes offer under
+    the same names, because the oracle needs it to build its own contribution table
+    while the wrapper needs it for the halo closure -- and the C++ type has no
+    counterpart to forward to, so a second copy on the wrapper would be the duplication
+    the port exists to remove.
+
+    Args:
+        space (_THBSplineSpacePython | THBSplineSpace): The space to read.
+        cid (int): Active cell flat id in ``[0, grid.num_cells)``.
+
+    Returns:
+        list[tuple[int, int, tuple[int, ...]]]: ``(global_dof, level, multi)`` triples
+        sorted by ``global_dof``.
+
+    Raises:
+        IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
+    """
+    grid = space.grid
+    cell_level = grid.cell_level(cid)
+    cell_midx = grid.cell_multi_index(cid)
+    factor = grid.factor
+    dim = space.dim
+    degrees = space.degrees
+    offsets = space._offsets()
+    contribs: list[tuple[int, int, tuple[int, ...]]] = []
+    for level in range(cell_level + 1):
+        divisor = tuple(factor[k] ** (cell_level - level) for k in range(dim))
+        cell_at_level = tuple(cell_midx[k] // divisor[k] for k in range(dim))
+        num_basis = space.level_space(level).num_basis
+        support = space._level_support(level)
+        ranges = []
+        for k in range(dim):
+            first_basis = support[k][0]
+            f0 = int(first_basis[cell_at_level[k]])
+            ranges.append(range(f0, f0 + degrees[k] + 1))
+        active_at_level = space._active_at(level)
+        offset = int(offsets[level])
+        for multi in itertools.product(*ranges):
+            flat = int(np.ravel_multi_index(multi, num_basis))
+            pos = int(np.searchsorted(active_at_level, flat))
+            if pos < active_at_level.shape[0] and int(active_at_level[pos]) == flat:
+                contribs.append((offset + pos, level, multi))
+    contribs.sort(key=lambda triple: triple[0])
+    return contribs
+
+
+def _cell_ids(values: npt.ArrayLike) -> npt.NDArray[np.int64]:
+    """Coerce an ``ArrayLike`` of cell or corner indices into what the bindings take.
+
+    Python's calling convention rather than validation. The C++ entry points declare
+    their index arguments ``noconvert()``, so they take a contiguous ``int64`` array
+    and nothing else; the oracle would accept anything :func:`numpy.asarray` swallows.
+    Converting here is what keeps the two answering the same call, and it is also where
+    a nested sequence is flattened -- both implementations read a flat run of indices.
+
+    The conversion is deliberately :func:`numpy.asarray`'s and not a stricter one: that
+    is what the Python implementation has always done for these arguments, so tightening
+    it here would change behaviour under both backends in a ticket that is wiring, not
+    re-deciding.
+
+    Args:
+        values (npt.ArrayLike): Flat cell ids, or a per-direction corner.
+
+    Returns:
+        npt.NDArray[np.int64]: A contiguous 1D ``int64`` array.
+    """
+    return np.ascontiguousarray(np.asarray(values, dtype=np.int64).ravel())
+
+
+def _as_grid(value: object, root: object) -> HierarchicalGrid:
+    """Present an implementation's grid as the public wrapper.
+
+    The two backends hand back different things from ``impl.grid``. The oracle is
+    built on the public types, so its grid is already a
+    :class:`~pantr.grid.HierarchicalGrid`; the C++ space owns a
+    ``pantr::grid::HierarchicalGrid`` and its binding hands back the raw handle. Both
+    have to reach the caller as the one public class, and this is the single place
+    that reconciles them -- the same shape, and for the same reason, as
+    ``pantr.grid._grid._grid_value``.
+
+    Written as "already the right type, or adopt it" rather than as a test on which
+    backend is active, because that is the actual question and it stays true if a
+    third implementation ever appears. It is scaffolding all the same: it exists
+    because the oracle exists, and it goes when that does.
+
+    Args:
+        value (object): What the implementation returned for its grid.
+        root (object): The level-0 :class:`~pantr.grid.TensorProductGrid` to seed the
+            new wrapper's root memo with, so that a derived grid keeps the root
+            object -- and its tags -- the space was built over.
+
+    Returns:
+        HierarchicalGrid: ``value`` if it already is one, otherwise a wrapper
+        adopting it.
+    """
+    if isinstance(value, HierarchicalGrid):
+        return value
+    return HierarchicalGrid._wrap_over(cast("Any", value), cast("Any", root))
+
+
+class _THBSplineSpacePython:
+    r"""The pure-Python hierarchical B-spline space: the port's parity oracle.
+
+    Reached only through :class:`THBSplineSpace`, which is the class a caller holds.
+    Its public surface is **exactly** ``pantr::bspline::THBSplineSpace``'s bound one,
+    member for member and message for message, because that is what lets the wrapper
+    forward without asking which implementation it holds. Anything that is *not* on
+    the C++ type is private here, and anything the C++ type has but this one lacks
+    would be a forward with nothing to call.
+
+    Unlike :class:`pantr.bspline._bspline_space_nd._BsplineSpaceNDPython`, this oracle
+    holds the root space and the grid as **wrappers** rather than as their
+    implementations. The module docstring and :func:`_new_impl` carry the reason and
+    the check that makes it safe.
 
     Built from a root :class:`~pantr.bspline.BsplineSpace` (level 0) and a
     :class:`~pantr.grid.HierarchicalGrid` carrying the active-cell hierarchy.  The
@@ -399,36 +775,31 @@ class THBSplineSpace:
         self,
         root_space: BsplineSpace,
         grid: HierarchicalGrid,
-        *,
-        truncate: bool = True,
-        regularity: int | Sequence[int | None] | None = None,
+        truncate: bool,
+        regularity: Sequence[int | None],
     ) -> None:
         """Create a hierarchical B-spline space.
+
+        Positional throughout and with ``regularity`` already broadcast, because the
+        C++ constructor is, and :func:`_new_impl` calls the two with one call shape.
+        :class:`THBSplineSpace` is what offers the keyword form and the scalar.
 
         Args:
             root_space (BsplineSpace): The level-0 tensor-product B-spline space.
             grid (HierarchicalGrid): Hierarchical grid whose root knot-span grid
                 matches ``root_space``.
-            truncate (bool): If ``True`` (default), build the truncated (THB) basis;
-                if ``False``, build the non-truncated hierarchical (HB) basis.
-            regularity (int | Sequence[int | None] | None): Per-direction continuity
-                at the knots inserted when subdividing to finer levels.  A scalar is
-                broadcast to every axis; ``None`` (default) uses maximal smoothness.
-                Each non-``None`` entry must satisfy ``-1 <= regularity[k] < degree[k]``.
+            truncate (bool): If ``True``, build the truncated (THB) basis; if
+                ``False``, build the non-truncated hierarchical (HB) basis.
+            regularity (Sequence[int | None]): Per-direction continuity at the knots
+                inserted when subdividing to finer levels.  ``None`` in an entry uses
+                maximal smoothness.  Each non-``None`` entry must satisfy
+                ``-1 <= regularity[k] < degree[k]``.
 
         Raises:
-            TypeError: If ``root_space`` is not a :class:`~pantr.bspline.BsplineSpace`
-                or ``grid`` is not a :class:`~pantr.grid.HierarchicalGrid`.
             ValueError: If ``grid`` and ``root_space`` disagree on dimension or on
                 the root knot-span grid, if ``regularity`` has the wrong length, or
                 if any per-direction regularity value is out of range.
         """
-        if not isinstance(root_space, BsplineSpace):
-            raise TypeError(
-                f"root_space must be a BsplineSpace; got {type(root_space).__name__!r}."
-            )
-        if not isinstance(grid, HierarchicalGrid):
-            raise TypeError(f"grid must be a HierarchicalGrid; got {type(grid).__name__!r}.")
         dim = root_space.dim
         if grid.ndim != dim:
             raise ValueError(f"grid.ndim ({grid.ndim}) must equal root_space.dim ({dim}).")
@@ -451,14 +822,11 @@ class THBSplineSpace:
         ):
             raise ValueError("grid root bounds must match root_space domain.")
 
-        if regularity is None or isinstance(regularity, int):
-            reg: tuple[int | None, ...] = (regularity,) * dim
-        else:
-            reg = tuple(regularity)
-            if len(reg) != dim:
-                raise ValueError(
-                    f"regularity must be a scalar or length-{dim} sequence; got length {len(reg)}."
-                )
+        reg = tuple(regularity)
+        if len(reg) != dim:
+            raise ValueError(
+                f"regularity must be a scalar or length-{dim} sequence; got length {len(reg)}."
+            )
         for k, (r, d) in enumerate(zip(reg, root_space.degrees, strict=False)):
             if r is not None and not (-1 <= r < d):
                 raise ValueError(
@@ -476,15 +844,20 @@ class THBSplineSpace:
             for level_space in self._level_spaces
         )
         self._active_funcs = self._select_active_functions()
+        for block in self._active_funcs:
+            block.flags.writeable = False
         counts = [int(a.shape[0]) for a in self._active_funcs]
         self._func_offset = np.concatenate(([0], np.cumsum(counts, dtype=np.int64))).astype(
             np.int64
         )
+        self._func_offset.flags.writeable = False
         self._num_active = int(self._func_offset[-1])
         self._trunc = self._compute_truncated_coeffs() if truncate else {}
-        # Lazy per-cell cache of _cell_contributions (populated on first access). The
-        # space is an immutable construction-time snapshot, so cached results stay valid.
-        self._contrib_cache: dict[int, list[tuple[int, int, tuple[int, ...]]]] = {}
+        # Lazy per-cell cache of `contributions` (populated on first access). The space
+        # is an immutable construction-time snapshot, so cached results stay valid.
+        self._contrib_cache: dict[
+            int, tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]]
+        ] = {}
         self._max_active_per_cell: int | None = None
 
     # ------------------------------------------------------------------
@@ -563,77 +936,6 @@ class THBSplineSpace:
             active.append(np.sort(flats).astype(np.int64))
         return tuple(active)
 
-    def _build_oslo_matrices(self) -> tuple[tuple[npt.NDArray[np.float64], ...], ...]:
-        """Build the per-direction two-scale (Oslo) matrices between levels.
-
-        Entry ``[m][k]`` is the refinement matrix ``alpha`` of shape
-        ``(num_basis_{m+1,k}, num_basis_{m,k})`` such that a level-``m`` B-spline
-        ``B_i`` equals ``sum_j alpha[j, i] B_j`` in the level-``(m+1)`` basis (the
-        identity when ``factor[k] == 1``).
-
-        Returns:
-            tuple[tuple[npt.NDArray[np.float64], ...], ...]: Matrices indexed by
-            ``[m][k]`` for ``m`` in ``[0, num_levels - 2]``.
-        """
-        mats: list[tuple[npt.NDArray[np.float64], ...]] = []
-        for m in range(self.num_levels - 1):
-            per_dir: list[npt.NDArray[np.float64]] = []
-            for k in range(self.dim):
-                old = self._level_spaces[m].spaces[k]
-                new = self._level_spaces[m + 1].spaces[k]
-                alpha = _compute_oslo_matrix_1d_core(old.degree, old.knots, new.knots)
-                per_dir.append(np.asarray(alpha, dtype=np.float64))
-            mats.append(tuple(per_dir))
-        return tuple(mats)
-
-    @staticmethod
-    def _refine_box(
-        coeffs: npt.NDArray[np.float64],
-        box_lo: list[int],
-        box_hi: list[int],
-        oslo_m: tuple[npt.NDArray[np.float64], ...],
-    ) -> tuple[npt.NDArray[np.float64], list[int], list[int]]:
-        """Refine a dense coefficient box from one level to the next.
-
-        Applies, per direction, the two-scale matrix restricted to the current
-        function box, growing the box to the band of non-zero finer functions.
-
-        Args:
-            coeffs (npt.NDArray[np.float64]): Coefficients over the current box.
-            box_lo (list[int]): Per-direction lower function index of the box.
-            box_hi (list[int]): Per-direction upper (exclusive) function index.
-            oslo_m (tuple[npt.NDArray[np.float64], ...]): Per-direction two-scale
-                matrices for this level transition.
-
-        Returns:
-            tuple[npt.NDArray[np.float64], list[int], list[int]]: Refined
-            coefficients and fresh lists ``(box_lo, box_hi)`` for the next
-            level; the input lists are not modified.
-
-        Raises:
-            ValueError: If the Oslo matrix slice for any direction is entirely
-                zero, indicating a degenerate box or invalid knot refinement.
-        """
-        new_lo = list(box_lo)
-        new_hi = list(box_hi)
-        out = coeffs
-        for k in range(out.ndim):
-            alpha = oslo_m[k]
-            cols = alpha[:, box_lo[k] : box_hi[k]]
-            rows = np.nonzero(np.any(cols != 0.0, axis=1))[0]
-            if rows.size == 0:
-                raise ValueError(
-                    f"_refine_box: Oslo matrix slice for direction {k} "
-                    f"(columns [{box_lo[k]}:{box_hi[k]}]) is entirely zero — "
-                    "degenerate or invalid knot refinement."
-                )
-            nlo, nhi = int(rows[0]), int(rows[-1]) + 1
-            sub = alpha[nlo:nhi, box_lo[k] : box_hi[k]]
-            contracted = np.tensordot(sub, out, axes=([1], [k]))
-            out = np.moveaxis(contracted, 0, k)
-            new_lo[k], new_hi[k] = nlo, nhi
-        return out, new_lo, new_hi
-
     @staticmethod
     def _truncate_box(
         coeffs: npt.NDArray[np.float64],
@@ -685,7 +987,7 @@ class THBSplineSpace:
         trunc: dict[int, _TruncCoeffs] = {}
         if self.num_levels == 1:
             return trunc
-        oslo = self._build_oslo_matrices()
+        oslo = _build_oslo_matrices(self._level_spaces)
         refined = [
             self._grid.subdomain_mask(m) & ~self._grid.active_leaf_mask(m)
             for m in range(self.num_levels)
@@ -713,7 +1015,7 @@ class THBSplineSpace:
                     )
                     if not bool(refined[m][cell_box].any()):
                         break
-                    coeffs, box_lo, box_hi = self._refine_box(coeffs, box_lo, box_hi, oslo[m])
+                    coeffs, box_lo, box_hi = _refine_box(coeffs, box_lo, box_hi, oslo[m])
                     m += 1
                     rep = m
                     zeroed = self._truncate_box(
@@ -791,30 +1093,40 @@ class THBSplineSpace:
             window.append(slice(max(lo, 0), max(hi, 0)))
         return not bool(np.any(entry.coeffs[tuple(window)]))
 
-    def _cell_contributions(self, cid: int) -> list[tuple[int, int, tuple[int, ...]]]:
+    def contributions(
+        self, cid: int
+    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]]:
         """Return the active functions that do not vanish on cell ``cid``.
 
         A function qualifies iff its tensor-product support covers the cell and, when it is
         truncated, it is not identically zero there (:meth:`_vanishes_on_cell`).  The
-        functions whose support merely covers the cell are :meth:`_supported_functions`.
+        functions whose support merely covers the cell are :func:`_supported_functions`.
+
+        Three parallel arrays rather than three calls, because a caller wanting the
+        multi-indices wants the dofs beside them; the C++ counterpart returns the same
+        triple for the same reason.
 
         Args:
             cid (int): Active cell flat id in ``[0, grid.num_cells)``.
 
         Returns:
-            list[tuple[int, int, tuple[int, ...]]]: ``(global_dof, level, multi)``
-            triples sorted by ``global_dof``, where ``multi`` is the per-axis function
-            index tuple (multi-index) in its level space.
+            tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+            ``(dofs, levels, multi_indices)`` sorted by global dof, of shapes ``(K,)``,
+            ``(K,)`` and ``(K, dim)``.  All three are read-only.
+
+        Raises:
+            IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
 
         Note:
             Results are memoized per ``cid`` in ``self._contrib_cache`` (the space is an
-            immutable snapshot).  The returned list is the cached object; callers must
-            not mutate it.
+            immutable snapshot), and the arrays are the cached objects, which is why
+            they are read-only.  :class:`THBSplineSpace` is what copies them on the way
+            out where its own contract promises a writable array.
         """
         cached = self._contrib_cache.get(cid)
         if cached is not None:
             return cached
-        supported = self._supported_functions(cid)  # validates cid
+        supported = _supported_functions(self, cid)  # validates cid
         cell_level = self._grid.cell_level(cid)
         cell_midx = self._grid.cell_multi_index(cid)
         contribs = [
@@ -823,47 +1135,16 @@ class THBSplineSpace:
             if (entry := self._trunc.get(triple[0])) is None
             or not self._vanishes_on_cell(entry, cell_level, cell_midx)
         ]
-        self._contrib_cache[cid] = contribs
-        return contribs
-
-    def _supported_functions(self, cid: int) -> list[tuple[int, int, tuple[int, ...]]]:
-        """Return the active functions whose tensor-product support covers cell ``cid``.
-
-        A superset of :meth:`_cell_contributions`: it also lists truncated functions that
-        vanish on the cell.  Its use is a support closure, where such a function still
-        matters because its Kraft status shapes the truncation of the others.  Not cached.
-
-        Args:
-            cid (int): Active cell flat id in ``[0, grid.num_cells)``.
-
-        Returns:
-            list[tuple[int, int, tuple[int, ...]]]: ``(global_dof, level, multi)``
-            triples sorted by ``global_dof``.
-        """
-        cell_level = self._grid.cell_level(cid)
-        cell_midx = self._grid.cell_multi_index(cid)
-        factor = self._grid.factor
-        dim = self.dim
-        contribs: list[tuple[int, int, tuple[int, ...]]] = []
-        for level in range(cell_level + 1):
-            divisor = tuple(factor[k] ** (cell_level - level) for k in range(dim))
-            cell_at_level = tuple(cell_midx[k] // divisor[k] for k in range(dim))
-            num_basis = self._level_spaces[level].num_basis
-            support = self._support[level]
-            ranges = []
-            for k in range(dim):
-                first_basis = support[k][0]
-                f0 = int(first_basis[cell_at_level[k]])
-                ranges.append(range(f0, f0 + self.degrees[k] + 1))
-            active_at_level = self._active_funcs[level]
-            offset = int(self._func_offset[level])
-            for multi in itertools.product(*ranges):
-                flat = int(np.ravel_multi_index(multi, num_basis))
-                pos = int(np.searchsorted(active_at_level, flat))
-                if pos < active_at_level.shape[0] and int(active_at_level[pos]) == flat:
-                    contribs.append((offset + pos, level, multi))
-        contribs.sort(key=lambda triple: triple[0])
-        return contribs
+        dofs = np.array([triple[0] for triple in contribs], dtype=np.int64)
+        levels = np.array([triple[1] for triple in contribs], dtype=np.int64)
+        multis = np.array([triple[2] for triple in contribs], dtype=np.int64).reshape(
+            len(contribs), self.dim
+        )
+        for block in (dofs, levels, multis):
+            block.flags.writeable = False
+        table = (dofs, levels, multis)
+        self._contrib_cache[cid] = table
+        return table
 
     # ------------------------------------------------------------------
     # Properties
@@ -925,6 +1206,16 @@ class THBSplineSpace:
         return self._truncate
 
     @property
+    def regularity(self) -> tuple[int | None, ...]:
+        """Get the per-direction continuity used to build the finer levels.
+
+        Returns:
+            tuple[int | None, ...]: One entry per direction, ``None`` where maximal
+            smoothness was asked for.  Already broadcast, so its length is ``dim``.
+        """
+        return self._regularity
+
+    @property
     def num_total_basis(self) -> int:
         """Get the total number of active hierarchical basis functions.
 
@@ -946,6 +1237,27 @@ class THBSplineSpace:
         return tuple(int(a.shape[0]) for a in self._active_funcs)
 
     @property
+    def level_offsets(self) -> npt.NDArray[np.int64]:
+        """Get the per-level base of the global dof numbering.
+
+        Returns:
+            npt.NDArray[np.int64]: Length ``num_levels + 1``; entry ``l`` is the first
+            global dof of level ``l`` and the last entry is ``num_total_basis``.
+            Read-only, and the space's own storage.
+        """
+        return self._func_offset
+
+    @property
+    def num_truncated(self) -> int:
+        """Get how many active functions the truncation actually touched.
+
+        Returns:
+            int: The number of dofs for which :meth:`truncated` is not ``None``;
+            always ``0`` when ``truncate`` is ``False``.
+        """
+        return len(self._trunc)
+
+    @property
     def domain(self) -> npt.NDArray[np.float32 | np.float64]:
         """Get the parametric domain bounds.
 
@@ -954,15 +1266,6 @@ class THBSplineSpace:
             direction (from the root space).
         """
         return self._root_space.domain
-
-    @property
-    def dtype(self) -> npt.DTypeLike:
-        """Get the floating-point dtype of the space.
-
-        Returns:
-            npt.DTypeLike: Always ``numpy.float64`` (THB evaluation is float64).
-        """
-        return np.float64
 
     @property
     def tolerance(self) -> float:
@@ -1007,15 +1310,15 @@ class THBSplineSpace:
 
         Returns:
             npt.NDArray[np.int64]: Sorted flat (C-order) level-``level`` function
-            indices selected by the Kraft rule.  A fresh copy is returned.
+            indices selected by the Kraft rule.  Read-only, and the space's own
+            storage; :class:`THBSplineSpace` is what copies it on the way out.
 
         Raises:
             ValueError: If ``level`` is out of range.
         """
         if not (0 <= level < self.num_levels):
             raise ValueError(f"level must be in [0, {self.num_levels - 1}]; got {level!r}.")
-        indices: npt.NDArray[np.int64] = self._active_funcs[level].copy()
-        return indices
+        return self._active_funcs[level]
 
     def active_basis(self, cid: int) -> npt.NDArray[np.int64]:
         """Return the global dofs of the active functions that do not vanish on cell ``cid``.
@@ -1030,12 +1333,13 @@ class THBSplineSpace:
 
         Returns:
             npt.NDArray[np.int64]: Sorted global hierarchical-dof indices of the
-            functions non-zero on cell ``cid``.
+            functions non-zero on cell ``cid``.  Read-only, and the space's own
+            storage; :class:`THBSplineSpace` is what copies it on the way out.
 
         Raises:
             IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
         """
-        return np.array([dof for dof, _, _ in self._cell_contributions(cid)], dtype=np.int64)
+        return self.contributions(cid)[0]
 
     def max_active_per_cell(self) -> int:
         """Return the largest number of active functions on any single cell.
@@ -1072,99 +1376,1397 @@ class THBSplineSpace:
         """
         if self._max_active_per_cell is None:
             self._max_active_per_cell = max(
-                len(self._cell_contributions(cid)) for cid in range(self._grid.num_cells)
+                int(self.contributions(cid)[0].shape[0]) for cid in range(self._grid.num_cells)
             )
         return self._max_active_per_cell
 
-    def restrict(self, cell_ids: npt.ArrayLike) -> THBSplineSpaceRestriction:
-        """Return the windowed sub-space over a subset of active cells.
+    # ------------------------------------------------------------------
+    # Refinement
+    # ------------------------------------------------------------------
 
-        Windows this space to the root-cell-aligned bounding box of ``cell_ids``: the
-        hierarchical grid is restricted (:meth:`pantr.grid.Grid.restrict`),
-        the root space is windowed (:meth:`pantr.bspline.BsplineSpace.restrict`), and a
-        new :class:`THBSplineSpace` is rebuilt on the sub-grid (re-running the Kraft
-        active-function selection and truncation).
+    def refine(
+        self,
+        cell_ids: npt.NDArray[np.int64],
+        admissible_class: int | None,
+    ) -> _THBSplineSpacePython:
+        """Return a new space with the marked cells refined.
 
-        Unlike the tensor-product :meth:`pantr.bspline.BsplineSpace.restrict`, the
-        windowed THB basis equals the global one only over the **interior** cells --
-        those whose entire (cross-level) function-support-closure lies inside the
-        window -- because Kraft selection and truncation depend on the subdomain near
-        the window boundary. Callers make the cells they care about interior by padding
-        ``cell_ids`` with a support-closure halo.
+        This method does not mutate ``self`` or its grid: the grid is refined by
+        rebinding, and a new :class:`_THBSplineSpacePython` is built on the result; ``self``
+        and its grid are unchanged.
+
+        With ``admissible_class=m`` (the default ``m=2``) the refinement is graded so
+        the resulting mesh is admissible of class ``m`` (the truncated functions
+        acting on any cell span at most ``m`` successive levels), following the
+        recursive refinement-neighborhood algorithm of Carraturo et al. (2019).  This
+        assumes the current mesh is already admissible of class ``m`` (true for the
+        root and for any mesh built via graded :meth:`refine`).  With
+        ``admissible_class=None`` exactly the marked cells are refined (no grading).
 
         Args:
-            cell_ids (npt.ArrayLike): Active cell flat ids to span; duplicates ignored.
+            cell_ids (npt.ArrayLike): Flat ids of active cells to refine.
+            admissible_class (int | None): Admissibility class ``m >= 2`` to maintain,
+                or ``None`` for ungraded refinement.  Defaults to ``2``.
 
         Returns:
-            THBSplineSpaceRestriction: The windowed :class:`THBSplineSpace` and a
-            read-only ``local_to_global_dof`` map; entry ``d`` is the global
-            hierarchical dof of local dof ``d`` when the local function matches a
-            globally-active function of the same level and multi-index, else ``-1``.
-            Values are exact over interior cells; functions near the window boundary
-            may map to ``-1``.
+            _THBSplineSpacePython: A new space on the refined grid (same ``root_space``,
+            ``truncate``, and ``regularity``).
 
         Raises:
-            ValueError: If ``cell_ids`` is empty.
-            TypeError: If ``cell_ids`` is not integer-valued.
-            IndexError: If any cell id is out of range ``[0, grid.num_cells)``.
+            IndexError: If any id is outside ``[0, grid.num_cells)``.
+            ValueError: If ``admissible_class`` is an integer ``< 2``.
         """
-        grid_restr = self._grid.restrict(cell_ids)
-        sub_grid = grid_restr.grid
-        if not isinstance(sub_grid, HierarchicalGrid):
-            raise RuntimeError(
-                f"restrict: expected HierarchicalGrid from grid.restrict; "
-                f"got {type(sub_grid).__name__!r}. This is a bug in HierarchicalGrid.restrict."
+        self._check_admissible_class(admissible_class)
+        ids = np.unique(np.asarray(cell_ids, dtype=np.int64).ravel())
+        bad = [int(x) for x in ids if int(x) < 0 or int(x) >= self._grid.num_cells]
+        if bad:
+            raise IndexError(
+                f"cell_ids must lie in [0, {self._grid.num_cells}); got out-of-range id(s): {bad}."
+            )
+        # Convert to (level, midx) on the original grid before any refinement, since
+        # flat ids are reassigned by every grid.refine call.
+        marked = [(self._grid.cell_level(int(c)), self._grid.cell_multi_index(int(c))) for c in ids]
+        return self._refine_marked(marked, admissible_class)
+
+    def refine_region(
+        self,
+        level: int,
+        lo: npt.NDArray[np.int64],
+        hi: npt.NDArray[np.int64],
+        admissible_class: int | None,
+    ) -> _THBSplineSpacePython:
+        """Return a new space with the active cells in a rectangular region refined.
+
+        The region is the integer cell-index box ``[lo, hi)`` at ``level`` (in
+        level-``level`` coordinates), matching the convention of
+        :meth:`pantr.grid.HierarchicalGrid.refine`.  Only the currently-active leaf
+        cells inside the box are refined; the rest of the box (already refined, or
+        not present at ``level``) is ignored.  If the box contains no active leaf
+        cells, the call is a no-op and returns a space equivalent to ``self``.  This
+        is the region-based counterpart of :meth:`refine`, which marks individual
+        cells by flat id.
+
+        Like :meth:`refine`, this does not mutate ``self`` or its grid: the grid is
+        refined by rebinding, and a new :class:`_THBSplineSpacePython` is returned.  Calls
+        chain, so successive regions refine progressively (graded by default).
+
+        Args:
+            level (int): Level at which the box lives.  Must satisfy
+                ``0 <= level <= grid.max_level``.
+            lo (npt.NDArray[np.int64]): Per-direction start index (inclusive), in
+                level-``level`` coordinates.
+            hi (npt.NDArray[np.int64]): Per-direction end index (exclusive), in
+                level-``level`` coordinates.
+            admissible_class (int | None): Admissibility class ``m >= 2`` to maintain
+                (graded refinement), or ``None`` for ungraded refinement.  Defaults
+                to ``2``.  See :meth:`refine`.
+
+        Returns:
+            _THBSplineSpacePython: A new space on the refined grid (same ``root_space``,
+            ``truncate``, and ``regularity``).
+
+        Raises:
+            ValueError: If ``admissible_class`` is an integer ``< 2``, ``level`` is
+                out of range, ``lo``/``hi`` have the wrong length, any
+                ``lo[k] >= hi[k]``, or any part of ``[lo, hi)`` lies outside the
+                level domain.
+        """
+        self._check_admissible_class(admissible_class)
+        lo_t, hi_t = self._validate_region(level, lo, hi)
+        # Enumerate the active leaves in the box on the original grid (flat ids are
+        # reassigned by every grid.refine call, so capture cells up front).
+        marked = [
+            (level, midx)
+            for midx in itertools.product(*(range(lo_t[k], hi_t[k]) for k in range(self.dim)))
+            if self._grid.is_active_leaf(level, midx)
+        ]
+        return self._refine_marked(marked, admissible_class)
+
+    @staticmethod
+    def _check_admissible_class(admissible_class: int | None) -> None:
+        """Validate the ``admissible_class`` argument shared by the refine methods.
+
+        Args:
+            admissible_class (int | None): The class value to check.
+
+        Raises:
+            ValueError: If ``admissible_class`` is an integer ``< 2``.
+        """
+        if admissible_class is not None and admissible_class < 2:  # noqa: PLR2004
+            raise ValueError(
+                f"admissible_class must be an integer >= 2 or None; got {admissible_class!r}."
+            )
+
+    def _validate_region(
+        self,
+        level: int,
+        lo: npt.NDArray[np.int64],
+        hi: npt.NDArray[np.int64],
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        """Validate a ``[lo, hi)`` cell-index box at ``level`` and normalize to tuples.
+
+        Applies the same four checks as :meth:`pantr.grid.HierarchicalGrid.refine`:
+        ``level`` range, ``lo``/``hi`` lengths, ``lo < hi`` per axis, and ``[lo, hi)``
+        within ``[0, level_cells_per_axis(level))`` on every axis.
+
+        Args:
+            level (int): Level the box lives at.
+            lo (npt.NDArray[np.int64]): Per-direction start index (inclusive).
+            hi (npt.NDArray[np.int64]): Per-direction end index (exclusive).
+
+        Returns:
+            tuple[tuple[int, ...], tuple[int, ...]]: The validated ``(lo, hi)`` tuples.
+
+        Raises:
+            ValueError: If ``level`` is out of range, ``lo``/``hi`` have the wrong
+                length, any ``lo[k] >= hi[k]``, or ``[lo, hi)`` is out of bounds.
+        """
+        ndim = self.dim
+        max_level = self._grid.max_level
+        if not 0 <= int(level) <= max_level:
+            raise ValueError(f"level must be in [0, {max_level}]; got {level!r}.")
+        lo_t = tuple(int(x) for x in lo)
+        hi_t = tuple(int(x) for x in hi)
+        if len(lo_t) != ndim or len(hi_t) != ndim:
+            raise ValueError(f"lo and hi must have length {ndim}; got {len(lo_t)} and {len(hi_t)}.")
+        if any(lo_k >= hi_k for lo_k, hi_k in zip(lo_t, hi_t, strict=False)):
+            raise ValueError(
+                f"lo must be strictly less than hi in every dimension; "
+                f"got lo={lo_t!r}, hi={hi_t!r}."
+            )
+        n_per_axis = self._grid.level_cells_per_axis(level)
+        for k in range(ndim):
+            if lo_t[k] < 0 or hi_t[k] > n_per_axis[k]:
+                raise ValueError(
+                    f"[lo, hi) out of bounds at level {level}: "
+                    f"axis {k} needs [0, {n_per_axis[k]}), got [{lo_t[k]}, {hi_t[k]})."
+                )
+        return lo_t, hi_t
+
+    def _refine_marked(
+        self,
+        marked: list[tuple[int, tuple[int, ...]]],
+        admissible_class: int | None,
+    ) -> _THBSplineSpacePython:
+        """Return a new space over this space's grid with the marked cells refined.
+
+        Shared by :meth:`refine` and :meth:`refine_region`.  Mutates nothing: the
+        grid is refined by rebinding, so ``self`` and its grid are untouched.
+        Callers are responsible for capturing ``marked`` against the original grid
+        before any refinement (flat ids are reassigned by every refine).
+
+        When ``marked`` refines nothing the grid is copied instead, so the returned
+        space never holds this space's grid object.  The cell decomposition is
+        immutable, but a grid also carries two tag registries and a BVH memo, which
+        belong to whoever holds the grid, and sharing them across two spaces would
+        make a tag set through one visible through the other.
+
+        Args:
+            marked (list[tuple[int, tuple[int, ...]]]): ``(level, midx)`` pairs of
+                cells to refine, captured on the original grid.
+            admissible_class (int | None): Admissibility class to maintain, or
+                ``None`` for ungraded refinement.
+
+        Returns:
+            _THBSplineSpacePython: A new space on the refined grid (same ``root_space``,
+            ``truncate``, and ``regularity``).
+        """
+        grid = self._grid
+        for level, midx in marked:
+            if admissible_class is None:
+                if grid.is_active_leaf(level, midx):
+                    grid = grid.refine(level, list(midx), [i + 1 for i in midx])
+            else:
+                grid = self._refine_recursive(grid, level, midx, admissible_class)
+        return _THBSplineSpacePython(
+            self._root_space,
+            grid if grid is not self._grid else grid._copy(),
+            self._truncate,
+            self._regularity,
+        )
+
+    def _refine_recursive(
+        self,
+        grid: HierarchicalGrid,
+        level: int,
+        midx: tuple[int, ...],
+        m: int,
+    ) -> HierarchicalGrid:
+        """Return ``grid`` with cell ``(level, midx)`` refined, graded for class ``m``.
+
+        Refines every cell in the refinement neighborhood (recursively, at the coarser
+        level ``level - m + 1``) before subdividing ``(level, midx)``, per Algorithm 4
+        of Carraturo et al. (2019).  Each step queries the grid produced by the
+        previous one, as the in-place version queried the grid it had just mutated.
+
+        Args:
+            grid (HierarchicalGrid): The grid to refine.  Not modified.
+            level (int): Level of the cell to refine.
+            midx (tuple[int, ...]): Per-axis index of the cell at ``level``.
+            m (int): Admissibility class (``>= 2``).
+
+        Returns:
+            HierarchicalGrid: The refined grid; ``grid`` itself when the cell is not
+            an active leaf and its neighborhood is empty.
+
+        Raises:
+            RecursionError: Unreachable in practice — recursion depth is bounded by
+                ``level <= grid.max_level``, which is bounded by available memory long
+                before Python's default recursion limit.
+        """
+        for nlevel, nmidx in self._refinement_neighborhood(level, midx, m, grid):
+            grid = self._refine_recursive(grid, nlevel, nmidx, m)
+        if grid.is_active_leaf(level, midx):
+            grid = grid.refine(level, list(midx), [i + 1 for i in midx])
+        return grid
+
+    def _refinement_neighborhood(
+        self,
+        level: int,
+        midx: tuple[int, ...],
+        m: int,
+        grid: HierarchicalGrid,
+    ) -> list[tuple[int, tuple[int, ...]]]:
+        """Return the refinement neighborhood of cell ``(level, midx)`` for class ``m``.
+
+        Implements Definition 3.4 of Carraturo et al. (2019). Finds all cells at level
+        ``level - m + 1`` that are parents of a level-``level - m + 2`` cell touched by
+        any B-spline whose support covers the containing cell of ``(level, midx)`` at
+        level ``level - m + 2``.
+
+        Args:
+            level (int): Level of the cell.
+            midx (tuple[int, ...]): Per-axis index of the cell at ``level``.
+            m (int): Admissibility class (``>= 2``, so ``level - m + 2 <= level``).
+            grid (HierarchicalGrid): The grid whose active set is queried.
+
+        Returns:
+            list[tuple[int, tuple[int, ...]]]: ``(level - m + 1, parent_midx)`` cells in
+            the neighborhood that are currently active leaves.
+        """
+        dim = self.dim
+        factor = self._grid.factor
+        k_nbr = level - m + 1
+        if k_nbr < 0:
+            return []
+        k_ext = level - m + 2  # = k_nbr + 1; <= level because m >= 2
+        # k_ext < len(self._support) because level <= original max_level = num_levels - 1
+        assert k_ext < len(self._support), (
+            f"k_ext={k_ext} out of range; level={level}, m={m}, num_levels={self.num_levels}"
+        )
+        support_ext = self._support[k_ext]
+        # Containing cell of (level, midx) at level k_ext.
+        q = tuple(midx[d] // factor[d] ** (level - k_ext) for d in range(dim))
+        parent_ranges = []
+        for d in range(dim):
+            first_basis, first_cell, last_cell = support_ext[d]
+            fb = int(first_basis[q[d]])
+            s_lo = int(first_cell[fb])
+            s_hi = int(last_cell[fb + self.degrees[d]]) + 1
+            parent_ranges.append(range(s_lo // factor[d], (s_hi - 1) // factor[d] + 1))
+        return [
+            (k_nbr, p) for p in itertools.product(*parent_ranges) if grid.is_active_leaf(k_nbr, p)
+        ]
+
+    def coarsen(
+        self,
+        cell_ids: npt.NDArray[np.int64],
+        admissible_class: int | None,
+    ) -> _THBSplineSpacePython:
+        """Return a new space with the marked cells coarsened away.
+
+        A parent cell is reactivated (its children removed) only when **all** of its
+        children are marked active leaves, mirroring the coarsening algorithm of
+        Carraturo et al. (2019, Alg. 5).  That rule is
+        :meth:`~pantr.grid.HierarchicalGrid.coarsen_cells`, which this method drives one
+        parent at a time so the admissibility guard below can veto a parent without
+        affecting the rest.  With ``admissible_class=None`` this is the exact inverse of
+        :meth:`refine`: ``space.refine(cells).coarsen(children_of(cells))`` recovers
+        ``space``.  With ``admissible_class=m`` the guard may suppress some coarsenings,
+        so the recovery holds only when the guard permits them all.
+
+        With ``admissible_class=m`` (the default ``m=2``) a parent is reactivated only
+        if its coarsening neighborhood (Def. 3.5) is empty, so the resulting mesh stays
+        admissible of class ``m``.  With ``admissible_class=None`` that guard is skipped.
+
+        The space is immutable: the grid is coarsened by rebinding, and a new
+        :class:`_THBSplineSpacePython` is built on the result; ``self`` and its grid are
+        unchanged.  An empty ``cell_ids``, and one that coarsens nothing, both return
+        an equivalent new space over a copy of this space's grid -- a copy rather than
+        the same object, so the two spaces never share the grid's tag registries.
+
+        Args:
+            cell_ids (npt.ArrayLike): Flat ids of active leaf cells to coarsen away.
+                An empty array is valid and coarsens nothing.
+            admissible_class (int | None): Admissibility class ``m >= 2`` to maintain,
+                or ``None`` to skip the admissibility guard.  Defaults to ``2``.
+
+        Returns:
+            _THBSplineSpacePython: A new space on the coarsened grid (same ``root_space``,
+            ``truncate``, and ``regularity``).
+
+        Raises:
+            IndexError: If any id is outside ``[0, grid.num_cells)``.
+            ValueError: If ``admissible_class`` is an integer ``< 2``.
+        """
+        if admissible_class is not None and admissible_class < 2:  # noqa: PLR2004
+            raise ValueError(
+                f"admissible_class must be an integer >= 2 or None; got {admissible_class!r}."
+            )
+        ids = np.unique(np.asarray(cell_ids, dtype=np.int64).ravel())
+        bad = [int(x) for x in ids if int(x) < 0 or int(x) >= self._grid.num_cells]
+        if bad:
+            raise IndexError(
+                f"cell_ids must lie in [0, {self._grid.num_cells}); got out-of-range id(s): {bad}."
             )
         dim = self.dim
         factor = self._grid.factor
-
-        # Root-cell bounding box of the window (the sub-grid's root spans it exactly).
-        r_lo = [
-            int(np.searchsorted(self._grid.root.breakpoints[k], sub_grid.root.breakpoints[k][0]))
-            for k in range(dim)
-        ]
-        r_hi = [r_lo[k] + sub_grid.root.cells_per_axis[k] for k in range(dim)]
-
-        # Window the root space to that box and rebuild the THB space on the sub-grid.
-        root_ni = self._root_space.num_intervals
-        box = [np.arange(r_lo[k], r_hi[k]) for k in range(dim)]
-        root_cells = np.ravel_multi_index(
-            tuple(m.ravel() for m in np.meshgrid(*box, indexing="ij")), root_ni
+        marked = {(self._grid.cell_level(int(c)), self._grid.cell_multi_index(int(c))) for c in ids}
+        parents = {
+            (level - 1, tuple(midx[d] // factor[d] for d in range(dim)))
+            for level, midx in marked
+            if level >= 1
+        }
+        num_children = math.prod(factor)
+        grid = self._grid
+        # Deepest parent first, so a veto is decided against a mesh whose finer
+        # coarsenings have already happened.
+        for parent_level, pmidx in sorted(parents, key=lambda pc: -pc[0]):
+            # Name this parent's marked children on the current grid -- every coarsening
+            # reassigns flat ids, so they are resolved afresh here rather than kept.
+            child_ids: list[int] = []
+            for child in itertools.product(
+                *(range(pmidx[d] * factor[d], (pmidx[d] + 1) * factor[d]) for d in range(dim))
+            ):
+                cid = grid.cell_id(parent_level + 1, child)
+                if cid is not None and (parent_level + 1, child) in marked:
+                    child_ids.append(cid)
+            # An incomplete family is one `coarsen_cells` would skip anyway, so leaving
+            # here costs nothing and skips the only expensive test in the loop.  Measured
+            # on a 2050-cell mesh with 1537 cells marked, so most families are incomplete:
+            # 9.4 ms with this line, 19.7 ms without it, 9.6 ms for the pre-refactor loop
+            # this replaces -- which had the same order and which it therefore matches.
+            if len(child_ids) < num_children:
+                continue
+            if admissible_class is not None and not self._coarsening_neighborhood_empty(
+                parent_level, pmidx, admissible_class, grid
+            ):
+                continue
+            # coarsen_cells applies the rule itself -- it demotes the parent only if all
+            # of its children are named active leaves, which is Alg. 5's condition.
+            grid = grid.coarsen_cells(child_ids)
+        return _THBSplineSpacePython(
+            self._root_space,
+            grid if grid is not self._grid else grid._copy(),
+            self._truncate,
+            self._regularity,
         )
-        windowed_root = self._root_space.restrict(root_cells).space
-        sub_space = THBSplineSpace(
-            windowed_root, sub_grid, truncate=self._truncate, regularity=self._regularity
+
+    def _coarsening_neighborhood_empty(
+        self,
+        parent_level: int,
+        pmidx: tuple[int, ...],
+        m: int,
+        grid: HierarchicalGrid,
+    ) -> bool:
+        """Return whether the coarsening neighborhood of a parent is empty (Def. 3.5).
+
+        The neighborhood is the set of active cells at level ``parent_level + m``
+        contained in the multilevel support extension (at level ``parent_level + 1``)
+        of the parent's children.  When it is empty, reactivating the parent preserves
+        class-``m`` admissibility (Carraturo et al. 2019).
+
+        Args:
+            parent_level (int): Level of the parent being considered for coarsening.
+            pmidx (tuple[int, ...]): Per-axis index of the parent at ``parent_level``.
+            m (int): Admissibility class (``>= 2``).
+            grid (HierarchicalGrid): The grid whose active set is queried.
+
+        Returns:
+            bool: ``True`` iff no active cell at level ``parent_level + m`` lies in the
+            support extension of the parent's children.
+
+        Note:
+            Assumes ``parent_level + 1 < self.num_levels`` and ``m >= 2``; both are
+            guaranteed by the calling context in :meth:`coarsen`.  No input validation
+            is performed.
+        """
+        dim = self.dim
+        factor = self._grid.factor
+        support = self._support[parent_level + 1]
+        ext_lo: list[int] = []
+        ext_hi: list[int] = []
+        for d in range(dim):
+            first_basis, first_cell, last_cell = support[d]
+            c_lo = pmidx[d] * factor[d]
+            c_hi = (pmidx[d] + 1) * factor[d]
+            fmin = int(first_basis[c_lo])
+            fmax = int(first_basis[c_hi - 1]) + self.degrees[d]
+            ext_lo.append(int(first_cell[fmin]))
+            ext_hi.append(int(last_cell[fmax]) + 1)
+        target = parent_level + m
+        if target > grid.max_level:
+            return True
+        box_lo = [ext_lo[d] * factor[d] ** (m - 1) for d in range(dim)]
+        box_hi = [ext_hi[d] * factor[d] ** (m - 1) for d in range(dim)]
+        for blk_lo, blk_hi in grid.active_blocks(target):
+            if all(max(box_lo[d], blk_lo[d]) < min(box_hi[d], blk_hi[d]) for d in range(dim)):
+                return False
+        return True
+
+    def _offsets(self) -> npt.NDArray[np.int64]:
+        """Return this space's level-offset array, read-only.
+
+        Named as :meth:`THBSplineSpace._offsets` is, so that
+        :func:`_supported_functions` can serve the oracle and the wrapper from one
+        body.
+
+        Returns:
+            npt.NDArray[np.int64]: Length ``num_levels + 1``, read-only.
+        """
+        return self._func_offset
+
+    def _active_at(self, level: int) -> npt.NDArray[np.int64]:
+        """Return the level's active-function index array, read-only.
+
+        Args:
+            level (int): Hierarchy level in ``[0, num_levels)``.
+
+        Returns:
+            npt.NDArray[np.int64]: Sorted flat (C-order) indices, read-only.
+        """
+        return self._active_funcs[level]
+
+    def _level_support(self, level: int) -> tuple[_Support1D, ...]:
+        """Return the level's per-direction function-to-cell support.
+
+        Args:
+            level (int): Hierarchy level in ``[0, num_levels)``.
+
+        Returns:
+            tuple[_Support1D, ...]: One ``(first_basis, first_cell, last_cell)`` triple
+            per direction.
+        """
+        return self._support[level]
+
+    # ------------------------------------------------------------------
+    # The dof's own level and truncation
+    # ------------------------------------------------------------------
+
+    def dof_level(self, dof: int) -> int:
+        """Return the hierarchy level that owns global active-function ``dof``.
+
+        Args:
+            dof (int): Global active-function index in ``[0, num_total_basis)``.
+
+        Returns:
+            int: The level whose dof range (per :attr:`level_offsets`) contains
+            ``dof``.
+
+        Raises:
+            IndexError: If ``dof`` is out of range ``[0, num_total_basis)``.
+        """
+        self._check_dof(dof)
+        return int(np.searchsorted(self._func_offset, dof, side="right")) - 1
+
+    def truncated(self, dof: int) -> tuple[int, tuple[int, ...], npt.NDArray[np.float64]] | None:
+        """Return the stored representation of a truncated function, or ``None``.
+
+        ``None`` is what distinguishes a plain tensor-product B-spline from a truncated
+        one that happens to carry an all-ones box, and it is what every untruncated
+        function gives -- including every function of a space built with
+        ``truncate=False``.
+
+        Args:
+            dof (int): Global active-function index in ``[0, num_total_basis)``.
+
+        Returns:
+            tuple[int, tuple[int, ...], npt.NDArray[np.float64]] | None:
+            ``(rep_level, box_lo, coeffs)`` where ``coeffs`` holds the function in the
+            level-``rep_level`` tensor-product basis over the box starting at
+            ``box_lo``, or ``None`` if the truncation left the function alone.  The
+            coefficients are read-only.
+
+        Raises:
+            IndexError: If ``dof`` is out of range ``[0, num_total_basis)``.
+        """
+        self._check_dof(dof)
+        return self._trunc.get(dof)
+
+    def _check_dof(self, dof: int) -> None:
+        """Refuse a global dof outside the active basis.
+
+        Its wording is the C++ type's, character for character, because
+        :class:`THBSplineSpace` forwards to whichever of the two it holds and a caller
+        matching on the message must not be able to tell them apart.
+
+        Args:
+            dof (int): The dof to check.
+
+        Raises:
+            IndexError: If ``dof`` is outside ``[0, num_total_basis)``.
+        """
+        if not (0 <= dof < self._num_active):
+            raise IndexError(f"dof {dof} is out of range [0, {self._num_active}).")
+
+    def __repr__(self) -> str:
+        """Return a compact string representation.
+
+        Returns:
+            str: Shows dimension, degrees, level count, active-function count, and
+            truncation flag.
+        """
+        return (
+            f"THBSplineSpace(dim={self.dim}, degrees={self.degrees}, "
+            f"num_levels={self.num_levels}, num_total_basis={self._num_active}, "
+            f"truncate={self._truncate})"
         )
 
-        # Map each sub active function (level, sub_multi) to the global dof of the same
-        # (level, sub_multi + per-level window origin), or -1 if not globally active.
-        local_to_global_dof = np.full(sub_space.num_total_basis, -1, dtype=np.int64)
-        sub_offset = 0
-        for level in range(sub_space.num_levels):
-            origin = [
-                int(self._support[level][k][0][r_lo[k] * factor[k] ** level]) for k in range(dim)
-            ]
-            glob_num_basis = self._level_spaces[level].num_basis
-            glob_active = self._active_funcs[level]
-            glob_offset = int(self._func_offset[level])
-            sub_active = sub_space.active_function_indices(level)
-            sub_num_basis = sub_space.level_space(level).num_basis
-            for sub_pos, sub_flat in enumerate(sub_active.tolist()):
-                sub_multi = np.unravel_index(sub_flat, sub_num_basis)
-                glob_flat = int(
-                    np.ravel_multi_index(
-                        tuple(int(sub_multi[k]) + origin[k] for k in range(dim)), glob_num_basis
-                    )
-                )
-                gpos = int(np.searchsorted(glob_active, glob_flat))
-                if gpos < glob_active.shape[0] and int(glob_active[gpos]) == glob_flat:
-                    local_to_global_dof[sub_offset + sub_pos] = glob_offset + gpos
-            sub_offset += int(sub_active.shape[0])
-        assert sub_offset == sub_space.num_total_basis
-        local_to_global_dof.flags.writeable = False
-        return THBSplineSpaceRestriction(
-            sub_space, local_to_global_dof, grid_restr.local_to_global_cell
+
+class THBSplineSpace:
+    r"""Hierarchical B-spline space on a :class:`~pantr.grid.HierarchicalGrid`.
+
+    Built from a root :class:`~pantr.bspline.BsplineSpace` (level 0) and a
+    :class:`~pantr.grid.HierarchicalGrid` carrying the active-cell hierarchy.  The
+    per-level tensor-product spaces are obtained by uniformly subdividing the root
+    space according to the grid's per-direction ``factor``.  The active hierarchical
+    basis is the Kraft selection :cite:p:`kraft1997hierarchical,vuong2011hierarchical`:
+    a level-``l`` tensor-product B-spline is active iff its support lies in the
+    level-``l`` subdomain :math:`\Omega_l` but not entirely in the finer subdomain
+    :math:`\Omega_{l+1}`.
+
+    With ``truncate=True`` (the default) the *truncated* hierarchical basis (THB) is
+    built: each active function that straddles a finer-level refinement boundary has its
+    components on active finer functions removed (Giannelli-Jüttler-Speleers truncation
+    :cite:p:`giannelli2012thb`), restoring the partition of unity.  Only truncated
+    functions store a coefficient vector (in the finest tensor-product basis their support
+    reaches); untruncated functions remain plain tensor-product B-splines.  With
+    ``truncate=False`` the non-truncated hierarchical basis (HB) is built.
+
+    A :class:`~pantr.grid.HierarchicalGrid` is immutable, so this space cannot go
+    stale: :meth:`~pantr.grid.HierarchicalGrid.refine` returns a *new* grid and leaves
+    the one held here untouched.  :meth:`refine`, :meth:`refine_region` and
+    :meth:`coarsen` are the same shape one level up -- each returns a new space over a
+    grid of its own, including when it refines or coarsens nothing.
+
+    **This class is a wrapper.** The value -- the level spaces, the Kraft selection, the
+    truncation coefficients, the per-cell contribution table -- is owned by an
+    implementation chosen by :func:`_impl_class`, which is the C++ type
+    (``cpp/include/pantr/bspline/thb_space.hpp``) or the oracle
+    :class:`_THBSplineSpacePython`.  Basis tabulation, :meth:`restrict` and the three
+    prolongation operators have no C++ counterpart yet and are computed here, against
+    the forwarded accessors alone so that one body serves both backends; the module
+    docstring carries why that rather than a second always-Python space.
+
+    Instances are immutable, and that is enforced rather than documented: ``__slots__``
+    means there is no ``__dict__`` to attach anything to, and ``__setattr__`` refuses
+    even a rebinding of the slots.  The wrapper fills them through
+    ``object.__setattr__``, which is the pattern ``design/bspline_derived_caches.md``
+    asks for and :mod:`pantr.bspline._bspline_space_nd` already ships.
+
+    Note:
+        A function is active on a cell when its tensor-product support covers the cell
+        and it does not vanish identically there.  Under truncation a coarse function can
+        vanish on cells inside the refined region; :meth:`active_basis`,
+        :meth:`tabulate_basis` and :meth:`max_active_per_cell` omit it on those cells.
+
+    References:
+        Adaptive isogeometric algorithms for hierarchical splines
+        :cite:p:`garau2018algorithms`.  Per-element multi-level Bézier extraction
+        (used for element assembly and visualization) is provided by
+        :class:`~pantr.bspline.MultiLevelExtraction`, following
+        :cite:t:`dangella2018multilevel`.
+
+    Attributes:
+        _impl: The implementation this wrapper holds; see :func:`_impl_class`.  Its
+            type is the private ``_Impl`` alias, a union of three unrelated nominal
+            types with no documented form to name here.
+        _root_space (BsplineSpace): The root wrapper this space was built from, so that
+            ``thb.root_space is root_space`` holds.  A *presentation* memo, never a
+            second truth: every count, bound and tolerance comes from ``_impl``.
+        _grid (HierarchicalGrid): The grid wrapper, on the same terms -- and carrying
+            the grid's tag registries, which is why re-wrapping the handle per access
+            would be wrong rather than merely wasteful.
+        _level_space_memo (dict[int, BsplineSpace]): One wrapper per level, built on
+            first request.  ``design/bspline_ownership_lifetime.md`` names this the one
+            place a dict memo is right here, because the key is genuinely data.
+        _active_memo (dict[int, npt.NDArray[np.int64]]): The per-level active-function
+            index arrays as the implementation owns them, read-only.
+        _support_memo (dict[int, tuple[_Support1D, ...]]): Per-level, per-direction
+            function-to-cell support, derived from the level spaces for the operations
+            that have no C++ counterpart.
+        _level_offsets_memo (npt.NDArray[np.int64] | None): The implementation's own
+            level-offset array, read-only; ``None`` until first requested.
+    """
+
+    __slots__ = (
+        "_active_memo",
+        "_grid",
+        "_impl",
+        "_level_offsets_memo",
+        "_level_space_memo",
+        "_root_space",
+        "_support_memo",
+    )
+
+    _impl: _Impl
+    """The implementation this wrapper holds; see :func:`_impl_class`."""
+
+    _root_space: BsplineSpace
+    """The root wrapper this space was built from; see the class docstring."""
+
+    _grid: HierarchicalGrid
+    """The grid wrapper this space was built over; see the class docstring."""
+
+    _level_space_memo: dict[int, BsplineSpace]
+    """One level-space wrapper per level, built on first request."""
+
+    _active_memo: dict[int, npt.NDArray[np.int64]]
+    """The implementation's own per-level active-function arrays, read-only."""
+
+    _support_memo: dict[int, tuple[_Support1D, ...]]
+    """Per-level, per-direction function support, derived on first request."""
+
+    _level_offsets_memo: npt.NDArray[np.int64] | None
+    """The implementation's own level-offset array, read-only; ``None`` until read."""
+
+    def __init__(
+        self,
+        root_space: BsplineSpace,
+        grid: HierarchicalGrid,
+        *,
+        truncate: bool = True,
+        regularity: int | Sequence[int | None] | None = None,
+    ) -> None:
+        """Create a hierarchical B-spline space.
+
+        The two ``isinstance`` checks and the scalar broadcast are Python's calling
+        convention rather than validation: neither implementation accepts a scalar
+        ``regularity``, and neither can raise a readable refusal for an argument that
+        is not a wrapper at all, since reaching ``._impl`` is what the wrapper does
+        first.  Everything else -- the dimension match, the root bounds, the
+        regularity's length and range -- is the implementation's, which is what keeps
+        the messages identical under both backends.
+
+        Args:
+            root_space (BsplineSpace): The level-0 tensor-product B-spline space.
+            grid (HierarchicalGrid): Hierarchical grid whose root knot-span grid
+                matches ``root_space``.
+            truncate (bool): If ``True`` (default), build the truncated (THB) basis;
+                if ``False``, build the non-truncated hierarchical (HB) basis.
+            regularity (int | Sequence[int | None] | None): Per-direction continuity
+                at the knots inserted when subdividing to finer levels.  A scalar is
+                broadcast to every axis; ``None`` (default) uses maximal smoothness.
+                Each non-``None`` entry must satisfy ``-1 <= regularity[k] < degree[k]``.
+
+        Raises:
+            TypeError: If ``root_space`` is not a :class:`~pantr.bspline.BsplineSpace`
+                or ``grid`` is not a :class:`~pantr.grid.HierarchicalGrid`.
+            ValueError: If ``grid`` and ``root_space`` disagree on dimension or on
+                the root knot-span grid, if ``regularity`` has the wrong length, if any
+                per-direction regularity value is out of range, or if either nested
+                object was built under a different backend.
+            RuntimeError: If the C++ backend is requested and is not available.
+        """
+        if not isinstance(root_space, BsplineSpace):
+            raise TypeError(
+                f"root_space must be a BsplineSpace; got {type(root_space).__name__!r}."
+            )
+        if not isinstance(grid, HierarchicalGrid):
+            raise TypeError(f"grid must be a HierarchicalGrid; got {type(grid).__name__!r}.")
+        if regularity is None or isinstance(regularity, int):
+            reg: Sequence[int | None] = (regularity,) * root_space.dim
+        else:
+            reg = tuple(regularity)
+        impl = _new_impl(root_space, grid, bool(truncate), reg, _stored_dtype(root_space.spaces))
+        self._take(impl, root_space, grid)
+
+    @classmethod
+    def _wrap_over(
+        cls, impl: _Impl, root_space: BsplineSpace, grid: HierarchicalGrid
+    ) -> THBSplineSpace:
+        """Wrap an implementation, adopting the nested wrappers it shares.
+
+        The path :meth:`refine`, :meth:`refine_region` and :meth:`coarsen` take.  All
+        three keep the root space they were given and produce a new grid, so the new
+        wrapper inherits the receiver's root **object** and is handed the grid wrapper
+        that was built for the new handle.  Without it the C++ path would hand back a
+        fresh wrapper around an equal-but-distinct root, and a caller that had tagged
+        that root -- or that holds it by identity -- would find a different one.
+        ``design/bspline_ownership_lifetime.md`` F6 records why that is a contract.
+
+        Args:
+            impl (_Impl): The implementation object to adopt, with no re-validation.
+            root_space (BsplineSpace): The root wrapper ``impl`` shares.
+            grid (HierarchicalGrid): The grid wrapper for ``impl``'s own grid.
+
+        Returns:
+            THBSplineSpace: A wrapper around ``impl``.
+        """
+        self = object.__new__(cls)
+        self._take(impl, root_space, grid)
+        return self
+
+    def _take(self, impl: _Impl, root_space: BsplineSpace, grid: HierarchicalGrid) -> None:
+        """Hold an implementation, with every memo slot cleared.
+
+        One place rather than two, so that no construction path can leave a slot
+        uninitialised -- which surfaces as a bare ``AttributeError`` from inside a
+        property, a long way from the constructor that skipped it.
+
+        Args:
+            impl (_Impl): The implementation to hold.
+            root_space (BsplineSpace): The root wrapper to present.
+            grid (HierarchicalGrid): The grid wrapper to present.
+        """
+        object.__setattr__(self, "_impl", impl)
+        object.__setattr__(self, "_root_space", root_space)
+        object.__setattr__(self, "_grid", grid)
+        object.__setattr__(self, "_level_space_memo", {})
+        object.__setattr__(self, "_active_memo", {})
+        object.__setattr__(self, "_support_memo", {})
+        object.__setattr__(self, "_level_offsets_memo", None)
+
+    def _derived(self, impl: _Impl) -> THBSplineSpace:
+        """Wrap a space this one produced: the same root space, a grid of its own.
+
+        Args:
+            impl (_Impl): The implementation :meth:`refine`, :meth:`refine_region` or
+                :meth:`coarsen` returned.
+
+        Returns:
+            THBSplineSpace: A wrapper around ``impl``.
+        """
+        return type(self)._wrap_over(impl, self._root_space, _as_grid(impl.grid, self._grid.root))
+
+    def __setattr__(self, name: str, value: object) -> NoReturn:
+        """Refuse to set an attribute, because a space is immutable.
+
+        Args:
+            name (str): The attribute a caller tried to set.
+            value (object): The value it tried to set.
+
+        Raises:
+            AttributeError: Always.
+        """
+        raise AttributeError(f"{type(self).__name__} is immutable; cannot set {name!r}")
+
+    def __delattr__(self, name: str) -> NoReturn:
+        """Refuse to delete an attribute, because a space is immutable.
+
+        Args:
+            name (str): The attribute a caller tried to delete.
+
+        Raises:
+            AttributeError: Always.
+        """
+        raise AttributeError(f"{type(self).__name__} is immutable; cannot delete {name!r}")
+
+    def __reduce__(
+        self,
+    ) -> tuple[
+        Callable[..., THBSplineSpace],
+        tuple[BsplineSpace, HierarchicalGrid, bool, tuple[int | None, ...]],
+    ]:
+        """Pickle by the constructor's arguments rather than by implementation.
+
+        The C++ handle is not picklable and must not become part of the wire format:
+        a pickle written under the C++ backend has to load under the Python one and
+        the other way round, or the backend switch would silently become a
+        data-format switch.  ``design/bspline_pickle_tolerance.md`` is where that rule
+        and its reasons live.
+
+        The root space and the grid go out as **wrappers**, not as their
+        implementations, which is what carries their own ``__reduce__`` into this one's
+        round trip -- the univariate tolerance-drift bound for the one, the root grid's
+        tags and the per-level active blocks for the other.  Everything derived from
+        them, which is everything else this space holds, is rebuilt by the constructor
+        rather than shipped.
+
+        A module-level rebuilder rather than ``(type(self), args)`` because ``truncate``
+        and ``regularity`` are keyword-only on the constructor and a two-tuple reduction
+        has nowhere to put a keyword.
+
+        Returns:
+            tuple: :func:`_rebuild_thb_space` and the arguments to replay.
+        """
+        return (_rebuild_thb_space, (self.root_space, self.grid, self.truncate, self.regularity))
+
+    # ------------------------------------------------------------------
+    # Forwarded properties
+    # ------------------------------------------------------------------
+
+    @property
+    def grid(self) -> HierarchicalGrid:
+        """Get the underlying hierarchical grid.
+
+        The object this space was built over, or the one built for the grid a
+        refinement produced -- not a re-wrapping of the handle per access, so
+        ``thb.grid is grid`` holds and a tag set through it is seen again.
+
+        Returns:
+            HierarchicalGrid: The active-cell hierarchy this space is built on.
+        """
+        return self._grid
+
+    @property
+    def root_space(self) -> BsplineSpace:
+        """Get the level-0 tensor-product space.
+
+        The constructor argument's own object, on the same terms as :attr:`grid`, and
+        the same object a refinement of this space hands back.
+
+        Returns:
+            BsplineSpace: The root B-spline space.
+        """
+        return self._root_space
+
+    @property
+    def dim(self) -> int:
+        """Get the parametric dimension.
+
+        Returns:
+            int: Number of parametric directions.
+        """
+        return int(self._impl.dim)
+
+    @property
+    def degrees(self) -> tuple[int, ...]:
+        """Get the per-direction polynomial degrees.
+
+        Returns:
+            tuple[int, ...]: Degree per direction (the same at every level).
+        """
+        return tuple(int(degree) for degree in self._impl.degrees)
+
+    @property
+    def num_levels(self) -> int:
+        """Get the number of hierarchy levels at construction time.
+
+        Returns:
+            int: Number of levels; stable even if the grid is later refined.
+        """
+        return int(self._impl.num_levels)
+
+    @property
+    def truncate(self) -> bool:
+        """Get whether the hierarchical basis is truncated.
+
+        Returns:
+            bool: ``True`` for the truncated (THB) basis, ``False`` for the plain
+            hierarchical (HB) basis.
+        """
+        return bool(self._impl.truncate)
+
+    @property
+    def regularity(self) -> tuple[int | None, ...]:
+        """Get the per-direction continuity used to build the finer levels.
+
+        Returns:
+            tuple[int | None, ...]: One entry per direction, ``None`` where maximal
+            smoothness was asked for.  Already broadcast, so its length is :attr:`dim`
+            whatever the constructor was handed.
+        """
+        return tuple(self._impl.regularity)
+
+    @property
+    def num_total_basis(self) -> int:
+        """Get the total number of active hierarchical basis functions.
+
+        Mirrors :attr:`~pantr.bspline.BsplineSpace.num_total_basis` (the hierarchical
+        basis is not tensor-product, so there is no per-direction ``num_basis``).
+
+        Returns:
+            int: Total active-function count across all levels.
+        """
+        return int(self._impl.num_total_basis)
+
+    @property
+    def num_basis_per_level(self) -> tuple[int, ...]:
+        """Get the number of active basis functions at each level.
+
+        Returns:
+            tuple[int, ...]: Active-function count per level.
+        """
+        return tuple(int(count) for count in self._impl.num_basis_per_level)
+
+    @property
+    def level_offsets(self) -> npt.NDArray[np.int64]:
+        """Get the per-level base of the global dof numbering.
+
+        Returns:
+            npt.NDArray[np.int64]: Length ``num_levels + 1``; entry ``l`` is the first
+            global dof of level ``l`` and the last entry is :attr:`num_total_basis`.
+            A fresh, writable array per call under both backends.
+        """
+        return np.array(self._offsets())
+
+    @property
+    def num_truncated(self) -> int:
+        """Get how many active functions the truncation actually touched.
+
+        Returns:
+            int: The number of dofs for which :meth:`truncated` is not ``None``;
+            always ``0`` when :attr:`truncate` is ``False``.
+        """
+        return int(self._impl.num_truncated)
+
+    @property
+    def domain(self) -> npt.NDArray[np.float32 | np.float64]:
+        """Get the parametric domain bounds.
+
+        A fresh, writable array per call under both backends, and a copy of what the
+        implementation owns rather than a view of it -- the C++ side hands out a
+        read-only view of the root space's storage and the oracle builds an array, and
+        a caller must not be able to tell which built the space.
+
+        Returns:
+            npt.NDArray[np.float32 | np.float64]: Shape ``(dim, 2)`` ``[lo, hi]`` per
+            direction, in the root space's own dtype.
+        """
+        return np.array(self._impl.domain)
+
+    @property
+    def dtype(self) -> npt.DTypeLike:
+        """Get the floating-point dtype of the space.
+
+        Not forwarded, because neither implementation carries it: the root space's
+        storage format decides the C++ class but says nothing about the arithmetic
+        here, which is ``float64`` throughout.
+
+        Returns:
+            npt.DTypeLike: Always ``numpy.float64`` (THB evaluation is float64).
+        """
+        return np.float64
+
+    @property
+    def tolerance(self) -> float:
+        """Get the numerical tolerance.
+
+        Returns:
+            float: The root space's tolerance.
+        """
+        return float(self._impl.tolerance)
+
+    def __repr__(self) -> str:
+        """Return a compact string representation.
+
+        Forwarded rather than formatted here, unlike
+        :meth:`pantr.grid.HierarchicalGrid.__repr__`: the C++ ``to_string`` was written
+        to reproduce the oracle's wording character for character, so forwarding is what
+        puts that claim under test on every call rather than hiding it.
+
+        Returns:
+            str: Shows dimension, degrees, level count, active-function count, and
+            truncation flag.
+        """
+        return repr(self._impl)
+
+    # ------------------------------------------------------------------
+    # Forwarded queries
+    # ------------------------------------------------------------------
+
+    def level_space(self, level: int) -> BsplineSpace:
+        """Return the tensor-product space at ``level``.
+
+        Fixed at construction, and the grid it was built from is immutable, so
+        nothing can change it afterwards.  The wrapper is memoised per level, so the
+        same level gives the same object twice; level ``0`` gives
+        :attr:`root_space` itself, because both implementations share rather than copy
+        the root they were built from.
+
+        Args:
+            level (int): Hierarchy level in ``[0, num_levels)``.
+
+        Returns:
+            BsplineSpace: The root space subdivided to ``level``.
+
+        Raises:
+            ValueError: If ``level`` is out of range.
+        """
+        value = self._impl.level_space(level)  # validates level
+        key = int(level)
+        cached = self._level_space_memo.get(key)
+        if cached is not None:
+            return cached
+        space = self._as_space(value)
+        self._level_space_memo[key] = space
+        return space
+
+    def _as_space(self, value: object) -> BsplineSpace:
+        """Present an implementation's level space as the public wrapper.
+
+        The oracle is built on the public types, so its level space already is one; the
+        C++ space owns ``pantr::bspline::BsplineSpace<T>`` handles and hands back the
+        raw one.  Level ``0``'s handle is the root space's own, which is what
+        ``design/bspline_ownership_lifetime.md`` F6 asks to be reused rather than
+        re-wrapped -- a fresh wrapper over the same handle would differ from
+        :attr:`root_space` on identity while agreeing on every value.
+
+        Args:
+            value (object): What the implementation returned for the level.
+
+        Returns:
+            BsplineSpace: ``value`` if it already is one, this space's root if it is
+            the root's own handle, and a wrapper adopting it otherwise.
+        """
+        if isinstance(value, BsplineSpace):
+            return value
+        if value is self._root_space._impl:
+            return self._root_space
+        return BsplineSpace._wrap_over(cast("Any", value), self._root_space.spaces)
+
+    def _offsets(self) -> npt.NDArray[np.int64]:
+        """Return the implementation's own level-offset array, read-only.
+
+        What :attr:`level_offsets` copies from.  Kept separate because the operations
+        that have no C++ counterpart read it once per dof, and a copy per read would
+        make the prolongation quadratic in the level count for nothing.
+
+        Returns:
+            npt.NDArray[np.int64]: Length ``num_levels + 1``, read-only.
+        """
+        cached = self._level_offsets_memo
+        if cached is None:
+            cached = np.asarray(self._impl.level_offsets, dtype=np.int64)
+            object.__setattr__(self, "_level_offsets_memo", cached)
+        return cached
+
+    def _active_at(self, level: int) -> npt.NDArray[np.int64]:
+        """Return the level's active-function index array, read-only.
+
+        What :meth:`active_function_indices` copies from, for the reason
+        :meth:`_offsets` gives.
+
+        Args:
+            level (int): Hierarchy level in ``[0, num_levels)``.
+
+        Returns:
+            npt.NDArray[np.int64]: Sorted flat (C-order) indices, read-only.
+
+        Raises:
+            ValueError: If ``level`` is out of range.
+        """
+        value = self._impl.active_function_indices(level)  # validates level
+        key = int(level)
+        cached = self._active_memo.get(key)
+        if cached is None:
+            cached = np.asarray(value, dtype=np.int64)
+            self._active_memo[key] = cached
+        return cached
+
+    def _level_support(self, level: int) -> tuple[_Support1D, ...]:
+        """Return the level's per-direction function-to-cell support.
+
+        Derived from :meth:`level_space` rather than forwarded: neither implementation
+        exposes it, and the operations that have no C++ counterpart --
+        :meth:`restrict` and the prolongation -- need it.  Memoised per level because
+        :func:`_func_support_1d` walks every function of the level.
+
+        Args:
+            level (int): Hierarchy level in ``[0, num_levels)``.
+
+        Returns:
+            tuple[_Support1D, ...]: One ``(first_basis, first_cell, last_cell)`` triple
+            per direction.
+
+        Raises:
+            ValueError: If ``level`` is out of range.
+        """
+        key = int(level)
+        cached = self._support_memo.get(key)
+        if cached is None:
+            cached = tuple(_func_support_1d(one_d) for one_d in self.level_space(level).spaces)
+            self._support_memo[key] = cached
+        return cached
+
+    def active_function_indices(self, level: int) -> npt.NDArray[np.int64]:
+        """Return the flat indices of the active functions at ``level``.
+
+        Fixed at construction, and the grid it was built from is immutable, so
+        nothing can change it afterwards.
+
+        Args:
+            level (int): Hierarchy level in ``[0, num_levels)``.
+
+        Returns:
+            npt.NDArray[np.int64]: Sorted flat (C-order) level-``level`` function
+            indices selected by the Kraft rule.  A fresh writable copy per call under
+            both backends, so a caller may mutate it and cannot corrupt a C++-owned
+            array.
+
+        Raises:
+            ValueError: If ``level`` is out of range.
+        """
+        return np.array(self._active_at(level))
+
+    def active_basis(self, cid: int) -> npt.NDArray[np.int64]:
+        """Return the global dofs of the active functions that do not vanish on cell ``cid``.
+
+        A function is listed iff its tensor-product support covers the cell and it is not
+        identically zero there.  Only a truncated function can be supported on a cell and
+        vanish on it, which happens inside a refined region where truncation has removed
+        every component the function had on the cell.
+
+        Args:
+            cid (int): Active cell flat id in ``[0, grid.num_cells)``.
+
+        Returns:
+            npt.NDArray[np.int64]: Sorted global hierarchical-dof indices of the
+            functions non-zero on cell ``cid``.  A fresh writable copy per call under
+            both backends.
+
+        Raises:
+            IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
+        """
+        return np.array(self._impl.active_basis(cid))
+
+    def contributions(
+        self, cid: int
+    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+        """Return the active functions on cell ``cid`` with their levels and multi-indices.
+
+        The same set :meth:`active_basis` lists, as three parallel arrays rather than
+        three calls: a caller wanting the multi-indices wants the dofs beside them, and
+        a second lookup would re-check ``cid``.
+
+        Args:
+            cid (int): Active cell flat id in ``[0, grid.num_cells)``.
+
+        Returns:
+            tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+            ``(dofs, levels, multi_indices)`` sorted by global dof, of shapes ``(K,)``,
+            ``(K,)`` and ``(K, dim)``.  **Read-only** under both backends and not
+            copied, because this is the hot path behind :meth:`tabulate_basis`;
+            :meth:`active_basis` is the copying form of its first column.
+
+        Raises:
+            IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
+        """
+        dofs, levels, multis = self._impl.contributions(cid)
+        return (
+            np.asarray(dofs, dtype=np.int64),
+            np.asarray(levels, dtype=np.int64),
+            np.asarray(multis, dtype=np.int64),
         )
+
+    def max_active_per_cell(self) -> int:
+        """Return the largest number of active functions on any single cell.
+
+        The width a fixed-size dofmap needs: ``max(active_basis(cid).size)`` over every
+        active cell. On an unrefined space this is ``prod(degree + 1)``; near a level
+        interface a cell also sees the coarser functions overlapping it, so the count
+        grows there.
+
+        Computed once and cached by the implementation, since the space is a
+        construction-time snapshot.
+
+        Returns:
+            int: Maximum active-function count over all cells (``>= 1``).
+
+        Note:
+            Counts exactly what :meth:`active_basis` returns, so functions that vanish on
+            a cell are not counted there. Truncation only annihilates functions, so with
+            ``truncate=True`` the value is at most the HB basis's on the same grid, and
+            strictly less wherever a coarse function vanishes on the widest cells.
+
+            A function supported on a level-``L`` cell lies, at its own level ``m``,
+            among the ``prod(degree + 1)`` level-``m`` functions supported on the cell's
+            ancestor, so a cell lists at most ``(L + 1) * prod(degree + 1)`` functions.
+            The HB basis reaches that growth on a hierarchy refined repeatedly around one
+            region. Under truncation a coarse function refined through several levels of
+            active finer functions vanishes on the deepest cells and is not listed, so the
+            THB count there stays far below the bound. It is not bounded by
+            ``prod(degree + 1)`` either: more functions than that can be non-zero on one
+            cell, and are then linearly dependent there.
+
+            Visits every cell, so the first call populates the per-cell contribution
+            cache for the whole grid -- the same cache :meth:`active_basis` fills lazily,
+            but warmed in full.
+        """
+        return int(self._impl.max_active_per_cell())
+
+    def dof_level(self, dof: int) -> int:
+        """Return the hierarchy level that owns global active-function ``dof``.
+
+        Args:
+            dof (int): Global active-function index in ``[0, num_total_basis)``.
+
+        Returns:
+            int: The level whose dof range (per :attr:`level_offsets`) contains ``dof``.
+
+        Raises:
+            IndexError: If ``dof`` is out of range ``[0, num_total_basis)``.
+        """
+        return int(self._impl.dof_level(dof))
+
+    def truncated(self, dof: int) -> tuple[int, tuple[int, ...], npt.NDArray[np.float64]] | None:
+        """Return the stored representation of a truncated function, or ``None``.
+
+        ``None`` is what distinguishes a plain tensor-product B-spline from a truncated
+        one that happens to carry an all-ones box, and it is what every untruncated
+        function gives -- including every function of a space built with
+        ``truncate=False``.
+
+        Args:
+            dof (int): Global active-function index in ``[0, num_total_basis)``.
+
+        Returns:
+            tuple[int, tuple[int, ...], npt.NDArray[np.float64]] | None: A named
+            ``(rep_level, box_lo, coeffs)`` triple, where ``coeffs`` holds the function
+            in the level-``rep_level`` tensor-product basis over the box whose lower
+            corner is ``box_lo`` and whose extent is ``coeffs.shape``; ``None`` if the
+            truncation left the function alone.  The coefficients are **read-only**
+            under both backends -- a view of C++-owned storage on one side and the
+            oracle's own frozen array on the other.
+
+        Raises:
+            IndexError: If ``dof`` is out of range ``[0, num_total_basis)``.
+        """
+        entry = self._impl.truncated(dof)
+        if entry is None:
+            return None
+        rep_level, box_lo, coeffs = entry
+        return _TruncCoeffs(
+            int(rep_level),
+            tuple(int(lo) for lo in box_lo),
+            np.asarray(coeffs, dtype=np.float64),
+        )
+
+    # ------------------------------------------------------------------
+    # Forwarded refinement
+    # ------------------------------------------------------------------
+
+    def refine(
+        self,
+        cell_ids: npt.ArrayLike,
+        *,
+        admissible_class: int | None = 2,
+    ) -> THBSplineSpace:
+        """Return a new space with the marked cells refined.
+
+        This method does not mutate ``self`` or its grid: the grid is refined by
+        rebinding, and a new :class:`THBSplineSpace` is built on the result; ``self``
+        and its grid are unchanged.
+
+        With ``admissible_class=m`` (the default ``m=2``) the refinement is graded so
+        the resulting mesh is admissible of class ``m`` (the truncated functions
+        acting on any cell span at most ``m`` successive levels), following the
+        recursive refinement-neighborhood algorithm of Carraturo et al. (2019).  This
+        assumes the current mesh is already admissible of class ``m`` (true for the
+        root and for any mesh built via graded :meth:`refine`).  With
+        ``admissible_class=None`` exactly the marked cells are refined (no grading).
+
+        Args:
+            cell_ids (npt.ArrayLike): Flat ids of active cells to refine.
+            admissible_class (int | None): Admissibility class ``m >= 2`` to maintain,
+                or ``None`` for ungraded refinement.  Defaults to ``2``.
+
+        Returns:
+            THBSplineSpace: A new space on the refined grid (same ``root_space``,
+            ``truncate``, and ``regularity``).
+
+        Raises:
+            IndexError: If any id is outside ``[0, grid.num_cells)``.
+            ValueError: If ``admissible_class`` is an integer ``< 2``.
+        """
+        return self._derived(self._impl.refine(_cell_ids(cell_ids), admissible_class))
+
+    def refine_region(
+        self,
+        level: int,
+        lo: Sequence[int],
+        hi: Sequence[int],
+        *,
+        admissible_class: int | None = 2,
+    ) -> THBSplineSpace:
+        """Return a new space with the active cells in a rectangular region refined.
+
+        The region is the integer cell-index box ``[lo, hi)`` at ``level`` (in
+        level-``level`` coordinates), matching the convention of
+        :meth:`pantr.grid.HierarchicalGrid.refine`.  Only the currently-active leaf
+        cells inside the box are refined; the rest of the box (already refined, or
+        not present at ``level``) is ignored.  If the box contains no active leaf
+        cells, the call is a no-op and returns a space equivalent to ``self``.  This
+        is the region-based counterpart of :meth:`refine`, which marks individual
+        cells by flat id.
+
+        Like :meth:`refine`, this does not mutate ``self`` or its grid: the grid is
+        refined by rebinding, and a new :class:`THBSplineSpace` is returned.  Calls
+        chain, so successive regions refine progressively (graded by default).
+
+        Args:
+            level (int): Level at which the box lives.  Must satisfy
+                ``0 <= level <= grid.max_level``.
+            lo (Sequence[int]): Per-direction start index (inclusive), in
+                level-``level`` coordinates.
+            hi (Sequence[int]): Per-direction end index (exclusive), in
+                level-``level`` coordinates.
+            admissible_class (int | None): Admissibility class ``m >= 2`` to maintain
+                (graded refinement), or ``None`` for ungraded refinement.  Defaults
+                to ``2``.  See :meth:`refine`.
+
+        Returns:
+            THBSplineSpace: A new space on the refined grid (same ``root_space``,
+            ``truncate``, and ``regularity``).
+
+        Raises:
+            ValueError: If ``admissible_class`` is an integer ``< 2``, ``level`` is
+                out of range, ``lo``/``hi`` have the wrong length, any
+                ``lo[k] >= hi[k]``, or any part of ``[lo, hi)`` lies outside the
+                level domain.
+        """
+        return self._derived(
+            self._impl.refine_region(level, _cell_ids(lo), _cell_ids(hi), admissible_class)
+        )
+
+    def coarsen(
+        self,
+        cell_ids: npt.ArrayLike,
+        *,
+        admissible_class: int | None = 2,
+    ) -> THBSplineSpace:
+        """Return a new space with the marked cells coarsened away.
+
+        A parent cell is reactivated (its children removed) only when **all** of its
+        children are marked active leaves, mirroring the coarsening algorithm of
+        Carraturo et al. (2019, Alg. 5).  That rule is
+        :meth:`~pantr.grid.HierarchicalGrid.coarsen_cells`, which this method drives one
+        parent at a time so the admissibility guard below can veto a parent without
+        affecting the rest.  With ``admissible_class=None`` this is the exact inverse of
+        :meth:`refine`: ``space.refine(cells).coarsen(children_of(cells))`` recovers
+        ``space``.  With ``admissible_class=m`` the guard may suppress some coarsenings,
+        so the recovery holds only when the guard permits them all.
+
+        With ``admissible_class=m`` (the default ``m=2``) a parent is reactivated only
+        if its coarsening neighborhood (Def. 3.5) is empty, so the resulting mesh stays
+        admissible of class ``m``.  With ``admissible_class=None`` that guard is skipped.
+
+        The space is immutable: the grid is coarsened by rebinding, and a new
+        :class:`THBSplineSpace` is built on the result; ``self`` and its grid are
+        unchanged.  An empty ``cell_ids``, and one that coarsens nothing, both return
+        an equivalent new space over a copy of this space's grid -- a copy rather than
+        the same object, so the two spaces never share the grid's tag registries.
+
+        Args:
+            cell_ids (npt.ArrayLike): Flat ids of active leaf cells to coarsen away.
+                An empty array is valid and coarsens nothing.
+            admissible_class (int | None): Admissibility class ``m >= 2`` to maintain,
+                or ``None`` to skip the admissibility guard.  Defaults to ``2``.
+
+        Returns:
+            THBSplineSpace: A new space on the coarsened grid (same ``root_space``,
+            ``truncate``, and ``regularity``).
+
+        Raises:
+            IndexError: If any id is outside ``[0, grid.num_cells)``.
+            ValueError: If ``admissible_class`` is an integer ``< 2``.
+        """
+        return self._derived(self._impl.coarsen(_cell_ids(cell_ids), admissible_class))
+
+    # ------------------------------------------------------------------
+    # Computed here: basis tabulation
+    # ------------------------------------------------------------------
 
     def _basis_1d_cached(
         self,
@@ -1192,7 +2794,7 @@ class THBSplineSpace:
         key = (level, k, order)
         cached = eval_cache.get(key)
         if cached is None:
-            sp1d = self._level_spaces[level].spaces[k]
+            sp1d = self.level_space(level).spaces[k]
             pts_k = np.ascontiguousarray(flat_pts[:, k])
             # Safety: _tabulate_orders validated flat_pts against cell_lo/hi (one
             # check per dimension via broadcasting) before calling here.  Cell bounds
@@ -1213,7 +2815,7 @@ class THBSplineSpace:
 
     def _truncated_column(
         self,
-        entry: _TruncCoeffs,
+        entry: tuple[int, tuple[int, ...], npt.NDArray[np.float64]],
         orders: tuple[int, ...],
         flat_pts: npt.NDArray[np.float64],
         eval_cache: _EvalCache,
@@ -1225,7 +2827,9 @@ class THBSplineSpace:
         where ``D^orders[k]`` is the ``orders[k]``-th derivative in direction ``k``.
 
         Args:
-            entry (_TruncCoeffs): ``(rep_level, box_lo, coeffs)`` for the function.
+            entry (tuple[int, tuple[int, ...], npt.NDArray[np.float64]]):
+                ``(rep_level, box_lo, coeffs)`` for the function, as :meth:`truncated`
+                returns it.
             orders (tuple[int, ...]): Per-direction derivative orders (all ``0`` for
                 function values).
             flat_pts (npt.NDArray[np.float64]): Points of shape ``(num_pts, dim)``.
@@ -1302,9 +2906,9 @@ class THBSplineSpace:
                 point lies outside cell ``cid``, or if ``out_basis``/``out_dofs`` has
                 the wrong shape, dtype, or is not writeable.
         """
-        contribs = self._cell_contributions(cid)  # validates cid
-        n_active = len(contribs)
-        dofs = np.array([gdof for gdof, _, _ in contribs], dtype=np.int64)
+        contrib_dofs, contrib_levels, contrib_multis = self.contributions(cid)  # validates cid
+        n_active = int(contrib_dofs.shape[0])
+        dofs = np.array(contrib_dofs)
 
         pts_arr = np.asarray(pts, dtype=np.float64)
         if pts_arr.ndim == 0 or pts_arr.shape[-1] != self.dim:
@@ -1315,7 +2919,7 @@ class THBSplineSpace:
         num_pts = int(np.prod(lead)) if lead else 1
         flat_pts = pts_arr.reshape(num_pts, self.dim)
 
-        cell_lo, cell_hi = self._grid.cell_bounds(cid)
+        cell_lo, cell_hi = self.grid.cell_bounds(cid)
         tol = _cell_membership_tolerance(cell_lo, cell_hi)
         if not (np.all(flat_pts >= cell_lo - tol) and np.all(flat_pts <= cell_hi + tol)):
             raise ValueError(
@@ -1347,17 +2951,15 @@ class THBSplineSpace:
         # Truncated functions are evaluated individually (coefficient contraction);
         # untruncated ones are grouped by level and combined in a single batched kernel
         # call (the common, hot case).
-        untrunc_by_level: dict[int, tuple[list[int], list[tuple[int, ...]]]] = {}
-        for col, (gdof, level, multi) in enumerate(contribs):
-            entry = self._trunc.get(gdof)
+        untrunc_by_level: dict[int, list[int]] = {}
+        for col in range(n_active):
+            entry = self.truncated(int(contrib_dofs[col]))
             if entry is None:
-                cols, multis = untrunc_by_level.setdefault(level, ([], []))
-                cols.append(col)
-                multis.append(multi)
+                untrunc_by_level.setdefault(int(contrib_levels[col]), []).append(col)
             else:
                 buffer[:, col] = self._truncated_column(entry, orders, flat_pts, eval_cache)
 
-        for level, (cols, multis) in untrunc_by_level.items():
+        for level, cols in untrunc_by_level.items():
             vals = np.zeros((dim, num_pts, max_order), dtype=np.float64)
             first_basis = np.empty((dim, num_pts), dtype=np.int64)
             for k in range(dim):
@@ -1365,7 +2967,10 @@ class THBSplineSpace:
                 vals[k, :, : values_k.shape[1]] = values_k
                 first_basis[k] = fb_k
             block = _combine_tp_values(
-                vals, first_basis, np.asarray(multis, dtype=np.int64), degrees_arr
+                vals,
+                first_basis,
+                np.ascontiguousarray(contrib_multis[cols], dtype=np.int64),
+                degrees_arr,
             )
             buffer[:, cols] = block
 
@@ -1471,458 +3076,104 @@ class THBSplineSpace:
         return self._tabulate_orders(cid, pts, orders_t, out_basis, out_dofs)
 
     # ------------------------------------------------------------------
-    # Refinement
+    # Computed here: the windowed restriction
     # ------------------------------------------------------------------
 
-    def refine(
-        self,
-        cell_ids: npt.ArrayLike,
-        *,
-        admissible_class: int | None = 2,
-    ) -> THBSplineSpace:
-        """Return a new space with the marked cells refined.
+    def restrict(self, cell_ids: npt.ArrayLike) -> THBSplineSpaceRestriction:
+        """Return the windowed sub-space over a subset of active cells.
 
-        This method does not mutate ``self`` or its grid: the grid is refined by
-        rebinding, and a new :class:`THBSplineSpace` is built on the result; ``self``
-        and its grid are unchanged.
+        Windows this space to the root-cell-aligned bounding box of ``cell_ids``: the
+        hierarchical grid is restricted (:meth:`pantr.grid.Grid.restrict`),
+        the root space is windowed (:meth:`pantr.bspline.BsplineSpace.restrict`), and a
+        new :class:`THBSplineSpace` is rebuilt on the sub-grid (re-running the Kraft
+        active-function selection and truncation).
 
-        With ``admissible_class=m`` (the default ``m=2``) the refinement is graded so
-        the resulting mesh is admissible of class ``m`` (the truncated functions
-        acting on any cell span at most ``m`` successive levels), following the
-        recursive refinement-neighborhood algorithm of Carraturo et al. (2019).  This
-        assumes the current mesh is already admissible of class ``m`` (true for the
-        root and for any mesh built via graded :meth:`refine`).  With
-        ``admissible_class=None`` exactly the marked cells are refined (no grading).
+        Unlike the tensor-product :meth:`pantr.bspline.BsplineSpace.restrict`, the
+        windowed THB basis equals the global one only over the **interior** cells --
+        those whose entire (cross-level) function-support-closure lies inside the
+        window -- because Kraft selection and truncation depend on the subdomain near
+        the window boundary. Callers make the cells they care about interior by padding
+        ``cell_ids`` with a support-closure halo.
 
         Args:
-            cell_ids (npt.ArrayLike): Flat ids of active cells to refine.
-            admissible_class (int | None): Admissibility class ``m >= 2`` to maintain,
-                or ``None`` for ungraded refinement.  Defaults to ``2``.
+            cell_ids (npt.ArrayLike): Active cell flat ids to span; duplicates ignored.
 
         Returns:
-            THBSplineSpace: A new space on the refined grid (same ``root_space``,
-            ``truncate``, and ``regularity``).
+            THBSplineSpaceRestriction: The windowed :class:`THBSplineSpace` and a
+            read-only ``local_to_global_dof`` map; entry ``d`` is the global
+            hierarchical dof of local dof ``d`` when the local function matches a
+            globally-active function of the same level and multi-index, else ``-1``.
+            Values are exact over interior cells; functions near the window boundary
+            may map to ``-1``.
 
         Raises:
-            IndexError: If any id is outside ``[0, grid.num_cells)``.
-            ValueError: If ``admissible_class`` is an integer ``< 2``.
+            ValueError: If ``cell_ids`` is empty.
+            TypeError: If ``cell_ids`` is not integer-valued.
+            IndexError: If any cell id is out of range ``[0, grid.num_cells)``.
         """
-        self._check_admissible_class(admissible_class)
-        ids = np.unique(np.asarray(cell_ids, dtype=np.int64).ravel())
-        bad = [int(x) for x in ids if int(x) < 0 or int(x) >= self._grid.num_cells]
-        if bad:
-            raise IndexError(
-                f"cell_ids must lie in [0, {self._grid.num_cells}); got out-of-range id(s): {bad}."
+        grid_restr = self.grid.restrict(cell_ids)
+        sub_grid = grid_restr.grid
+        if not isinstance(sub_grid, HierarchicalGrid):
+            raise RuntimeError(
+                f"restrict: expected HierarchicalGrid from grid.restrict; "
+                f"got {type(sub_grid).__name__!r}. This is a bug in HierarchicalGrid.restrict."
             )
-        # Convert to (level, midx) on the original grid before any refinement, since
-        # flat ids are reassigned by every grid.refine call.
-        marked = [(self._grid.cell_level(int(c)), self._grid.cell_multi_index(int(c))) for c in ids]
-        return self._refine_marked(marked, admissible_class)
+        dim = self.dim
+        factor = self.grid.factor
 
-    def refine_region(
-        self,
-        level: int,
-        lo: Sequence[int],
-        hi: Sequence[int],
-        *,
-        admissible_class: int | None = 2,
-    ) -> THBSplineSpace:
-        """Return a new space with the active cells in a rectangular region refined.
-
-        The region is the integer cell-index box ``[lo, hi)`` at ``level`` (in
-        level-``level`` coordinates), matching the convention of
-        :meth:`pantr.grid.HierarchicalGrid.refine`.  Only the currently-active leaf
-        cells inside the box are refined; the rest of the box (already refined, or
-        not present at ``level``) is ignored.  If the box contains no active leaf
-        cells, the call is a no-op and returns a space equivalent to ``self``.  This
-        is the region-based counterpart of :meth:`refine`, which marks individual
-        cells by flat id.
-
-        Like :meth:`refine`, this does not mutate ``self`` or its grid: the grid is
-        refined by rebinding, and a new :class:`THBSplineSpace` is returned.  Calls
-        chain, so successive regions refine progressively (graded by default).
-
-        Args:
-            level (int): Level at which the box lives.  Must satisfy
-                ``0 <= level <= grid.max_level``.
-            lo (Sequence[int]): Per-direction start index (inclusive), in
-                level-``level`` coordinates.
-            hi (Sequence[int]): Per-direction end index (exclusive), in
-                level-``level`` coordinates.
-            admissible_class (int | None): Admissibility class ``m >= 2`` to maintain
-                (graded refinement), or ``None`` for ungraded refinement.  Defaults
-                to ``2``.  See :meth:`refine`.
-
-        Returns:
-            THBSplineSpace: A new space on the refined grid (same ``root_space``,
-            ``truncate``, and ``regularity``).
-
-        Raises:
-            ValueError: If ``admissible_class`` is an integer ``< 2``, ``level`` is
-                out of range, ``lo``/``hi`` have the wrong length, any
-                ``lo[k] >= hi[k]``, or any part of ``[lo, hi)`` lies outside the
-                level domain.
-        """
-        self._check_admissible_class(admissible_class)
-        lo_t, hi_t = self._validate_region(level, lo, hi)
-        # Enumerate the active leaves in the box on the original grid (flat ids are
-        # reassigned by every grid.refine call, so capture cells up front).
-        marked = [
-            (level, midx)
-            for midx in itertools.product(*(range(lo_t[k], hi_t[k]) for k in range(self.dim)))
-            if self._grid.is_active_leaf(level, midx)
+        # Root-cell bounding box of the window (the sub-grid's root spans it exactly).
+        r_lo = [
+            int(np.searchsorted(self.grid.root.breakpoints[k], sub_grid.root.breakpoints[k][0]))
+            for k in range(dim)
         ]
-        return self._refine_marked(marked, admissible_class)
+        r_hi = [r_lo[k] + sub_grid.root.cells_per_axis[k] for k in range(dim)]
 
-    @staticmethod
-    def _check_admissible_class(admissible_class: int | None) -> None:
-        """Validate the ``admissible_class`` argument shared by the refine methods.
+        # Window the root space to that box and rebuild the THB space on the sub-grid.
+        root_ni = self.root_space.num_intervals
+        box = [np.arange(r_lo[k], r_hi[k]) for k in range(dim)]
+        root_cells = np.ravel_multi_index(
+            tuple(m.ravel() for m in np.meshgrid(*box, indexing="ij")), root_ni
+        )
+        windowed_root = self.root_space.restrict(root_cells).space
+        sub_space = THBSplineSpace(
+            windowed_root, sub_grid, truncate=self.truncate, regularity=self.regularity
+        )
 
-        Args:
-            admissible_class (int | None): The class value to check.
-
-        Raises:
-            ValueError: If ``admissible_class`` is an integer ``< 2``.
-        """
-        if admissible_class is not None and admissible_class < 2:  # noqa: PLR2004
-            raise ValueError(
-                f"admissible_class must be an integer >= 2 or None; got {admissible_class!r}."
-            )
-
-    def _validate_region(
-        self,
-        level: int,
-        lo: Sequence[int],
-        hi: Sequence[int],
-    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        """Validate a ``[lo, hi)`` cell-index box at ``level`` and normalize to tuples.
-
-        Applies the same four checks as :meth:`pantr.grid.HierarchicalGrid.refine`:
-        ``level`` range, ``lo``/``hi`` lengths, ``lo < hi`` per axis, and ``[lo, hi)``
-        within ``[0, level_cells_per_axis(level))`` on every axis.
-
-        Args:
-            level (int): Level the box lives at.
-            lo (Sequence[int]): Per-direction start index (inclusive).
-            hi (Sequence[int]): Per-direction end index (exclusive).
-
-        Returns:
-            tuple[tuple[int, ...], tuple[int, ...]]: The validated ``(lo, hi)`` tuples.
-
-        Raises:
-            ValueError: If ``level`` is out of range, ``lo``/``hi`` have the wrong
-                length, any ``lo[k] >= hi[k]``, or ``[lo, hi)`` is out of bounds.
-        """
-        ndim = self.dim
-        max_level = self._grid.max_level
-        if not 0 <= int(level) <= max_level:
-            raise ValueError(f"level must be in [0, {max_level}]; got {level!r}.")
-        lo_t = tuple(int(x) for x in lo)
-        hi_t = tuple(int(x) for x in hi)
-        if len(lo_t) != ndim or len(hi_t) != ndim:
-            raise ValueError(f"lo and hi must have length {ndim}; got {len(lo_t)} and {len(hi_t)}.")
-        if any(lo_k >= hi_k for lo_k, hi_k in zip(lo_t, hi_t, strict=False)):
-            raise ValueError(
-                f"lo must be strictly less than hi in every dimension; "
-                f"got lo={lo_t!r}, hi={hi_t!r}."
-            )
-        n_per_axis = self._grid.level_cells_per_axis(level)
-        for k in range(ndim):
-            if lo_t[k] < 0 or hi_t[k] > n_per_axis[k]:
-                raise ValueError(
-                    f"[lo, hi) out of bounds at level {level}: "
-                    f"axis {k} needs [0, {n_per_axis[k]}), got [{lo_t[k]}, {hi_t[k]})."
+        # Map each sub active function (level, sub_multi) to the global dof of the same
+        # (level, sub_multi + per-level window origin), or -1 if not globally active.
+        local_to_global_dof = np.full(sub_space.num_total_basis, -1, dtype=np.int64)
+        offsets = self._offsets()
+        sub_offset = 0
+        for level in range(sub_space.num_levels):
+            origin = [
+                int(self._level_support(level)[k][0][r_lo[k] * factor[k] ** level])
+                for k in range(dim)
+            ]
+            glob_num_basis = self.level_space(level).num_basis
+            glob_active = self._active_at(level)
+            glob_offset = int(offsets[level])
+            sub_active = sub_space._active_at(level)
+            sub_num_basis = sub_space.level_space(level).num_basis
+            for sub_pos, sub_flat in enumerate(sub_active.tolist()):
+                sub_multi = np.unravel_index(sub_flat, sub_num_basis)
+                glob_flat = int(
+                    np.ravel_multi_index(
+                        tuple(int(sub_multi[k]) + origin[k] for k in range(dim)), glob_num_basis
+                    )
                 )
-        return lo_t, hi_t
-
-    def _refine_marked(
-        self,
-        marked: list[tuple[int, tuple[int, ...]]],
-        admissible_class: int | None,
-    ) -> THBSplineSpace:
-        """Return a new space over this space's grid with the marked cells refined.
-
-        Shared by :meth:`refine` and :meth:`refine_region`.  Mutates nothing: the
-        grid is refined by rebinding, so ``self`` and its grid are untouched.
-        Callers are responsible for capturing ``marked`` against the original grid
-        before any refinement (flat ids are reassigned by every refine).
-
-        When ``marked`` refines nothing the grid is copied instead, so the returned
-        space never holds this space's grid object.  The cell decomposition is
-        immutable, but a grid also carries two tag registries and a BVH memo, which
-        belong to whoever holds the grid, and sharing them across two spaces would
-        make a tag set through one visible through the other.
-
-        Args:
-            marked (list[tuple[int, tuple[int, ...]]]): ``(level, midx)`` pairs of
-                cells to refine, captured on the original grid.
-            admissible_class (int | None): Admissibility class to maintain, or
-                ``None`` for ungraded refinement.
-
-        Returns:
-            THBSplineSpace: A new space on the refined grid (same ``root_space``,
-            ``truncate``, and ``regularity``).
-        """
-        grid = self._grid
-        for level, midx in marked:
-            if admissible_class is None:
-                if grid.is_active_leaf(level, midx):
-                    grid = grid.refine(level, list(midx), [i + 1 for i in midx])
-            else:
-                grid = self._refine_recursive(grid, level, midx, admissible_class)
-        return THBSplineSpace(
-            self._root_space,
-            grid if grid is not self._grid else grid._copy(),
-            truncate=self._truncate,
-            regularity=self._regularity,
+                gpos = int(np.searchsorted(glob_active, glob_flat))
+                if gpos < glob_active.shape[0] and int(glob_active[gpos]) == glob_flat:
+                    local_to_global_dof[sub_offset + sub_pos] = glob_offset + gpos
+            sub_offset += int(sub_active.shape[0])
+        assert sub_offset == sub_space.num_total_basis
+        local_to_global_dof.flags.writeable = False
+        return THBSplineSpaceRestriction(
+            sub_space, local_to_global_dof, grid_restr.local_to_global_cell
         )
-
-    def _refine_recursive(
-        self,
-        grid: HierarchicalGrid,
-        level: int,
-        midx: tuple[int, ...],
-        m: int,
-    ) -> HierarchicalGrid:
-        """Return ``grid`` with cell ``(level, midx)`` refined, graded for class ``m``.
-
-        Refines every cell in the refinement neighborhood (recursively, at the coarser
-        level ``level - m + 1``) before subdividing ``(level, midx)``, per Algorithm 4
-        of Carraturo et al. (2019).  Each step queries the grid produced by the
-        previous one, as the in-place version queried the grid it had just mutated.
-
-        Args:
-            grid (HierarchicalGrid): The grid to refine.  Not modified.
-            level (int): Level of the cell to refine.
-            midx (tuple[int, ...]): Per-axis index of the cell at ``level``.
-            m (int): Admissibility class (``>= 2``).
-
-        Returns:
-            HierarchicalGrid: The refined grid; ``grid`` itself when the cell is not
-            an active leaf and its neighborhood is empty.
-
-        Raises:
-            RecursionError: Unreachable in practice — recursion depth is bounded by
-                ``level <= grid.max_level``, which is bounded by available memory long
-                before Python's default recursion limit.
-        """
-        for nlevel, nmidx in self._refinement_neighborhood(level, midx, m, grid):
-            grid = self._refine_recursive(grid, nlevel, nmidx, m)
-        if grid.is_active_leaf(level, midx):
-            grid = grid.refine(level, list(midx), [i + 1 for i in midx])
-        return grid
-
-    def _refinement_neighborhood(
-        self,
-        level: int,
-        midx: tuple[int, ...],
-        m: int,
-        grid: HierarchicalGrid,
-    ) -> list[tuple[int, tuple[int, ...]]]:
-        """Return the refinement neighborhood of cell ``(level, midx)`` for class ``m``.
-
-        Implements Definition 3.4 of Carraturo et al. (2019). Finds all cells at level
-        ``level - m + 1`` that are parents of a level-``level - m + 2`` cell touched by
-        any B-spline whose support covers the containing cell of ``(level, midx)`` at
-        level ``level - m + 2``.
-
-        Args:
-            level (int): Level of the cell.
-            midx (tuple[int, ...]): Per-axis index of the cell at ``level``.
-            m (int): Admissibility class (``>= 2``, so ``level - m + 2 <= level``).
-            grid (HierarchicalGrid): The grid whose active set is queried.
-
-        Returns:
-            list[tuple[int, tuple[int, ...]]]: ``(level - m + 1, parent_midx)`` cells in
-            the neighborhood that are currently active leaves.
-        """
-        dim = self.dim
-        factor = self._grid.factor
-        k_nbr = level - m + 1
-        if k_nbr < 0:
-            return []
-        k_ext = level - m + 2  # = k_nbr + 1; <= level because m >= 2
-        # k_ext < len(self._support) because level <= original max_level = num_levels - 1
-        assert k_ext < len(self._support), (
-            f"k_ext={k_ext} out of range; level={level}, m={m}, num_levels={self.num_levels}"
-        )
-        support_ext = self._support[k_ext]
-        # Containing cell of (level, midx) at level k_ext.
-        q = tuple(midx[d] // factor[d] ** (level - k_ext) for d in range(dim))
-        parent_ranges = []
-        for d in range(dim):
-            first_basis, first_cell, last_cell = support_ext[d]
-            fb = int(first_basis[q[d]])
-            s_lo = int(first_cell[fb])
-            s_hi = int(last_cell[fb + self.degrees[d]]) + 1
-            parent_ranges.append(range(s_lo // factor[d], (s_hi - 1) // factor[d] + 1))
-        return [
-            (k_nbr, p) for p in itertools.product(*parent_ranges) if grid.is_active_leaf(k_nbr, p)
-        ]
-
-    def coarsen(
-        self,
-        cell_ids: npt.ArrayLike,
-        *,
-        admissible_class: int | None = 2,
-    ) -> THBSplineSpace:
-        """Return a new space with the marked cells coarsened away.
-
-        A parent cell is reactivated (its children removed) only when **all** of its
-        children are marked active leaves, mirroring the coarsening algorithm of
-        Carraturo et al. (2019, Alg. 5).  That rule is
-        :meth:`~pantr.grid.HierarchicalGrid.coarsen_cells`, which this method drives one
-        parent at a time so the admissibility guard below can veto a parent without
-        affecting the rest.  With ``admissible_class=None`` this is the exact inverse of
-        :meth:`refine`: ``space.refine(cells).coarsen(children_of(cells))`` recovers
-        ``space``.  With ``admissible_class=m`` the guard may suppress some coarsenings,
-        so the recovery holds only when the guard permits them all.
-
-        With ``admissible_class=m`` (the default ``m=2``) a parent is reactivated only
-        if its coarsening neighborhood (Def. 3.5) is empty, so the resulting mesh stays
-        admissible of class ``m``.  With ``admissible_class=None`` that guard is skipped.
-
-        The space is immutable: the grid is coarsened by rebinding, and a new
-        :class:`THBSplineSpace` is built on the result; ``self`` and its grid are
-        unchanged.  An empty ``cell_ids``, and one that coarsens nothing, both return
-        an equivalent new space over a copy of this space's grid -- a copy rather than
-        the same object, so the two spaces never share the grid's tag registries.
-
-        Args:
-            cell_ids (npt.ArrayLike): Flat ids of active leaf cells to coarsen away.
-                An empty array is valid and coarsens nothing.
-            admissible_class (int | None): Admissibility class ``m >= 2`` to maintain,
-                or ``None`` to skip the admissibility guard.  Defaults to ``2``.
-
-        Returns:
-            THBSplineSpace: A new space on the coarsened grid (same ``root_space``,
-            ``truncate``, and ``regularity``).
-
-        Raises:
-            IndexError: If any id is outside ``[0, grid.num_cells)``.
-            ValueError: If ``admissible_class`` is an integer ``< 2``.
-        """
-        if admissible_class is not None and admissible_class < 2:  # noqa: PLR2004
-            raise ValueError(
-                f"admissible_class must be an integer >= 2 or None; got {admissible_class!r}."
-            )
-        ids = np.unique(np.asarray(cell_ids, dtype=np.int64).ravel())
-        bad = [int(x) for x in ids if int(x) < 0 or int(x) >= self._grid.num_cells]
-        if bad:
-            raise IndexError(
-                f"cell_ids must lie in [0, {self._grid.num_cells}); got out-of-range id(s): {bad}."
-            )
-        dim = self.dim
-        factor = self._grid.factor
-        marked = {(self._grid.cell_level(int(c)), self._grid.cell_multi_index(int(c))) for c in ids}
-        parents = {
-            (level - 1, tuple(midx[d] // factor[d] for d in range(dim)))
-            for level, midx in marked
-            if level >= 1
-        }
-        num_children = math.prod(factor)
-        grid = self._grid
-        # Deepest parent first, so a veto is decided against a mesh whose finer
-        # coarsenings have already happened.
-        for parent_level, pmidx in sorted(parents, key=lambda pc: -pc[0]):
-            # Name this parent's marked children on the current grid -- every coarsening
-            # reassigns flat ids, so they are resolved afresh here rather than kept.
-            child_ids: list[int] = []
-            for child in itertools.product(
-                *(range(pmidx[d] * factor[d], (pmidx[d] + 1) * factor[d]) for d in range(dim))
-            ):
-                cid = grid.cell_id(parent_level + 1, child)
-                if cid is not None and (parent_level + 1, child) in marked:
-                    child_ids.append(cid)
-            # An incomplete family is one `coarsen_cells` would skip anyway, so leaving
-            # here costs nothing and skips the only expensive test in the loop.  Measured
-            # on a 2050-cell mesh with 1537 cells marked, so most families are incomplete:
-            # 9.4 ms with this line, 19.7 ms without it, 9.6 ms for the pre-refactor loop
-            # this replaces -- which had the same order and which it therefore matches.
-            if len(child_ids) < num_children:
-                continue
-            if admissible_class is not None and not self._coarsening_neighborhood_empty(
-                parent_level, pmidx, admissible_class, grid
-            ):
-                continue
-            # coarsen_cells applies the rule itself -- it demotes the parent only if all
-            # of its children are named active leaves, which is Alg. 5's condition.
-            grid = grid.coarsen_cells(child_ids)
-        return THBSplineSpace(
-            self._root_space,
-            grid if grid is not self._grid else grid._copy(),
-            truncate=self._truncate,
-            regularity=self._regularity,
-        )
-
-    def _coarsening_neighborhood_empty(
-        self,
-        parent_level: int,
-        pmidx: tuple[int, ...],
-        m: int,
-        grid: HierarchicalGrid,
-    ) -> bool:
-        """Return whether the coarsening neighborhood of a parent is empty (Def. 3.5).
-
-        The neighborhood is the set of active cells at level ``parent_level + m``
-        contained in the multilevel support extension (at level ``parent_level + 1``)
-        of the parent's children.  When it is empty, reactivating the parent preserves
-        class-``m`` admissibility (Carraturo et al. 2019).
-
-        Args:
-            parent_level (int): Level of the parent being considered for coarsening.
-            pmidx (tuple[int, ...]): Per-axis index of the parent at ``parent_level``.
-            m (int): Admissibility class (``>= 2``).
-            grid (HierarchicalGrid): The grid whose active set is queried.
-
-        Returns:
-            bool: ``True`` iff no active cell at level ``parent_level + m`` lies in the
-            support extension of the parent's children.
-
-        Note:
-            Assumes ``parent_level + 1 < self.num_levels`` and ``m >= 2``; both are
-            guaranteed by the calling context in :meth:`coarsen`.  No input validation
-            is performed.
-        """
-        dim = self.dim
-        factor = self._grid.factor
-        support = self._support[parent_level + 1]
-        ext_lo: list[int] = []
-        ext_hi: list[int] = []
-        for d in range(dim):
-            first_basis, first_cell, last_cell = support[d]
-            c_lo = pmidx[d] * factor[d]
-            c_hi = (pmidx[d] + 1) * factor[d]
-            fmin = int(first_basis[c_lo])
-            fmax = int(first_basis[c_hi - 1]) + self.degrees[d]
-            ext_lo.append(int(first_cell[fmin]))
-            ext_hi.append(int(last_cell[fmax]) + 1)
-        target = parent_level + m
-        if target > grid.max_level:
-            return True
-        box_lo = [ext_lo[d] * factor[d] ** (m - 1) for d in range(dim)]
-        box_hi = [ext_hi[d] * factor[d] ** (m - 1) for d in range(dim)]
-        for blk_lo, blk_hi in grid.active_blocks(target):
-            if all(max(box_lo[d], blk_lo[d]) < min(box_hi[d], blk_hi[d]) for d in range(dim)):
-                return False
-        return True
 
     # ------------------------------------------------------------------
-    # Prolongation
+    # Computed here: prolongation and restriction operators
     # ------------------------------------------------------------------
-
-    def _dof_level(self, dof: int) -> int:
-        """Return the hierarchy level that owns global active-function ``dof``.
-
-        Args:
-            dof (int): Global active-function index. Caller must ensure
-                ``0 <= dof < num_total_basis``; out-of-range values produce a
-                nonsensical level without raising.
-
-        Returns:
-            int: The level whose dof range (per ``_func_offset``) contains ``dof``.
-        """
-        return int(np.searchsorted(self._func_offset, dof, side="right")) - 1
 
     def _finest_tp_coeffs(
         self,
@@ -1949,23 +3200,23 @@ class THBSplineSpace:
             level-``target_level`` function box.
         """
         dim = self.dim
-        level = self._dof_level(dof)
-        pos = dof - int(self._func_offset[level])
-        flat = int(self._active_funcs[level][pos])
-        entry = self._trunc.get(dof)
+        level = self.dof_level(dof)
+        pos = dof - int(self._offsets()[level])
+        flat = int(self._active_at(level)[pos])
+        entry = self.truncated(dof)
         if entry is None:
-            multi = np.unravel_index(flat, self._level_spaces[level].num_basis)
+            multi = np.unravel_index(flat, self.level_space(level).num_basis)
             box_lo = [int(multi[d]) for d in range(dim)]
             box_hi = [int(multi[d]) + 1 for d in range(dim)]
             coeffs = np.ones((1,) * dim, dtype=np.float64)
             start = level
         else:
-            start = entry.rep_level
-            box_lo = list(entry.box_lo)
-            box_hi = [entry.box_lo[d] + entry.coeffs.shape[d] for d in range(dim)]
-            coeffs = entry.coeffs
+            start = entry[0]
+            box_lo = list(entry[1])
+            box_hi = [entry[1][d] + entry[2].shape[d] for d in range(dim)]
+            coeffs = entry[2]
         for lvl in range(start, target_level):
-            coeffs, box_lo, box_hi = self._refine_box(coeffs, box_lo, box_hi, oslo[lvl])
+            coeffs, box_lo, box_hi = _refine_box(coeffs, box_lo, box_hi, oslo[lvl])
         return box_lo, coeffs
 
     def prolongation_to(self, fine: THBSplineSpace) -> npt.NDArray[np.float64]:
@@ -2063,18 +3314,18 @@ class THBSplineSpace:
         mismatches: list[str] = []
         if fine.dim != self.dim:
             mismatches.append(f"dim: self={self.dim} vs fine={fine.dim}")
-        if fine._truncate != self._truncate:
-            mismatches.append(f"truncate: self={self._truncate} vs fine={fine._truncate}")
-        if tuple(fine._grid.factor) != tuple(self._grid.factor):
-            mismatches.append(f"factor: self={self._grid.factor} vs fine={fine._grid.factor}")
-        if fine._regularity != self._regularity:
-            mismatches.append(f"regularity: self={self._regularity} vs fine={fine._regularity}")
+        if fine.truncate != self.truncate:
+            mismatches.append(f"truncate: self={self.truncate} vs fine={fine.truncate}")
+        if tuple(fine.grid.factor) != tuple(self.grid.factor):
+            mismatches.append(f"factor: self={self.grid.factor} vs fine={fine.grid.factor}")
+        if fine.regularity != self.regularity:
+            mismatches.append(f"regularity: self={self.regularity} vs fine={fine.regularity}")
         if fine.num_levels < self.num_levels:
             mismatches.append(
                 f"fine.num_levels={fine.num_levels} < self.num_levels={self.num_levels}"
             )
         if fine.dim == self.dim and not all(
-            np.array_equal(fine._root_space.spaces[k].knots, self._root_space.spaces[k].knots)
+            np.array_equal(fine.root_space.spaces[k].knots, self.root_space.spaces[k].knots)
             for k in range(self.dim)
         ):
             mismatches.append("root knot vectors differ")
@@ -2119,8 +3370,8 @@ class THBSplineSpace:
             runs after the last one. A consumer that abandons the iterator early therefore
             skips it; both callers here exhaust it.
         """
-        oslo = fine._build_oslo_matrices()
-        root_cells = self._grid.level_cells_per_axis(0)
+        oslo = _build_oslo_matrices([fine.level_space(lvl) for lvl in range(fine.num_levels)])
+        root_cells = self.grid.level_cells_per_axis(0)
         n_coarse, n_fine = self.num_total_basis, fine.num_total_basis
 
         # Map each root cell to the fine functions whose support covers it.
@@ -2275,20 +3526,20 @@ class THBSplineSpace:
             per-direction root-cell support box ``(lo, hi)``.
         """
         dim = space.dim
-        factor = space._grid.factor
-        level = space._dof_level(dof)
-        pos = dof - int(space._func_offset[level])
-        flat = int(space._active_funcs[level][pos])
-        multi = np.unravel_index(flat, space._level_spaces[level].num_basis)
-        sup = space._support[level]
+        factor = space.grid.factor
+        level = space.dof_level(dof)
+        pos = dof - int(space._offsets()[level])
+        flat = int(space._active_at(level)[pos])
+        multi = np.unravel_index(flat, space.level_space(level).num_basis)
+        sup = space._level_support(level)
         lo = [0] * dim
         hi = [0] * dim
         for k in range(dim):
             p = factor[k] ** level
             lo[k] = int(sup[k][1][int(multi[k])]) // p
             hi[k] = int(sup[k][2][int(multi[k])]) // p
-        entry = space._trunc.get(dof)
-        return (entry.rep_level if entry is not None else level), lo, hi
+        entry = space.truncated(dof)
+        return (entry[0] if entry is not None else level), lo, hi
 
     @staticmethod
     def _cells_in_box(lo: list[int], hi: list[int], root_cells: tuple[int, ...]) -> list[int]:
@@ -2363,18 +3614,31 @@ class THBSplineSpace:
         )
         return restriction
 
-    def __repr__(self) -> str:
-        """Return a compact string representation.
 
-        Returns:
-            str: Shows dimension, degrees, level count, active-function count, and
-            truncation flag.
-        """
-        return (
-            f"THBSplineSpace(dim={self.dim}, degrees={self.degrees}, "
-            f"num_levels={self.num_levels}, num_total_basis={self._num_active}, "
-            f"truncate={self._truncate})"
-        )
+def _rebuild_thb_space(
+    root_space: BsplineSpace,
+    grid: HierarchicalGrid,
+    truncate: bool,
+    regularity: Sequence[int | None],
+) -> THBSplineSpace:
+    """Rebuild a pickled hierarchical space from the constructor's arguments.
+
+    A module-level function because ``truncate`` and ``regularity`` are keyword-only
+    on :class:`THBSplineSpace` and a ``(callable, args)`` reduction has nowhere to put
+    a keyword; naming the class directly would need them positional, which the public
+    signature deliberately is not.
+
+    Args:
+        root_space (BsplineSpace): The level-0 tensor-product space.
+        grid (HierarchicalGrid): The active-cell hierarchy.
+        truncate (bool): Whether the truncated (THB) basis was built.
+        regularity (Sequence[int | None]): Per-direction continuity, already broadcast.
+
+    Returns:
+        THBSplineSpace: The reconstructed space, built under the **reader's** backend
+        rather than the writer's, which is what makes the wire format backend-free.
+    """
+    return THBSplineSpace(root_space, grid, truncate=truncate, regularity=regularity)
 
 
 class THBSplineSpaceRestriction(NamedTuple):
