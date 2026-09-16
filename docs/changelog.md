@@ -128,6 +128,16 @@ user-facing, and the ports change what it affects.
   spline's degree and returns the square operator as before. An order below the degree is
   refused. The elevated case is composed from the Bézier operator and a Bernstein tabulation
   rather than dispatched to either backend's Lagrange kernel.
+- `THBSplineSpace` now dispatches to the C++ type under `PANTR_BACKEND=cpp`, and gains six
+  public members it previously kept as private state: `regularity`, `level_offsets`,
+  `num_truncated`, `contributions(cid)`, `dof_level(dof)` and `truncated(dof)`.
+  `contributions` replaces the private `_cell_contributions` and returns three parallel
+  arrays -- the global dofs, their levels and their multi-indices -- rather than a list of
+  triples. The space is also picklable for the first time, by the constructor's arguments,
+  so a pickle crosses between the two backends. Basis tabulation, `restrict` and the three
+  prolongation operators are unchanged for a caller: they have no C++ counterpart and are
+  now computed from the members above, so they read the same values under either backend
+  (#494).
 
 ### Fixed
 - **Applying an extraction operator refuses an identity-flagged operator that is not square.**
