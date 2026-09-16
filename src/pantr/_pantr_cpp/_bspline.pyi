@@ -1447,3 +1447,42 @@ def tabulate_bspline_space_basis_derivatives_1d(
         ValueError: If ``n_deriv`` does not fit a C ``int``, or if either output
             has the wrong shape.
     """
+
+def bspline_space_cardinal_intervals_1d(
+    space: BsplineSpace1D32 | BsplineSpace1D64,
+    *,
+    out: _Mask,
+) -> None:
+    """Report which of a space's intervals are cardinal.
+
+    Bound by ``cpp/bindings/bspline_knots.cpp`` over
+    ``pantr::bspline::cardinal_intervals``. An interval is cardinal when neither
+    knot bounding it is repeated and every knot span of the window an evaluation
+    there reads has the interval's own length, to within the space's tolerance.
+
+    **The space crosses, not its knot vector.** The tolerance the scan compares
+    against *is* ``space.tolerance()``, derived once when the space was built from
+    the knots as supplied; handing over the knots alone would invite a caller to
+    re-derive it. The C++ function itself takes the knot span, because
+    ``pantr/bspline/space_1d.hpp`` includes ``knots.hpp`` and a signature over the
+    type would close that cycle -- the binding reads the three accessors off the
+    handle.
+
+    **No member is added to the type.** ``pantr/bspline/space_1d.hpp`` says it owns
+    no operations and names this scan as the reason; the scan is selected by
+    :mod:`pantr.bspline._knots_backend`, as every other ported operation is.
+
+    Args:
+        space (BsplineSpace1D32 | BsplineSpace1D64): The space to scan.
+        out (_Mask): One ``bool`` entry per interval, C-contiguous, written in full.
+
+    Raises:
+        TypeError: If ``out`` has a dtype, rank or contiguity the signature does not
+            accept. Raised by nanobind's caster before the body runs, and
+            deliberately not a conversion: a converted output would be filled and
+            discarded.
+        ValueError: If ``out`` does not hold one entry per interval. A Python caller
+            reaching this through :meth:`pantr.bspline.BsplineSpace1D.get_cardinal_intervals`
+            meets the oracle's own message instead, which
+            :mod:`pantr.bspline._knots_backend` raises above the branch.
+    """
