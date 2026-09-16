@@ -23,9 +23,10 @@ tensor-product apply kernels, ``bspline_extraction_operators.cpp`` for the Bézi
 builder and its mask. They are separate ports with separate parity claims.
 
 The **Bézier** and **Lagrange** targets have builders here; the cardinal one does
-not, because it additionally needs the cardinal-interval scan, which is not ported
-and which ``cpp/include/pantr/bspline/space_1d.hpp`` deliberately keeps off the
-type.
+not. The cardinal-interval scan it additionally needs is ported, as a free function
+selected by :mod:`pantr.bspline._knots_backend` rather than as a member --
+``cpp/include/pantr/bspline/space_1d.hpp`` still keeps it off the type -- and the
+builder over it is its own ticket.
 
 The Lagrange pair takes the ``lagrange_to_bernstein`` matrix as an **argument**.
 :mod:`pantr.change_basis` builds it, caches it per ``(degree, variant, dtype)`` and

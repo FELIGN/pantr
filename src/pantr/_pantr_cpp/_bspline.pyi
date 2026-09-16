@@ -15,8 +15,10 @@ below because the two are separate ports with separate parity claims: these
 *build* an operator from a knot vector, those *apply* one.
 
 Only the Bézier target is here. Lagrange is this operator post-multiplied by
-:func:`~pantr._pantr_cpp.lagrange_to_bernstein_1d`, and the cardinal target also
-needs the cardinal-interval scan, which is not ported.
+:func:`~pantr._pantr_cpp.lagrange_to_bernstein_1d`. The cardinal target additionally
+needs the cardinal-interval scan, which
+:func:`~pantr._pantr_cpp.bspline_space_cardinal_intervals_1d` now provides; the
+builder over it is its own ticket and is not bound here yet.
 
 **One refusal has no counterpart in the oracle.** A knot vector spanning no
 in-domain interval is refused here, with the message
