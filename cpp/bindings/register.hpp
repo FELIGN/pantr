@@ -177,8 +177,9 @@ void register_bspline_knots(nanobind::module_& m);
 /// Separate from `register_bspline_extraction` because the two are separate ports
 /// with separate parity claims: that one *applies* an operator, this one *builds*
 /// it from a knot vector. Only the Bézier target is here -- Lagrange follows in its
-/// own slice, and cardinal waits on the interval scan `bspline/space_1d.hpp`
-/// excludes. See design/extraction_port.md.
+/// own slice, and cardinal in its own too. The interval scan it needs is no longer
+/// what it waits on: `register_bspline_knots` binds it, off the type as
+/// `bspline/space_1d.hpp` requires. See design/extraction_port.md.
 void register_bspline_extraction_operators(nanobind::module_& m);
 
 /// Register `pantr.bspline`'s general-knot basis tabulation kernels.

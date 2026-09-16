@@ -13,7 +13,8 @@ a catalogue imports the kernels it hands out, so the kernels cannot live in the
 module that imports the catalogue.
 
 The **Bézier** and **Lagrange** targets have kernels here; the cardinal one does
-not, because it additionally needs the cardinal-interval scan, which is not ported.
+not. The cardinal-interval scan it additionally needs is ported -- see
+:mod:`pantr.bspline._knots_backend` -- and the builder over it is its own ticket.
 
 Two of the four are Numba and two are not, and the split is deliberate. The Lagrange
 pair is the Bézier operator post-multiplied by a change-of-basis matrix, and that

@@ -98,6 +98,14 @@ Re-read at `proto/cpp` `7ba20d3`. `cpp/include/pantr/bspline/` now holds `knots.
 *"a computation over the knots rather than a property of them"*, so it belongs with the
 operations rather than with the type.
 
+**Amended 2026-09-16, by FELIGN/pantr#491: it is no longer missing.** It is
+`pantr::bspline::cardinal_intervals` in `cpp/include/pantr/bspline/knots.hpp`, bound by
+`cpp/bindings/bspline_knots.cpp` and selected by `pantr.bspline._knots_backend`. The
+paragraph above is why it landed there rather than on the type: a free function beside the
+other knot computations, so `space_1d.hpp`'s "owns no operations" line stands unchanged. The
+cardinal extraction operator builder therefore waits on nothing but its own ticket, and the
+no-duplication argument below it is satisfied by there being one scan rather than two.
+
 **Corrected 2026-09-03, while building the Bézier half of S3: the sentence above about the
 boundary multiplicity is wrong.** It read that "the boundary multiplicity the Bézier builder
 opens with is the first entry of [`multiplicity_in_domain()`], so

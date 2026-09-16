@@ -10,8 +10,9 @@ live in :mod:`pantr.bspline._bspline_extraction_core`, and
 in ``cpp/include/pantr/bspline/extraction.hpp``.
 
 The **Bézier** and square **Lagrange** builders are dispatched. The cardinal one is
-not: it needs the cardinal-interval scan on top of a change-of-basis matrix, and that
-scan is not ported, so it still runs the Bézier builder and post-multiplies here. A
+not, though the cardinal-interval scan it needs on top of a change-of-basis matrix is
+now ported -- see :mod:`pantr.bspline._knots_backend`; the builder over it is its own
+ticket, so it still runs the Bézier builder and post-multiplies here. A
 Lagrange operator of elevated order (``order > degree``) is not dispatched either: it
 runs the Bézier builder and post-multiplies by a Bernstein tabulation here.
 """
