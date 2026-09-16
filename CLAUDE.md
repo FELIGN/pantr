@@ -102,6 +102,16 @@ The local suite passing is necessary but not sufficient. Known traps:
   the branch — seen as 21 phantom failures against code that was already fixed. Use
   `PYTHONPATH="$(pwd)/src"`. Plain `pytest` is unaffected, since `pytest.ini`'s
   `pythonpath = src` resolves against the rootdir.
+- **The docs gate is incremental, and a docstring RST error walks straight through it.**
+  `scripts/ci_local.sh docs` and `make docs` reuse `docs/_build`, and autodoc does not rebuild a
+  page whose module docstring changed, so a malformed cross-reference introduced in a docstring is
+  reported by neither. Reproduced on one tree: the gate printed `PASS docs build (-W)` while
+  `rm -r docs/_build` followed by the same `-W --keep-going` build failed on
+  `ERROR: Unknown target name: "np.bool"` — a `numpy` dtype written as `np.bool_` in an
+  `Attributes:` entry, where RST reads the trailing underscore before `]` as a reference. Wrap such
+  a type in double backticks. **Remove `docs/_build` and rebuild before trusting a docs green**
+  after any docstring change.
+
 - **CI is the finish line, not the push.** After creating a PR, watch it (`gh pr checks <n> --watch`)
   and do not report the work as done until every required check passes. Avoid pushing twice in quick
   succession: `ci.yaml` sets `cancel-in-progress: true`, so a second push cancels the first run's
