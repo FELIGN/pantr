@@ -705,13 +705,15 @@ class _THBSplineSpacePython:
     level-``l`` subdomain :math:`\Omega_l` but not entirely in the finer subdomain
     :math:`\Omega_{l+1}`.
 
-    With ``truncate=True`` (the default) the *truncated* hierarchical basis (THB) is
+    With ``truncate=True`` the *truncated* hierarchical basis (THB) is
     built: each active function that straddles a finer-level refinement boundary has its
     components on active finer functions removed (Giannelli-Jüttler-Speleers truncation
     :cite:p:`giannelli2012thb`), restoring the partition of unity.  Only truncated
     functions store a coefficient vector (in the finest tensor-product basis their support
     reaches); untruncated functions remain plain tensor-product B-splines.  With
-    ``truncate=False`` the non-truncated hierarchical basis (HB) is built.
+    ``truncate=False`` the non-truncated hierarchical basis (HB) is built.  Neither is a
+    default here -- ``truncate`` is a required positional argument of this class, and
+    :class:`THBSplineSpace` is what makes it a keyword defaulting to ``True``.
 
     A :class:`~pantr.grid.HierarchicalGrid` is immutable, so this space cannot go
     stale: :meth:`~pantr.grid.HierarchicalGrid.refine` returns a *new* grid and leaves
@@ -1122,8 +1124,11 @@ class _THBSplineSpacePython:
         Note:
             Results are memoized per ``cid`` in ``self._contrib_cache`` (the space is an
             immutable snapshot), and the arrays are the cached objects, which is why
-            they are read-only.  :class:`THBSplineSpace` is what copies them on the way
-            out where its own contract promises a writable array.
+            they are read-only.  :meth:`THBSplineSpace.contributions` passes them
+            straight out, read-only and uncopied, because it is the hot path behind
+            basis tabulation; it is :meth:`~THBSplineSpace.active_basis` and
+            :meth:`~THBSplineSpace.active_function_indices` that copy, their own
+            contracts promising a writable array.
         """
         cached = self._contrib_cache.get(cid)
         if cached is not None:
@@ -1397,7 +1402,7 @@ class _THBSplineSpacePython:
         rebinding, and a new :class:`_THBSplineSpacePython` is built on the result; ``self``
         and its grid are unchanged.
 
-        With ``admissible_class=m`` (the default ``m=2``) the refinement is graded so
+        With ``admissible_class=m`` the refinement is graded so
         the resulting mesh is admissible of class ``m`` (the truncated functions
         acting on any cell span at most ``m`` successive levels), following the
         recursive refinement-neighborhood algorithm of Carraturo et al. (2019).  This
@@ -1406,9 +1411,10 @@ class _THBSplineSpacePython:
         ``admissible_class=None`` exactly the marked cells are refined (no grading).
 
         Args:
-            cell_ids (npt.ArrayLike): Flat ids of active cells to refine.
+            cell_ids (npt.NDArray[np.int64]): Flat ids of active cells to refine.
             admissible_class (int | None): Admissibility class ``m >= 2`` to maintain,
-                or ``None`` for ungraded refinement.  Defaults to ``2``.
+                or ``None`` for ungraded refinement.  :class:`THBSplineSpace` is what
+                defaults it to ``2``; this one takes it positionally.
 
         Returns:
             _THBSplineSpacePython: A new space on the refined grid (same ``root_space``,
@@ -1687,7 +1693,7 @@ class _THBSplineSpacePython:
         ``space``.  With ``admissible_class=m`` the guard may suppress some coarsenings,
         so the recovery holds only when the guard permits them all.
 
-        With ``admissible_class=m`` (the default ``m=2``) a parent is reactivated only
+        With ``admissible_class=m`` a parent is reactivated only
         if its coarsening neighborhood (Def. 3.5) is empty, so the resulting mesh stays
         admissible of class ``m``.  With ``admissible_class=None`` that guard is skipped.
 
@@ -1698,10 +1704,11 @@ class _THBSplineSpacePython:
         the same object, so the two spaces never share the grid's tag registries.
 
         Args:
-            cell_ids (npt.ArrayLike): Flat ids of active leaf cells to coarsen away.
-                An empty array is valid and coarsens nothing.
+            cell_ids (npt.NDArray[np.int64]): Flat ids of active leaf cells to coarsen
+                away.  An empty array is valid and coarsens nothing.
             admissible_class (int | None): Admissibility class ``m >= 2`` to maintain,
-                or ``None`` to skip the admissibility guard.  Defaults to ``2``.
+                or ``None`` to skip the admissibility guard.  :class:`THBSplineSpace`
+                is what defaults it to ``2``; this one takes it positionally.
 
         Returns:
             _THBSplineSpacePython: A new space on the coarsened grid (same ``root_space``,
