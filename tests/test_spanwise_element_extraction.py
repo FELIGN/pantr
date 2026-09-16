@@ -2178,6 +2178,16 @@ def test_the_oracle_refuses_every_shape_the_cpp_type_refuses() -> None:
     space = BsplineSpace([BsplineSpace1D([0, 0, 1, 2, 2], 1)])
     ops = np.zeros((2, 2, 2), dtype=np.float64)
 
+    # First, because the binding refuses this pair in `bundles` before the C++
+    # constructor runs, so a mismatched pair that is also the wrong count must name
+    # the mismatch on both sides rather than the count on one and the mismatch on
+    # the other.
+    with pytest.raises(ValueError) as excinfo:
+        _SpanwiseElementExtractionPython(space._impl, 0, "equispaces", [ops], [])
+    assert str(excinfo.value) == (
+        "got 1 operator blocks and 0 identity masks; there must be one of each per direction"
+    )
+
     with pytest.raises(ValueError) as excinfo:
         _SpanwiseElementExtractionPython(space._impl, 0, "equispaces", [], [])
     assert str(excinfo.value) == (
