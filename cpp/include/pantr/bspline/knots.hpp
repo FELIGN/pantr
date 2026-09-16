@@ -90,6 +90,7 @@
 #include <vector>
 
 #include "pantr/core/format.hpp"
+#include "pantr/core/precondition.hpp"
 #include "pantr/core/scalar.hpp"
 
 namespace pantr::bspline {
@@ -365,6 +366,99 @@ template <Real T>
     const std::int64_t regularity =
         degree - multiplicity_of_first_knot_in_domain<T>(knots, degree, tol);
     return count - regularity - 1;
+}
+
+/// Which in-domain intervals are cardinal.
+///
+/// An interval `[u_k, u_(k+1)]` is cardinal when neither bounding knot is repeated
+/// **and** the `2 * degree - 1` knot spans of the window `u_(k-degree+1), ...,
+/// u_(k+degree)` all have the interval's own length, to within `tol`. Those are
+/// exactly the knots an evaluation on that span reads, so equal spacing across the
+/// window is what makes the restrictions there coincide with the cardinal ones.
+/// Port of `_get_Bspline_cardinal_intervals_1D_core`.
+///
+/// At `degree == 0` the window is empty, the length condition holds vacuously, and
+/// only the multiplicity gate decides. The oracle's own comment carries why that is
+/// consistent with the geometry: a degree-0 space has one basis function per
+/// interval and its cardinal extraction operator is the 1x1 identity either way.
+///
+/// ## The window index is the oracle's, including where it is off by one
+///
+/// `knot_id` walks the *last* copy of each in-domain class's knot, and the oracle
+/// seeds it at `degree` rather than at that class's true last index. The two agree
+/// unless the first knot repeats more than `degree + 1` times -- which
+/// `check_last_multiplicity` refuses only at the *last* knot, so it is reachable --
+/// and there the window is read one place to the left of where the definition puts
+/// it. Reproduced rather than corrected: this is the port, and moving the window
+/// would be a second answer to the question the oracle already answers.
+///
+/// **No bound check guards the window, and it does not need one.** The seed is never
+/// *larger* than the true index, because `knots[degree]` lies in the first in-domain
+/// class and so that class's last index is at least `degree`; so `knot_id` is at most
+/// the true last index of its class. A window is read only when the class bounding
+/// the interval on the right is simple, and that class holds `knots[n-degree-1]`, so
+/// the interval's own left index is at most `n-degree-2` and the window ends at
+/// `n-1`. The left edge is at least 1, since `knot_id` starts at `degree` and only
+/// grows.
+///
+/// ## Two things the oracle does that this does not
+///
+/// Its `if np.all(mult > 1): return` early-out is an optimisation and not part of the
+/// answer -- the loop's own gate rejects every interval in that case -- so it is not
+/// reproduced. And it allocates the window and its differences per interval, where
+/// this differences in place; the values differenced are the same ones, in the same
+/// order.
+///
+/// Each span is differenced in `T` and only then widened, as the oracle's numba
+/// expression over the knot array is. See the file comment on the two arithmetics.
+///
+/// \param knots A non-decreasing knot vector of at least `2 * degree + 2` entries,
+///        already snapped if snapping was requested.
+/// \param degree The polynomial degree, non-negative.
+/// \param tol The absolute parametric tolerance, from `knot_tolerance`. It is the
+///        space's own tolerance and is not re-derived here.
+/// \param out One entry per in-domain interval, written in full.
+///
+/// \note No input validation is performed beyond the memory-safety obligation on
+///       `out`, which carries a `PANTR_PRECONDITION`. For general use call
+///       `pantr.bspline.BsplineSpace1D.get_cardinal_intervals`.
+template <Real T>
+void cardinal_intervals(std::span<const T> knots, std::int64_t degree, double tol,
+                        std::span<bool> out) {
+    using std::abs;
+
+    const KnotClasses<T> classes = unique_knots_and_multiplicity<T>(knots, degree, tol);
+    const std::span<const std::int64_t> mult(classes.multiplicity.data() + classes.domain_begin,
+                                             classes.domain_end - classes.domain_begin);
+    const std::size_t num_intervals = mult.size() - 1;
+    PANTR_PRECONDITION(out.size() == num_intervals,
+                       "out must hold one entry per in-domain interval");
+
+    std::fill(out.begin(), out.end(), false);
+
+    const auto width = static_cast<std::size_t>(degree);
+    std::int64_t knot_id = degree;
+    for (std::size_t elem = 0; elem < num_intervals; ++elem) {
+        if (mult[elem] == 1 && mult[elem + 1] == 1) {
+            if (degree == 0) {
+                out[elem] = true;
+            } else {
+                const auto first = static_cast<std::size_t>(knot_id - degree + 1);
+                // The oracle's `lengths[degree - 1]`: the interval's own span.
+                const T reference = knots[first + width] - knots[first + width - 1];
+                bool cardinal = true;
+                for (std::size_t j = 0; j + 1 < 2 * width; ++j) {
+                    const T length = knots[first + j + 1] - knots[first + j];
+                    if (abs(detail::as_double(length - reference)) > tol) {
+                        cardinal = false;
+                        break;
+                    }
+                }
+                out[elem] = cardinal;
+            }
+        }
+        knot_id += mult[elem + 1];
+    }
 }
 
 /// Collapse each group of knots meant to be one knot onto a single stored value.

@@ -38,6 +38,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -48,6 +49,7 @@
 
 namespace {
 
+using pantr::bspline::cardinal_intervals;
 using pantr::bspline::check_snapping_kept_an_interval;
 using pantr::bspline::check_space_has_an_interval;
 using pantr::bspline::classify_knots;
@@ -339,6 +341,75 @@ void check_no_interval_refusal() {
          "<did not throw>", "a space with an interval passes");
 }
 
+/// The cardinal flags of a knot vector, as a `T`/`F` string a failure can print.
+///
+/// The buffer is `bool[]` rather than a `std::vector<bool>` because the scan writes
+/// through a `std::span<bool>`, which that specialisation cannot provide.
+template <class T>
+std::string cardinal_pattern(const std::vector<T>& knots, std::int64_t degree) {
+    const double tol = knot_tolerance(view(knots));
+    const auto count = static_cast<std::size_t>(classify_knots(view(knots), degree, tol)
+                                                    .num_intervals());
+    const std::unique_ptr<bool[]> flags(new bool[count]);
+    cardinal_intervals<T>(view(knots), degree, tol, std::span<bool>(flags.get(), count));
+
+    std::string pattern;
+    for (std::size_t i = 0; i < count; ++i) {
+        pattern += flags[i] ? 'T' : 'F';
+    }
+    return pattern;
+}
+
+/// Which intervals the scan calls cardinal, on vectors whose answer is known by hand.
+///
+/// Read off the vectors rather than taken from a run: on a clamped uniform mesh of
+/// `n` intervals at degree `p` the window reaches `p - 1` intervals either side, so
+/// interval `e` is cardinal exactly when `p - 1 <= e <= n - p`. Every other case
+/// below is one of the two rules -- the multiplicity gate, or a span of the wrong
+/// length inside the window -- applied to a vector short enough to check by eye.
+void check_cardinal_intervals() {
+    // Clamped uniform, degree 2 over six intervals: `1 <= e <= 4` by the closed
+    // form, and the two end intervals see a zero-length span from the repeated end
+    // knots rather than merely falling outside it.
+    same(cardinal_pattern<double>({0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 6.0}, 2),
+         "FTTTTF", "clamped uniform, degree 2");
+
+    // The same vector with the interior knot 5 repeated: the multiplicity gate
+    // disqualifies the two intervals it bounds, whatever the spacing around them.
+    same(cardinal_pattern<double>(
+             {0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 5.0, 6.0, 6.0, 6.0}, 2),
+         "FTTTFF", "a repeated interior knot disqualifies the intervals it bounds");
+
+    // Unclamped, degree 3 over the domain [3, 5]: the window reaches two spans past
+    // each interval, so the irregular span [7, 10] lies outside both windows and
+    // neither interval is affected.
+    same(cardinal_pattern<double>({0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 10.0}, 3), "TT",
+         "an irregular span outside every window changes nothing");
+
+    // Degree 0: the window is empty, so the length condition is vacuous and even a
+    // deliberately non-uniform vector is all cardinal.
+    same(cardinal_pattern<double>({0.0, 0.1, 0.5, 0.9, 1.0}, 0), "TTTT",
+         "degree 0 ignores the spacing");
+
+    // Degree 0 is still subject to the multiplicity gate, which is what "vacuous"
+    // does not mean.
+    same(cardinal_pattern<double>({0.0, 0.25, 0.25, 0.5, 1.0}, 0), "FFT",
+         "degree 0 keeps the multiplicity gate");
+
+    // At `float32` too, on a mesh whose knots are exactly representable so that the
+    // answer is the same one by hand.
+    same(cardinal_pattern<float>({0.0F, 0.0F, 0.0F, 0.25F, 0.5F, 0.75F, 1.0F, 1.0F, 1.0F}, 2),
+         "FTTF", "clamped uniform at float32");
+
+    // A single span of the wrong length disqualifies itself and the `p - 1`
+    // intervals either side of it, and nothing further: degree 2 over seven
+    // intervals with the fourth widened, so intervals 2, 3 and 4 go and 1 and 5
+    // survive.
+    same(cardinal_pattern<double>(
+             {0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.5, 5.5, 6.5, 7.5, 7.5, 7.5}, 2),
+         "FTFFFTF", "one wrong span reaches exactly its own window");
+}
+
 }  // namespace
 
 int main() {
@@ -350,6 +421,7 @@ int main() {
     check_snap_takes_the_first_knot();
     check_snap_reads_the_original_vector();
     check_num_basis();
+    check_cardinal_intervals();
     check_snapping_refusal();
     check_no_interval_refusal();
     return pantr::test::summary("test_bspline_knots");
