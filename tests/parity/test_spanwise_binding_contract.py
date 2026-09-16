@@ -634,3 +634,44 @@ def test_extraction_refuses_a_wrong_rank_operator_array(cpp_backend: None) -> No
     operators[0] = np.zeros((3, 2), dtype=np.float64)
     with pytest.raises(TypeError):
         bindings.SpanwiseElementExtraction64(space._impl, 0, "irrelevant", operators, masks)
+
+
+def test_extraction_refuses_unequal_numbers_of_operator_blocks_and_masks(
+    cpp_backend: None,
+) -> None:
+    """``operators`` and ``masks`` must have one entry each per direction.
+
+    The only refusal in `bundles()` rather than in the C++ type, and the last of the
+    constructor path's seven to get a test. `compact()` never sees this one: the two
+    sequences are zipped by index before the type is reached, so an unequal pair would
+    otherwise read past the shorter one.
+    """
+    bindings = _bindings()
+    space = _cpp_space()
+    operators, masks = _good_bundles(space._impl, np.float64)
+    with pytest.raises(ValueError):
+        bindings.SpanwiseElementExtraction64(space._impl, 0, "irrelevant", operators, masks[:-1])
+    with pytest.raises(ValueError):
+        bindings.SpanwiseElementExtraction64(space._impl, 0, "irrelevant", operators[:-1], masks)
+
+
+@pytest.mark.parametrize("bad_target", [1.5, 1.0], ids=["fractional", "integral_float"])
+def test_extraction_refuses_a_float_target_rather_than_truncating_it(
+    cpp_backend: None, bad_target: float
+) -> None:
+    """``target`` is an integer parameter and a ``float`` is refused, not narrowed.
+
+    Raised in review: the two scalar arguments carry no ``.noconvert()``, so whether
+    nanobind's converting pass would narrow a ``float`` into ``std::int64_t`` was an
+    open question rather than a settled one. It refuses -- ``1.0`` as much as ``1.5``,
+    so the answer does not depend on the value being representable. A ``bool`` is
+    accepted and reads back as ``0``/``1``, which is Python's own ``int`` subclassing
+    rather than a narrowing, and the wrapper passes ``int(target)`` regardless.
+    """
+    bindings = _bindings()
+    space = _cpp_space()
+    operators, masks = _good_bundles(space._impl, np.float64)
+    with pytest.raises(TypeError):
+        bindings.SpanwiseElementExtraction64(
+            space._impl, bad_target, "irrelevant", operators, masks
+        )

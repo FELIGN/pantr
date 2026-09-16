@@ -66,6 +66,7 @@ from pantr.bspline.spanwise_element_extraction import (
     _coerce_target,
     _impl_class,
     _lagrange_structural_identity_mask,
+    _SpanwiseElementExtractionPython,
     normalize_cell_indices,
     operand_shape,
 )
@@ -2139,3 +2140,122 @@ def test_the_unknown_target_message_is_byte_identical() -> None:
         assert str(excinfo.value) == (
             f"Unknown target {bad!r}; expected an ExtractionTarget or one of {valid}"
         )
+
+
+def test_the_oracle_refuses_a_degenerate_operator_like_the_cpp_type() -> None:
+    """A zero-row or zero-column operator is refused, with the C++ type's own message.
+
+    Found by a review probe, which built the oracle directly with such a block and
+    got an object back where the C++ type raises. The two implementations are
+    compared against each other, so one accepting what the other rejects is a
+    divergence no comparison of values could see, and the parity suite can reach it
+    because it constructs both implementations directly.
+
+    The refusal itself is the binding's: an empty block's ``data()`` may be null and
+    nanobind reads a null pointer as "no array" rather than as an empty one, which is
+    the case ``cpp/bindings/bspline_spanwise_extraction.cpp`` argues cannot arise.
+    ``tests/parity/test_spanwise_binding_contract.py`` asserts the C++ half.
+    """
+    space = BsplineSpace([BsplineSpace1D([0, 0, 1, 2, 2], 1)])
+    assert space.num_intervals == (2,)
+    mask = np.array([False, False])
+    for shape in ((2, 0, 3), (2, 3, 0)):
+        ops = np.zeros(shape, dtype=np.float64)
+        with pytest.raises(ValueError) as excinfo:
+            _SpanwiseElementExtractionPython(space._impl, 0, "equispaces", [ops], [mask])
+        assert str(excinfo.value) == "direction 0 has operators with no rows or no columns"
+
+
+def test_the_oracle_refuses_every_shape_the_cpp_type_refuses() -> None:
+    """The oracle carries each of the C++ constructor's shape refusals, message for message.
+
+    ``tests/parity/test_spanwise_binding_contract.py`` asserts the C++ half of each of
+    these against the binding. Asserting the same strings here is what says the two
+    implementations refuse the *same* inputs -- a parity oracle that accepted what the
+    implementation rejects would be no oracle at all, and the parity suite constructs
+    both directly, so it can reach them.
+    """
+    space = BsplineSpace([BsplineSpace1D([0, 0, 1, 2, 2], 1)])
+    ops = np.zeros((2, 2, 2), dtype=np.float64)
+
+    with pytest.raises(ValueError) as excinfo:
+        _SpanwiseElementExtractionPython(space._impl, 0, "equispaces", [], [])
+    assert str(excinfo.value) == (
+        "expected one operator bundle per direction; got 0 for a space of dimension 1"
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        _SpanwiseElementExtractionPython(
+            space._impl,
+            0,
+            "equispaces",
+            [np.zeros((3, 2, 2), dtype=np.float64)],
+            [np.array([False, False, False])],
+        )
+    assert str(excinfo.value) == "direction 0 has 3 operators for 2 elements"
+
+    with pytest.raises(ValueError) as excinfo:
+        _SpanwiseElementExtractionPython(
+            space._impl, 0, "equispaces", [ops], [np.array([False, False, False])]
+        )
+    assert str(excinfo.value) == "direction 0 has an identity mask of length 3 for 2 elements"
+
+
+def test_a_space_from_another_backend_is_refused_in_both_directions() -> None:
+    """A space built under one backend cannot be extracted under the other.
+
+    Found in self-review: the check was inside the C++ branch, so the *quiet*
+    direction went unguarded. Handing a Python oracle to a C++ class raises a nanobind
+    ``TypeError`` naming C++ types -- loud, if unreadable -- but handing a C++ handle
+    to the Python oracle **succeeded**, yielding an extraction whose reductions ran in
+    Python over C++ values, which no parity claim covers and nothing announced.
+    ``design/cross_backend_types.md`` forbids exactly that shape, and
+    ``tests/parity/test_bspline_structural.py`` pins the same refusal for a sibling.
+    """
+    demand_cpp_backend()
+    with use_backend(Backend.CPP):
+        cpp_space = BsplineSpace([BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)])
+    with use_backend(Backend.PYTHON):
+        py_space = BsplineSpace([BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)])
+
+    with use_backend(Backend.PYTHON), pytest.raises(ValueError, match="active backend"):
+        SpanwiseElementExtraction(cpp_space, "bezier")
+    with use_backend(Backend.CPP), pytest.raises(ValueError, match="active backend"):
+        SpanwiseElementExtraction(py_space, "bezier")
+
+
+def test_a_dimensionless_space_still_builds_an_extraction() -> None:
+    """``BsplineSpace([])`` is legal, so an extraction over it must be too.
+
+    Found in self-review: picking the implementation class needs a dtype, and the
+    obvious spelling ``space.dtype`` raises :class:`IndexError` on a space with no
+    directions -- so reading it to choose a class turned a constructor that used to
+    succeed into one that raises. ``_stored_dtype`` is the helper
+    :mod:`pantr.bspline._bspline_space_nd` already keeps for exactly this case.
+
+    The empty products are the oracle's own: one element on the grid, one
+    fully-identity element, and every one of no directions is all-identity.
+    """
+    ext = SpanwiseElementExtraction(BsplineSpace([]), "bezier")
+    assert ext.dim == 0
+    assert ext.num_total_intervals == 1
+    assert ext.num_identity_elements == 1
+    assert ext.is_identity
+    assert ext.ops_1d == ()
+    assert ext.compact_ops_1d == ()
+    rebuilt = pickle.loads(pickle.dumps(ext))
+    assert rebuilt.dim == 0
+    assert rebuilt.num_identity_elements == 1
+
+
+def test_the_target_enum_and_its_cpp_twin_cannot_drift_apart() -> None:
+    """``ExtractionTarget``'s members are exactly the three the C++ enum admits.
+
+    ``pantr::bspline::ExtractionTarget`` mirrors this enum value for value and
+    ``is_extraction_target`` hard-codes the range ``[bezier, cardinal]``, which the
+    binding checks before casting. A fourth member added here and not there would be
+    refused at the seam with a message about an integer, which names neither side --
+    so the agreement is asserted rather than left to a reader of two files.
+    """
+    assert {member.value for member in ExtractionTarget} == {0, 1, 2}
+    assert [member.name for member in ExtractionTarget] == ["BEZIER", "LAGRANGE", "CARDINAL"]
