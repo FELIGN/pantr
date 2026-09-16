@@ -2266,6 +2266,15 @@ def test_the_target_enum_and_its_cpp_twin_cannot_drift_apart() -> None:
     binding checks before casting. A fourth member added here and not there would be
     refused at the seam with a message about an integer, which names neither side --
     so the agreement is asserted rather than left to a reader of two files.
+
+    Name and value are pinned **as pairs**. Asserting the value *set* and the name
+    *list* separately passes a swap that keeps both -- ``BEZIER = 1`` with
+    ``LAGRANGE = 0`` leaves the set ``{0, 1, 2}`` intact and leaves definition order,
+    which is what :class:`~enum.Enum` iterates in, unchanged -- while the integer
+    crossing the binding would then name the wrong basis on the C++ side.
     """
-    assert {member.value for member in ExtractionTarget} == {0, 1, 2}
-    assert [member.name for member in ExtractionTarget] == ["BEZIER", "LAGRANGE", "CARDINAL"]
+    assert [(member.name, member.value) for member in ExtractionTarget] == [
+        ("BEZIER", 0),
+        ("LAGRANGE", 1),
+        ("CARDINAL", 2),
+    ]
