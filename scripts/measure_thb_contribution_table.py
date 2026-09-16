@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Final, NamedTuple
 import numpy as np
 
 from pantr.bspline import BsplineSpace, BsplineSpace1D, THBSplineSpace
+from pantr.bspline._thb_spline_space import _THBSplineSpacePython
 from pantr.grid import hierarchical_grid, uniform_grid
 
 if TYPE_CHECKING:
@@ -182,8 +183,22 @@ def _measure(label: str, space: THBSplineSpace) -> _Footprint:
         _Footprint: The two sizes and the counts behind them.
     """
     widest = space.max_active_per_cell()  # forces every cell in both implementations
-    cache = space._contrib_cache
-    entries = sum(len(contributions) for contributions in cache.values())
+    # `space` is the wrapper; the dict lives on the Python oracle's implementation
+    # specifically (`_impl`), since #494 made `THBSplineSpace` dispatch to a backend
+    # and the C++ implementation holds its own table rather than this dict. This script
+    # measures the oracle's dict, so it needs the oracle underneath -- the default
+    # backend, and the only one where `_contrib_cache` exists at all.
+    impl = space._impl
+    if not isinstance(impl, _THBSplineSpacePython):
+        raise TypeError(
+            "measure_thb_contribution_table measures the Python oracle's dict; run it "
+            f"under the default (Python) backend, not {type(impl).__name__!r}."
+        )
+    cache = impl._contrib_cache
+    # One entry per contributing function, which is the first array's length. `len()`
+    # on the cached value would be 3 -- #494 made it the (dofs, levels, multi_indices)
+    # triple the binding returns, where it used to be a list of triples.
+    entries = sum(int(dofs.shape[0]) for dofs, _, _ in cache.values())
     dim = space.dim
     flat = _INT64_BYTES * (space.grid.num_cells + 1) + _INT64_BYTES * (2 + dim) * entries
     return _Footprint(

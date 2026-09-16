@@ -399,8 +399,15 @@ class TestWindowedKernelBookkeeping:
         thb = self._thb()
         ext = MultiLevelExtraction(thb)
         cid = next(c for c in range(thb.grid.num_cells) if thb.active_basis(c).size > 1)
-        real = type(thb)._cell_contributions
-        monkeypatch.setattr(type(thb), "_cell_contributions", lambda self, c: real(self, c)[1:])
+        real = type(thb).contributions
+
+        def _one_fewer(
+            self: THBSplineSpace, c: int
+        ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+            dofs, levels, multis = real(self, c)
+            return dofs[1:], levels[1:], multis[1:, :]
+
+        monkeypatch.setattr(type(thb), "contributions", _one_fewer)
         with pytest.raises(RuntimeError, match="flags .* non-zero rows but the space lists"):
             ext.multilevel_operator(cid)
 
