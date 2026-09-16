@@ -2,14 +2,36 @@
 
 Covers the *construction and query* half of FELIGN/pantr#397: the per-level spaces, the
 Kraft selection, the truncation coefficients, the per-cell contribution table, and
-refinement and coarsening. Basis tabulation, the windowed restriction and the
-prolongation operators are not ported yet and are not compared here.
+refinement and coarsening.
 
-The C++ side is reached through :mod:`pantr._pantr_cpp` directly rather than through
-``pantr.bspline.THBSplineSpace``, because that class is still pure Python: this cut lands
-the C++ type and its binding, and the wrapper that dispatches to it is the next one. So
-there is no ``__reduce__`` round trip in this file either -- nothing here is picklable
-yet, and the round trip is owed by the cut that introduces the wrapper.
+**Both sides are reached through ``pantr.bspline.THBSplineSpace``**, under
+:func:`~pantr._backend.use_backend`, since FELIGN/pantr#494 made that class a wrapper
+that dispatches to the C++ type. An earlier version of this file reached the C++ side
+through :mod:`pantr._pantr_cpp` directly and said so here, because the class was still
+pure Python and the wrapper was the next cut; that is the cut, and going through the
+public class is what makes the comparison say anything about what a caller gets.
+:func:`test_the_wrapper_forwards_every_bound_member` is the per-member statement of it,
+and :func:`test_construction_selects_the_backends_own_implementation` pins that the two
+builders really do build two different things.
+
+The ``__reduce__`` round trip the old docstring called owed is here too, in
+:func:`test_a_thb_space_survives_pickling_across_every_backend_pair`.
+
+What is **not** compared, and why it is not an omission
+-------------------------------------------------------
+
+Basis tabulation, the windowed restriction and the three prolongation operators have no
+C++ counterpart. Since #494 they are computed on the wrapper against the forwarded
+accessors, so one body serves both backends and a *numeric* cross-backend comparison of
+them would be comparing one implementation with itself -- except through its two inputs,
+which are the level spaces and the truncation coefficients, and both of those are
+compared here directly. A tolerance for such a comparison is also not available honestly:
+it would have to bound the effect of a last-bit difference in a knot vector on a
+B-spline value, which is a conditioning argument nobody in this tree has derived. The
+level-space **knot vectors** are therefore compared instead, which is the quantity that
+argument would have needed, and they are compared against the space's own knot tolerance
+-- a bound the library already derives and already uses to decide whether two knots are
+the same one.
 
 What agrees, quantity by quantity
 ---------------------------------
@@ -17,7 +39,8 @@ What agrees, quantity by quantity
 The split is per quantity with an argument for each, and it is not one decision applied in
 bulk.
 
-**Exactly** -- ``num_levels``, ``num_total_basis``, ``num_basis_per_level``, the per-level
+**Exactly** -- ``num_levels``, ``num_total_basis``, ``num_basis_per_level``, ``regularity``,
+``num_truncated``, the per-level
 active function index sets, ``level_offsets``, ``dof_level``, the per-cell ``active_basis``
 lists, the contribution table's levels and multi-indices, ``max_active_per_cell``, the set
 of truncated dofs, and each truncated function's representation level, box origin and box
@@ -30,7 +53,11 @@ that decision reads zeros off the truncation coefficients, which below agree onl
 bound. It is still exact: a coefficient is a sum of non-negative terms, so it is zero in
 both backends or in neither, as the section on the bound says of a zero coefficient.
 
-**Within a derived bound** -- the truncation coefficients, and *only* those. They are
+**Within a derived bound** -- the truncation coefficients, and the level-space knot
+vectors. The knots are graded against ``BsplineSpace1D.tolerance``, which is the
+library's own absolute parametric tolerance for exactly this question, and they are
+observed bit-identical; the count is in :class:`_SweepReport` rather than written here,
+for the reason the coefficients' own count gives. The coefficients are
 floating point, and bit-identity is not available for them: the oracle's ``_refine_box``
 contracts through :func:`numpy.tensordot`, which reshapes and calls BLAS, whose summation
 order is the implementation's -- ``CLAUDE.md`` records that a quantity round-off dominates
@@ -106,7 +133,9 @@ the HB space, where the sum is nowhere near one.
 from __future__ import annotations
 
 import contextlib
+import copy
 import math
+import pickle
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 import numpy as np
@@ -269,16 +298,22 @@ def _the_oracle() -> Iterator[None]:
         yield
 
 
-def _python_space(case: _Case) -> THBSplineSpace:
-    """Build the oracle's space for a case.
+def _space(case: _Case, backend: Backend) -> THBSplineSpace:
+    """Build a case's space through the public class, under one backend.
+
+    One builder for both sides since FELIGN/pantr#494: the class dispatches, so the
+    backend in effect while it is constructed is the whole difference between the oracle
+    and the port. Everything below is the ordinary public construction path a caller
+    would write.
 
     Args:
         case (_Case): The hierarchy to build.
+        backend (Backend): The backend to build it under.
 
     Returns:
-        THBSplineSpace: The space, built under the Python backend.
+        THBSplineSpace: The space, holding that backend's implementation.
     """
-    with _the_oracle():
+    with use_backend(backend):
         directions = [
             BsplineSpace1D(
                 _open_knots(case.degrees[k], case.num_elements[k], *case.bounds[k]).astype(
@@ -302,47 +337,29 @@ def _python_space(case: _Case) -> THBSplineSpace:
         )
 
 
-def _cpp_space(case: _Case) -> Any:
-    """Build the C++ handle for a case.
+def _python_space(case: _Case) -> THBSplineSpace:
+    """Build a case's space over the Python oracle.
 
     Args:
         case (_Case): The hierarchy to build.
 
     Returns:
-        Any: A ``THBSplineSpace32`` or ``THBSplineSpace64`` handle.
+        THBSplineSpace: The space, holding ``_THBSplineSpacePython``.
     """
-    cpp = _bindings()
-    narrow = np.dtype(case.dtype) == np.float32
-    one_d = cpp.BsplineSpace1D32 if narrow else cpp.BsplineSpace1D64
-    tensor = cpp.BsplineSpace32 if narrow else cpp.BsplineSpace64
-    hierarchical = cpp.THBSplineSpace32 if narrow else cpp.THBSplineSpace64
+    return _space(case, Backend.PYTHON)
 
-    directions = [
-        one_d(
-            np.ascontiguousarray(
-                _open_knots(case.degrees[k], case.num_elements[k], *case.bounds[k]),
-                dtype=case.dtype,
-            ),
-            case.degrees[k],
-            False,
-            True,
-        )
-        for k in range(len(case.degrees))
-    ]
-    breakpoints = [
-        np.ascontiguousarray(np.linspace(*case.bounds[k], case.num_elements[k] + 1))
-        for k in range(len(case.degrees))
-    ]
-    grid = cpp.HierarchicalGrid(
-        cpp.TensorProductGrid(breakpoints), np.ascontiguousarray(case.factor, dtype=np.int64)
-    )
-    for level, lo, hi in case.refinements:
-        grid = grid.refine(
-            level,
-            np.ascontiguousarray(lo, dtype=np.int64),
-            np.ascontiguousarray(hi, dtype=np.int64),
-        )
-    return hierarchical(tensor(directions), grid, case.truncate, list(case.regularity))
+
+def _cpp_space(case: _Case) -> THBSplineSpace:
+    """Build a case's space over the C++ type.
+
+    Args:
+        case (_Case): The hierarchy to build.
+
+    Returns:
+        THBSplineSpace: The space, holding a ``THBSplineSpace32`` or
+        ``THBSplineSpace64`` handle.
+    """
+    return _space(case, Backend.CPP)
 
 
 def _coefficient_roundings(num_levels: int, shape: tuple[int, ...]) -> Roundings:
@@ -362,29 +379,35 @@ def _coefficient_roundings(num_levels: int, shape: tuple[int, ...]) -> Roundings
     return Roundings(stages=stages, accumulator_per_stage=1, storage_per_stage=0)
 
 
-def _truncated_dofs(space: Any, num_total_basis: int) -> dict[int, Any]:
-    """The truncation entries of either backend, keyed by global dof.
+def _truncated_dofs(space: THBSplineSpace, num_total_basis: int) -> dict[int, Any]:
+    """The truncation entries of a space, keyed by global dof.
+
+    ``truncated`` answers per dof rather than handing out a mapping, so enumerating the
+    truncated set means asking about every dof. That is the binding's shape and the
+    wrapper's, and it is also what ``num_truncated`` exists to make checkable without
+    the walk.
 
     Args:
-        space (Any): The oracle's space or a C++ handle.
+        space (THBSplineSpace): The space to read.
         num_total_basis (int): How many dofs to ask about.
 
     Returns:
         dict[int, Any]: ``dof -> (rep_level, box_lo, coeffs)`` for every truncated
-        function. The oracle's ``_TruncCoeffs`` and the handle's tuple unpack the same
-        way, which is why one reader serves both.
+        function.
     """
-    if isinstance(space, THBSplineSpace):
-        return {int(dof): entry for dof, entry in space._trunc.items()}
     entries: dict[int, Any] = {}
     for dof in range(num_total_basis):
         entry = space.truncated(dof)
         if entry is not None:
             entries[dof] = entry
+    assert len(entries) == space.num_truncated, (
+        f"num_truncated says {space.num_truncated} but {len(entries)} dofs answer "
+        f"truncated() with an entry"
+    )
     return entries
 
 
-def _partition_of_unity_defect(space: Any, oracle: THBSplineSpace) -> float:
+def _partition_of_unity_defect(space: THBSplineSpace, oracle: THBSplineSpace) -> float:
     """How far the active basis is from summing to one, in the finest level's basis.
 
     Pushes every active function's coefficient vector to the finest level by pure
@@ -397,11 +420,11 @@ def _partition_of_unity_defect(space: Any, oracle: THBSplineSpace) -> float:
     stencil. The module docstring says why that composition is honest.
 
     Args:
-        space (Any): The space whose coefficients are checked; the oracle or a handle.
+        space (THBSplineSpace): The space whose coefficients are checked.
         oracle (THBSplineSpace): The oracle for the same hierarchy, which supplies the
             level spaces the two-scale matrices are built from. Passing it explicitly
-            rather than reading it off ``space`` is what lets the same function grade a
-            C++ handle.
+            rather than reading it off ``space`` is what keeps the two-scale machinery the
+            oracle's while the coefficients graded are ``space``'s.
 
     Returns:
         float: The largest absolute deviation from one.
@@ -432,8 +455,8 @@ def _partition_of_unity_defect(space: Any, oracle: THBSplineSpace) -> float:
     for dof in range(oracle.num_total_basis):
         entry = entries.get(dof)
         if entry is None:
-            level = oracle._dof_level(dof)
-            position = dof - int(oracle._func_offset[level])
+            level = oracle.dof_level(dof)
+            position = dof - int(oracle.level_offsets[level])
             flat = int(oracle.active_function_indices(level)[position])
             multi = np.unravel_index(flat, oracle.level_space(level).num_basis)
             box_lo = [int(m) for m in multi]
@@ -499,9 +522,15 @@ def _compare(case: _Case, variant: int = 0) -> tuple[int, int, float]:
         Field("num_levels", exact_parity(why=_VERDICT_WHY)),
         Field("num_total_basis", exact_parity(why=_VERDICT_WHY)),
         Field("num_basis_per_level", exact_parity(why=_VERDICT_WHY)),
+        Field("num_truncated", exact_parity(why=_VERDICT_WHY)),
         Field("dim", exact_parity(why=_VERDICT_WHY)),
         Field("degrees", exact_parity(why=_VERDICT_WHY)),
         Field("truncate", exact_parity(why=_VERDICT_WHY)),
+        Field(
+            "level_offsets",
+            exact_parity(why=_VERDICT_WHY),
+            read=lambda space: np.asarray(space.level_offsets, dtype=np.int64),
+        ),
     ]
     for level in range(py.num_levels):
         fields.append(
@@ -514,6 +543,13 @@ def _compare(case: _Case, variant: int = 0) -> tuple[int, int, float]:
             )
         )
     assert_object_parity(py=py, cpp=cpp, fields=fields, context=context)
+    # `regularity` is compared here rather than as a Field: it mixes `None` with `int`,
+    # and the harness refuses a field whose value mixes element kinds -- rightly, since
+    # stacking them would promote to a common dtype. It is a tuple of verdicts either way.
+    assert py.regularity == cpp.regularity, (
+        f"{context}: regularity disagrees; python {py.regularity!r} vs cpp {cpp.regularity!r}"
+    )
+    _compare_the_level_knots(py, cpp, context)
 
     assert py.max_active_per_cell() == cpp.max_active_per_cell(), (
         f"{context}: max_active_per_cell disagrees. {_VERDICT_WHY}"
@@ -524,16 +560,18 @@ def _compare(case: _Case, variant: int = 0) -> tuple[int, int, float]:
         assert np.array_equal(expected, actual), (
             f"{context}: active_basis({cid}) disagrees. {_VERDICT_WHY}"
         )
-        dofs, levels, multis = cpp.contributions(cid)
-        contributions = py._cell_contributions(cid)
-        assert [int(d) for d in dofs] == [t[0] for t in contributions]
-        assert [int(x) for x in levels] == [t[1] for t in contributions]
-        assert [tuple(int(v) for v in row) for row in np.asarray(multis)] == [
-            tuple(t[2]) for t in contributions
-        ], f"{context}: the contribution multi-indices of cell {cid} disagree"
+        for name, expected_block, actual_block in zip(
+            ("dofs", "levels", "multi-indices"),
+            py.contributions(cid),
+            cpp.contributions(cid),
+            strict=True,
+        ):
+            assert np.array_equal(expected_block, actual_block), (
+                f"{context}: the contribution {name} of cell {cid} disagree. {_VERDICT_WHY}"
+            )
 
     for dof in range(py.num_total_basis):
-        assert py._dof_level(dof) == cpp.dof_level(dof), f"{context}: dof_level({dof}) disagrees"
+        assert py.dof_level(dof) == cpp.dof_level(dof), f"{context}: dof_level({dof}) disagrees"
 
     py_entries = _truncated_dofs(py, py.num_total_basis)
     cpp_entries = _truncated_dofs(cpp, py.num_total_basis)
@@ -548,11 +586,11 @@ def _compare(case: _Case, variant: int = 0) -> tuple[int, int, float]:
     worst = 0.0
     for dof, py_entry in sorted(py_entries.items()):
         cpp_entry = cpp_entries[dof]
-        expected = np.asarray(py_entry.coeffs, dtype=np.float64)
+        expected = np.ascontiguousarray(py_entry[2], dtype=np.float64)
         actual = np.ascontiguousarray(cpp_entry[2], dtype=np.float64)
         where = f"{context}: dof {dof}"
-        assert int(py_entry.rep_level) == int(cpp_entry[0]), f"{where}: rep_level disagrees"
-        assert tuple(py_entry.box_lo) == tuple(int(x) for x in cpp_entry[1]), (
+        assert int(py_entry[0]) == int(cpp_entry[0]), f"{where}: rep_level disagrees"
+        assert tuple(py_entry[1]) == tuple(int(x) for x in cpp_entry[1]), (
             f"{where}: box origin disagrees"
         )
         assert expected.shape == actual.shape, f"{where}: box shape disagrees"
@@ -585,7 +623,49 @@ def _compare(case: _Case, variant: int = 0) -> tuple[int, int, float]:
     return compared, identical, worst
 
 
-def _compare_the_operations(py: THBSplineSpace, cpp: Any, context: str, variant: int) -> None:
+def _compare_the_level_knots(py: THBSplineSpace, cpp: THBSplineSpace, context: str) -> None:
+    """Grade the per-level knot vectors, which is what the unported operations rest on.
+
+    Basis tabulation, the windowed restriction and the prolongation live on the wrapper
+    and are one body under both backends, so the only way they can disagree is through
+    their inputs: the truncation coefficients, compared elsewhere here, and these. The
+    two implementations build them by different code -- ``BsplineSpace1D.subdivide`` on
+    one side, ``build_level_spaces`` on the other -- so agreement is a claim rather than
+    a tautology.
+
+    The bound is **the space's own** ``tolerance``: an absolute parametric tolerance the
+    library derives for deciding whether two knots are the same one, which is exactly the
+    question here. No constant is minted for it. Bit-identity is observed and counted by
+    the caller, never required, for the reason the module docstring gives about the
+    coefficients.
+
+    Args:
+        py (THBSplineSpace): The oracle's space.
+        cpp (THBSplineSpace): The port's space for the same hierarchy.
+        context (str): What is being compared, quoted in every failure message.
+
+    Raises:
+        AssertionError: If a level's shape or knots disagree beyond the tolerance.
+    """
+    for level in range(py.num_levels):
+        for k in range(py.dim):
+            one = py.level_space(level).spaces[k]
+            other = cpp.level_space(level).spaces[k]
+            expected = np.asarray(one.knots, dtype=np.float64)
+            actual = np.asarray(other.knots, dtype=np.float64)
+            where = f"{context}: level {level}, direction {k}"
+            assert expected.shape == actual.shape, f"{where}: the knot vectors differ in length"
+            tolerance = max(float(one.tolerance), float(other.tolerance))
+            worst = float(np.abs(expected - actual).max()) if expected.size else 0.0
+            assert worst <= tolerance, (
+                f"{where}: the knot vectors differ by {worst:.3e}, above the space's own "
+                f"knot tolerance {tolerance:.3e}"
+            )
+
+
+def _compare_the_operations(
+    py: THBSplineSpace, cpp: THBSplineSpace, context: str, variant: int
+) -> None:
     """Compare one rebuilding operation of an already-compared pair.
 
     Both sides rebuild: the operation returns a new space over a new grid, so what is
@@ -615,7 +695,7 @@ def _compare_the_operations(py: THBSplineSpace, cpp: Any, context: str, variant:
 
     Args:
         py (THBSplineSpace): The oracle's space.
-        cpp (Any): The C++ handle for the same hierarchy.
+        cpp (THBSplineSpace): The port's space for the same hierarchy.
         context (str): What is being compared, quoted in every failure message.
         variant (int): Selects the operation, modulo four.
 
@@ -645,7 +725,11 @@ def _compare_the_operations(py: THBSplineSpace, cpp: Any, context: str, variant:
             if coarsening
             else py.refine(marked, admissible_class=admissible)
         )
-    actual = cpp.coarsen(marked, admissible) if coarsening else cpp.refine(marked, admissible)
+    actual = (
+        cpp.coarsen(marked, admissible_class=admissible)
+        if coarsening
+        else cpp.refine(marked, admissible_class=admissible)
+    )
 
     assert expected.num_levels == actual.num_levels, f"{where}: num_levels disagrees"
     assert expected.grid.num_cells == actual.grid.num_cells, (
@@ -843,7 +927,7 @@ def test_the_truncated_basis_is_a_partition_of_unity(cpp_backend: None) -> None:
 
     overlapping = math.prod(d + 1 for d in oracle.degrees) * oracle.num_levels
     widest = max(
-        (max(e.coeffs.shape) for e in oracle._trunc.values()),
+        (max(entry[2].shape) for entry in _truncated_dofs(oracle, oracle.num_total_basis).values()),
         default=1,
     )
     stages = (oracle.num_levels - 1) * oracle.dim * widest
@@ -949,26 +1033,32 @@ def test_a_float32_root_space_over_a_float64_grid_agrees(cpp_backend: None) -> N
     assert worst <= 1.0
 
 
-def test_level_space_zero_shares_the_root_handle(cpp_backend: None) -> None:
+@pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP], ids=["python", "cpp"])
+def test_level_space_zero_shares_the_root_handle(cpp_backend: None, backend: Backend) -> None:
     """``level_space(0)`` hands back the object the space was built from, not a copy.
 
     ``design/bspline_ownership_lifetime.md`` F6 makes this an identity contract rather
-    than a convenience: it is what the oracle's ``thb.level_space(0) is thb.root_space``
-    asserts, and reproducing it is what fixes the C++ constructor's signature to take
-    handles rather than values.
+    than a convenience, and since FELIGN/pantr#494 it has two halves. At the wrapper
+    level ``thb.level_space(0) is thb.root_space`` must hold under both backends, which
+    only the wrapper can supply: no C++ object can hand back the constructor argument's
+    own Python object. One level down the C++ handles must be the same handle too, or
+    two Python objects would agree on identity over two different C++ objects -- which is
+    what fixes the C++ constructor's signature to take handles rather than values.
 
     Args:
         cpp_backend (None): Requires the compiled extension.
+        backend (Backend): The backend the space is built under.
     """
-    case = _reference_case()
-    oracle = _python_space(case)
-    assert oracle.level_space(0) is oracle.root_space
-
-    cpp = _cpp_space(case)
-    assert cpp.level_space(0) is cpp.root_space
+    space = _space(_reference_case(), backend)
+    assert space.level_space(0) is space.root_space
+    assert space.level_space(0)._impl is space.root_space._impl
     # And the finer levels are genuinely different objects, or the assertion above would
     # hold for a type that returned one space for every level.
-    assert cpp.level_space(1) is not cpp.root_space
+    assert space.level_space(1) is not space.root_space
+    assert space.level_space(1)._impl is not space.root_space._impl
+    # Memoised, so the same level gives the same wrapper twice rather than a fresh one
+    # over the same handle -- the second half of the same contract.
+    assert space.level_space(1) is space.level_space(1)
 
 
 def test_every_rebuilding_oracle_call_stays_wholly_python(cpp_backend: None) -> None:
@@ -1049,7 +1139,8 @@ def test_refinement_and_coarsening_agree(cpp_backend: None) -> None:
     for admissible in (2, None):
         with _the_oracle():
             expected = oracle.refine(marked, admissible_class=admissible)
-        actual = cpp.refine(marked, admissible)
+        with use_backend(Backend.CPP):
+            actual = cpp.refine(marked, admissible_class=admissible)
         assert expected.num_levels == actual.num_levels
         assert expected.num_total_basis == actual.num_total_basis
         assert tuple(expected.num_basis_per_level) == tuple(actual.num_basis_per_level)
@@ -1059,11 +1150,10 @@ def test_refinement_and_coarsening_agree(cpp_backend: None) -> None:
                 np.asarray(actual.active_function_indices(level)),
             )
 
-    lo = np.array([0, 0], dtype=np.int64)
-    hi = np.array([2, 2], dtype=np.int64)
     with _the_oracle():
         expected = oracle.refine_region(0, [0, 0], [2, 2], admissible_class=2)
-    actual = cpp.refine_region(0, lo, hi, 2)
+    with use_backend(Backend.CPP):
+        actual = cpp.refine_region(0, [0, 0], [2, 2], admissible_class=2)
     assert expected.num_total_basis == actual.num_total_basis
 
     finest = np.array(
@@ -1072,7 +1162,8 @@ def test_refinement_and_coarsening_agree(cpp_backend: None) -> None:
     )
     with _the_oracle():
         expected = oracle.coarsen(finest, admissible_class=None)
-    actual = cpp.coarsen(finest, None)
+    with use_backend(Backend.CPP):
+        actual = cpp.coarsen(finest, admissible_class=None)
     assert expected.num_levels == actual.num_levels
     assert expected.num_total_basis == actual.num_total_basis
     for level in range(expected.num_levels):
@@ -1082,64 +1173,395 @@ def test_refinement_and_coarsening_agree(cpp_backend: None) -> None:
         )
 
 
-def test_refine_and_coarsen_never_hand_back_the_receivers_grid(cpp_backend: None) -> None:
+@pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP], ids=["python", "cpp"])
+def test_refine_and_coarsen_never_hand_back_the_receivers_grid(
+    cpp_backend: None, backend: Backend
+) -> None:
     """A no-op refinement still returns a space over a grid of its own.
 
     Two spaces sharing one grid would make a tag set through one visible through the
     other, which is what the oracle's ``grid._copy()`` prevents and what
-    ``HierarchicalGrid::refine_cells`` with no ids does here.
+    ``HierarchicalGrid::refine_cells`` with no ids does on the C++ side. The root grid
+    is shared on purpose, and that is asserted beside it so the two are not confused.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+        backend (Backend): The backend the space is built under.
+    """
+    space = _space(_reference_case(), backend)
+    nothing = np.array([], dtype=np.int64)
+    with use_backend(backend):
+        for derived in (space.refine(nothing), space.coarsen(nothing)):
+            assert derived.grid is not space.grid
+            assert derived.grid._impl is not space.grid._impl
+            assert derived.grid.root is space.grid.root
+            assert derived.root_space is space.root_space
+
+
+# ----------------------------------------------------------------------------
+# The wrapper itself: construction, the forwards, and the round trip
+# ----------------------------------------------------------------------------
+
+_REFINE_MARKED: Final = np.array([0, 1, 2], dtype=np.int64)
+"""Cells the forwarding probes for the three rebuilding members mark."""
+
+
+def _fingerprint(space: Any) -> tuple[int, int, tuple[int, ...]]:
+    """A small, wholly integer summary of a space, for comparing two of them.
+
+    The three rebuilding members return a space rather than a value, and a returned
+    handle is a different object on every call, so identity says nothing about them. The
+    counts do: they are what the rebuilt hierarchy is, and every one is an integer.
+
+    Args:
+        space (Any): A :class:`~pantr.bspline.THBSplineSpace` or a raw handle.
+
+    Returns:
+        tuple[int, int, tuple[int, ...]]: ``(num_levels, num_total_basis,
+        num_basis_per_level)``.
+    """
+    return (
+        int(space.num_levels),
+        int(space.num_total_basis),
+        tuple(int(count) for count in space.num_basis_per_level),
+    )
+
+
+_FORWARDS: Final[tuple[tuple[str, Callable[[Any], Any], Callable[[Any], Any]], ...]] = (
+    # Held objects: the wrapper presents a wrapper, so what has to agree one level down
+    # is the handle. `is` rather than equality, per
+    # `design/bspline_ownership_lifetime.md` F6.
+    ("root_space", lambda s: s.root_space._impl, lambda i: i.root_space),
+    ("grid", lambda s: s.grid._impl, lambda i: i.grid),
+    ("level_space", lambda s: s.level_space(1)._impl, lambda i: i.level_space(1)),
+    # Scalars and tuples.
+    ("dim", lambda s: s.dim, lambda i: i.dim),
+    ("degrees", lambda s: s.degrees, lambda i: tuple(i.degrees)),
+    ("num_levels", lambda s: s.num_levels, lambda i: i.num_levels),
+    ("truncate", lambda s: s.truncate, lambda i: i.truncate),
+    ("regularity", lambda s: s.regularity, lambda i: tuple(i.regularity)),
+    ("num_total_basis", lambda s: s.num_total_basis, lambda i: i.num_total_basis),
+    (
+        "num_basis_per_level",
+        lambda s: s.num_basis_per_level,
+        lambda i: tuple(i.num_basis_per_level),
+    ),
+    ("tolerance", lambda s: s.tolerance, lambda i: i.tolerance),
+    ("num_truncated", lambda s: s.num_truncated, lambda i: i.num_truncated),
+    ("max_active_per_cell", lambda s: s.max_active_per_cell(), lambda i: i.max_active_per_cell()),
+    ("dof_level", lambda s: s.dof_level(3), lambda i: i.dof_level(3)),
+    # Arrays. The wrapper copies where its contract promises a writable array, so the
+    # values must agree rather than the buffers.
+    ("level_offsets", lambda s: np.asarray(s.level_offsets), lambda i: np.asarray(i.level_offsets)),
+    ("domain", lambda s: np.asarray(s.domain), lambda i: np.asarray(i.domain)),
+    (
+        "active_function_indices",
+        lambda s: np.asarray(s.active_function_indices(0)),
+        lambda i: np.asarray(i.active_function_indices(0)),
+    ),
+    (
+        "active_basis",
+        lambda s: np.asarray(s.active_basis(0)),
+        lambda i: np.asarray(i.active_basis(0)),
+    ),
+    (
+        "contributions",
+        lambda s: tuple(np.asarray(block) for block in s.contributions(0)),
+        lambda i: tuple(np.asarray(block) for block in i.contributions(0)),
+    ),
+    (
+        "truncated",
+        lambda s: _read_truncated(s),
+        lambda i: _read_truncated(i),
+    ),
+    # Rebuilding members: a returned space, compared by what it is.
+    (
+        "refine",
+        lambda s: _fingerprint(s.refine(_REFINE_MARKED, admissible_class=2)),
+        lambda i: _fingerprint(i.refine(_REFINE_MARKED, 2)),
+    ),
+    (
+        "refine_region",
+        lambda s: _fingerprint(s.refine_region(0, [0, 0], [2, 2], admissible_class=2)),
+        lambda i: _fingerprint(
+            i.refine_region(
+                0,
+                np.ascontiguousarray([0, 0], dtype=np.int64),
+                np.ascontiguousarray([2, 2], dtype=np.int64),
+                2,
+            )
+        ),
+    ),
+    (
+        "coarsen",
+        lambda s: _fingerprint(s.coarsen(_REFINE_MARKED, admissible_class=None)),
+        lambda i: _fingerprint(i.coarsen(_REFINE_MARKED, None)),
+    ),
+    ("__repr__", repr, repr),
+)
+"""Every member the binding registers, with how to read it through each side.
+
+The list is spelled out rather than derived so that ``pytest`` reports one case per
+member, which is what FELIGN/pantr#494's AC1 asks for;
+:func:`test_the_forward_table_names_every_bound_member` is what keeps it from going
+stale as the binding grows.
+"""
+
+
+def _read_truncated(space: Any) -> tuple[Any, ...]:
+    """Read every truncation entry of a space into plain, comparable values.
+
+    Args:
+        space (Any): A :class:`~pantr.bspline.THBSplineSpace` or a raw handle.
+
+    Returns:
+        tuple[Any, ...]: One ``(dof, rep_level, box_lo, coeffs)`` per truncated function,
+        in dof order, with the coefficients as ``float64`` arrays.
+    """
+    out: list[Any] = []
+    for dof in range(int(space.num_total_basis)):
+        entry = space.truncated(dof)
+        if entry is not None:
+            out.append(
+                (
+                    dof,
+                    int(entry[0]),
+                    tuple(int(lo) for lo in entry[1]),
+                    np.ascontiguousarray(entry[2], dtype=np.float64),
+                )
+            )
+    return tuple(out)
+
+
+def _agree(left: Any, right: Any) -> bool:
+    """Whether two reads of the same member agree.
+
+    Held objects are compared by identity, arrays element by element, and everything else
+    by equality. Not a tolerance: every value here is an index, a count, a flag, a domain
+    end or a truncation coefficient that the wrapper only copies, so the wrapper and the
+    thing it forwards to must agree exactly or the forward is doing arithmetic it has no
+    business doing.
+
+    Args:
+        left (Any): The value read through the wrapper.
+        right (Any): The value read through the implementation it holds.
+
+    Returns:
+        bool: Whether they agree.
+    """
+    if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
+        return bool(np.array_equal(left, right))
+    if isinstance(left, tuple) and isinstance(right, tuple):
+        return len(left) == len(right) and all(
+            _agree(one, other) for one, other in zip(left, right, strict=True)
+        )
+    if type(left).__module__ == "pantr._pantr_cpp" or type(right).__module__ == "pantr._pantr_cpp":
+        return left is right
+    return bool(left == right)
+
+
+@pytest.mark.parametrize(
+    ("member", "via_wrapper", "via_impl"), _FORWARDS, ids=[name for name, _, _ in _FORWARDS]
+)
+def test_the_wrapper_forwards_every_bound_member(
+    cpp_backend: None,
+    member: str,
+    via_wrapper: Callable[[Any], Any],
+    via_impl: Callable[[Any], Any],
+) -> None:
+    """Under the C++ backend, each bound member reaches the C++ type and agrees with it.
+
+    FELIGN/pantr#494's AC1, one case per member. Reading the same quantity twice -- once
+    through ``pantr.bspline.THBSplineSpace`` and once through the handle it holds -- is
+    what makes this fail if the forward is removed: the public read raises
+    :class:`AttributeError` instead, and a forward reimplemented on the wrapper rather
+    than delegated would have to reproduce the handle's answer exactly to stay green.
+
+    The three held members are compared by **handle identity**, not by value, which is
+    ``design/bspline_ownership_lifetime.md`` F6 and is the one a value comparison could
+    not see.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+        member (str): The bound member's name, for the failure message.
+        via_wrapper (Callable[[Any], Any]): Reads it through the public class.
+        via_impl (Callable[[Any], Any]): Reads it through the handle.
+    """
+    space = _cpp_space(_reference_case())
+    with use_backend(Backend.CPP):
+        expected = via_impl(space._impl)
+        actual = via_wrapper(space)
+    assert _agree(actual, expected), (
+        f"{member}: the wrapper and the C++ type it holds disagree.\n"
+        f"  through the wrapper: {actual!r}\n  through the handle:  {expected!r}"
+    )
+
+
+def test_the_forward_table_names_every_bound_member(cpp_backend: None) -> None:
+    """The per-member sweep above covers the binding's whole surface, not a snapshot of it.
+
+    A hand-written list of members is a promise that rots the moment the binding gains
+    one, and nothing else in the tree would notice: the new member would simply have no
+    forward and no test. This reads the surface off the extension and compares.
 
     Args:
         cpp_backend (None): Requires the compiled extension.
     """
-    cpp = _cpp_space(_reference_case())
-    nothing = np.array([], dtype=np.int64)
-    assert cpp.refine(nothing, 2).grid is not cpp.grid
-    assert cpp.coarsen(nothing, 2).grid is not cpp.grid
+    handle_type = _bindings().THBSplineSpace64
+    bound = {name for name in dir(handle_type) if not name.startswith("_")} | {"__repr__"}
+    covered = {name for name, _, _ in _FORWARDS}
+    assert covered == bound, (
+        f"the forward table and the binding disagree; "
+        f"bound but untested {sorted(bound - covered)}, "
+        f"tested but not bound {sorted(covered - bound)}"
+    )
+    assert covered <= set(dir(THBSplineSpace)), (
+        f"bound members the public class does not expose: "
+        f"{sorted(covered - set(dir(THBSplineSpace)))}"
+    )
 
 
 @pytest.mark.parametrize(
-    ("build", "message"),
+    ("backend", "expected"),
+    [
+        pytest.param(Backend.PYTHON, "_THBSplineSpacePython", id="python"),
+        pytest.param(Backend.CPP, "THBSplineSpace64", id="cpp"),
+    ],
+)
+def test_construction_selects_the_backends_own_implementation(
+    cpp_backend: None, backend: Backend, expected: str
+) -> None:
+    """Constructing under each backend builds that backend's type, asserted on ``_impl``.
+
+    FELIGN/pantr#494's AC1b. Construction is counted apart from the forwards because
+    there is no forward to remove: what would fail is the selection itself, and the only
+    place it is visible is the type of the implementation the wrapper ends up holding.
+
+    The ``float32`` root is checked alongside, because the class is chosen per dtype as
+    well as per backend and a selection that ignored the dtype would still pass the
+    ``float64`` half.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+        backend (Backend): The backend to build under.
+        expected (str): The implementation class name it must select.
+    """
+    space = _space(_reference_case(), backend)
+    assert type(space._impl).__name__ == expected
+
+    narrow = _space(_reference_case()._replace(dtype=np.float32), backend)
+    narrow_expected = "_THBSplineSpacePython" if backend is Backend.PYTHON else "THBSplineSpace32"
+    assert type(narrow._impl).__name__ == narrow_expected
+
+
+@pytest.mark.parametrize("truncate", [True, False], ids=["thb", "hb"])
+@pytest.mark.parametrize("dtype", [np.float64, np.float32], ids=["f64", "f32"])
+def test_a_thb_space_survives_pickling_across_every_backend_pair(
+    cpp_backend: None, dtype: Any, truncate: bool
+) -> None:
+    """A pickle written under one backend loads under the other, at both dtypes.
+
+    FELIGN/pantr#494's AC2, on the pattern ``tests/parity/test_bspline_type.py`` sets for
+    :class:`~pantr.bspline.Bspline`. What this catches is a ``__reduce__`` that reaches
+    the implementation rather than the constructor's arguments: a C++ handle is not
+    picklable at all, and a payload carrying one would make ``PANTR_BACKEND`` a
+    data-format switch -- a pickle written on one machine unreadable on another.
+    :func:`copy.deepcopy` goes through ``__reduce_ex__`` by the same route, so it is
+    swept over the same pairs.
+
+    The reconstruction is compared on everything the space is rather than on its
+    implementation: the counts, the active sets, the truncation and the root knots. The
+    knots are the field that would catch a round trip which kept the counts while losing
+    the geometry.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+        dtype (Any): The root space's storage format.
+        truncate (bool): Whether the truncated basis is built.
+    """
+    case = _reference_case()._replace(dtype=dtype, truncate=truncate)
+    for writer in (Backend.PYTHON, Backend.CPP):
+        original = _space(case, writer)
+        payload = pickle.dumps(original)
+        for reader in (Backend.PYTHON, Backend.CPP):
+            where = f"{writer.name} -> {reader.name}"
+            with use_backend(reader):
+                loaded = pickle.loads(payload)
+                cloned = copy.deepcopy(original)
+            for rebuilt, how in ((loaded, "pickle"), (cloned, "deepcopy")):
+                assert rebuilt.num_levels == original.num_levels, f"{where} {how}"
+                assert rebuilt.num_total_basis == original.num_total_basis, f"{where} {how}"
+                assert rebuilt.num_basis_per_level == original.num_basis_per_level, f"{where} {how}"
+                assert rebuilt.truncate is original.truncate, f"{where} {how}"
+                assert rebuilt.regularity == original.regularity, f"{where} {how}"
+                assert rebuilt.num_truncated == original.num_truncated, f"{where} {how}"
+                assert rebuilt.grid.num_cells == original.grid.num_cells, f"{where} {how}"
+                for level in range(original.num_levels):
+                    assert np.array_equal(
+                        rebuilt.active_function_indices(level),
+                        original.active_function_indices(level),
+                    ), f"{where} {how}: level {level}"
+                np.testing.assert_array_equal(
+                    np.asarray(rebuilt.root_space.spaces[0].knots),
+                    np.asarray(original.root_space.spaces[0].knots),
+                    err_msg=f"{where} {how}",
+                )
+                assert _agree(_read_truncated(rebuilt), _read_truncated(original)), (
+                    f"{where} {how}: the truncation did not survive the round trip"
+                )
+
+
+@pytest.mark.parametrize(
+    ("regularity", "message"),
     [
         pytest.param(
-            lambda cpp, root, grid: cpp.THBSplineSpace64(root, grid, True, [None, None, None]),
+            [None, None, None],
             "regularity must be a scalar or length-2 sequence; got length 3.",
             id="regularity-length",
         ),
         pytest.param(
-            lambda cpp, root, grid: cpp.THBSplineSpace64(root, grid, True, [2, None]),
+            [2, None],
             "regularity[0]=2 must be in [-1, degree[0]-1=1]; got 2.",
             id="regularity-range",
         ),
     ],
 )
-def test_the_refusals_carry_the_oracles_message(
-    cpp_backend: None, build: Any, message: str
+def test_the_construction_refusals_carry_one_message(
+    cpp_backend: None, regularity: list[int | None], message: str
 ) -> None:
-    """The C++ type refuses what the oracle refuses, with the oracle's wording.
+    """Both backends refuse the same construction, with the same wording.
 
     Character for character, as every other refusal in this port is, so that a caller
-    matching on the message keeps working when the backend changes underneath it.
+    matching on the message keeps working when the backend changes underneath it. Since
+    FELIGN/pantr#494 the refusal is reached through the public class, which is where a
+    caller meets it: the wrapper keeps only the two ``isinstance`` checks and the scalar
+    broadcast, and hands everything else to the implementation, so the message a caller
+    sees is the implementation's under both backends.
+
+    The literal is pinned as well as compared, so the test fails if the two backends
+    agree on a *changed* message rather than only if they disagree.
 
     Args:
         cpp_backend (None): Requires the compiled extension.
-        build (Any): Builds the refused space from the module, root space and grid.
+        regularity (list[int | None]): The refused per-direction continuity.
         message (str): The exact text expected.
     """
-    cpp = _bindings()
     case = _reference_case()
-    directions = [
-        cpp.BsplineSpace1D64(np.ascontiguousarray(_open_knots(2, 4, 0.0, 1.0)), 2, False, True)
-        for _ in range(2)
-    ]
-    root = cpp.BsplineSpace64(directions)
-    breakpoints = [np.ascontiguousarray(np.linspace(0.0, 1.0, 5)) for _ in range(2)]
-    grid = cpp.HierarchicalGrid(
-        cpp.TensorProductGrid(breakpoints), np.ascontiguousarray(case.factor, dtype=np.int64)
-    )
-    with pytest.raises(ValueError, match=r".*") as caught:
-        build(cpp, root, grid)
-    assert str(caught.value) == message
+    seen: dict[str, str] = {}
+    for backend in (Backend.PYTHON, Backend.CPP):
+        with use_backend(backend):
+            directions = [
+                BsplineSpace1D(_open_knots(2, 4, 0.0, 1.0), 2) for _ in range(len(case.degrees))
+            ]
+            grid = hierarchical_grid(
+                uniform_grid([list(b) for b in case.bounds], list(case.num_elements)),
+                list(case.factor),
+            )
+            with pytest.raises(ValueError) as caught:
+                THBSplineSpace(BsplineSpace(directions), grid, regularity=regularity)
+        seen[backend.name] = str(caught.value)
+    assert seen["PYTHON"] == message, f"the oracle's wording moved: {seen['PYTHON']!r}"
+    assert seen["CPP"] == message, f"the port's wording moved: {seen['CPP']!r}"
 
 
 def test_an_out_of_range_cell_id_is_refused_the_oracles_way(cpp_backend: None) -> None:
@@ -1158,12 +1580,21 @@ def test_an_out_of_range_cell_id_is_refused_the_oracles_way(cpp_backend: None) -
     cpp = _cpp_space(case)
     past_the_end = py.grid.num_cells
     bad = np.array([past_the_end + 5, -1, past_the_end], dtype=np.int64)
+    # Sorted and deduplicated, since both implementations report the offending ids after
+    # `numpy.unique`'s ordering rather than in the order they were handed.
+    expected_message = (
+        f"cell_ids must lie in [0, {past_the_end}); got out-of-range id(s): "
+        f"[-1, {past_the_end}, {past_the_end + 5}]."
+    )
 
     for name in ("refine", "coarsen"):
         with _the_oracle(), pytest.raises(IndexError) as expected:
             getattr(py, name)(bad, admissible_class=2)
-        with pytest.raises(IndexError) as actual:
-            getattr(cpp, name)(bad, 2)
+        with use_backend(Backend.CPP), pytest.raises(IndexError) as actual:
+            getattr(cpp, name)(bad, admissible_class=2)
         assert str(actual.value) == str(expected.value), (
             f"{name} refuses out-of-range ids with a different message under the two backends"
+        )
+        assert str(expected.value) == expected_message, (
+            f"{name}'s wording moved under both backends at once: {expected.value}"
         )
