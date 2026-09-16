@@ -45,13 +45,16 @@
 /// oracle's own helper, so the message a Python caller sees is the oracle's under
 /// either backend and this check is the one a caller with no wrapper meets.
 ///
-/// ## The GIL is held through the computation
+/// ## The GIL is released through the computation
 ///
-/// For `bspline_structural.cpp`'s reason applied to its cheapest entry point: the
-/// scan reads `T` and writes `bool` with no Python object in reach, so releasing
-/// would be safe, and it is a single pass over the knot vector, so it would buy a
-/// handful of nanoseconds and add a rule a reader has to check. If a sweep over
-/// spaces ever shows up in a profile, the release belongs here.
+/// The scan reads `T` off the space's own storage and writes `bool` into the
+/// caller's buffer, with no Python object in reach and no handle dropped, which is
+/// what makes the release safe -- `bspline_structural.cpp` states the converse rule,
+/// that dropping the last reference to a space handle with the GIL released would be
+/// a crash rather than a slowdown. `bezier_identity_mask` and
+/// `lagrange_identity_mask` in `bspline_extraction_operators.cpp` release around a
+/// pass of the same shape over the same intervals, and doing otherwise here would be
+/// a difference with nothing behind it.
 
 #include <cstddef>
 #include <span>
@@ -86,6 +89,7 @@ void bind_cardinal_intervals(const pantr::bspline::BsplineSpace1D<T>& space, out
                                   .c_str());
     }
 
+    const nb::gil_scoped_release release;
     pantr::bspline::cardinal_intervals<T>(space.knots(), space.degree(), space.tolerance(),
                                           std::span<bool>(out.data(), count));
 }

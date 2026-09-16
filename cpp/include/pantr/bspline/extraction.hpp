@@ -6,9 +6,10 @@
 ///
 /// The C++ twin of `pantr.bspline._bspline_extraction`'s Bézier and Lagrange
 /// halves. `design/extraction_port.md` calls this slice **S3**, minus the one
-/// target it still leaves for later: **cardinal** needs the cardinal-interval scan,
-/// which is not ported and which `bspline/space_1d.hpp` deliberately excludes from
-/// the type.
+/// target it still leaves for later: **cardinal**, whose builder is its own ticket.
+/// The cardinal-interval scan it needs is `pantr::bspline::cardinal_intervals` in
+/// `bspline/knots.hpp` -- beside the other knot computations rather than on the
+/// type, which `bspline/space_1d.hpp` still excludes it from.
 ///
 /// The Lagrange operator is the Bézier one post-multiplied by the
 /// Lagrange-to-Bernstein matrix. That matrix is an **argument** here rather than

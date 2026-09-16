@@ -130,7 +130,9 @@ reason and a mutation confirmed it is the only case in the table that separates 
 identity-mask predicate are unblocked today; the **Lagrange** ones follow immediately, since
 they are the Bézier operator post-multiplied by a matrix `lagrange_to_bernstein_1d` already
 provides. The **cardinal** target still waits on the interval scan, which is a small port in
-its own right and would sit beside `knots.hpp` rather than inside the type. S4 is unchanged:
+its own right and would sit beside `knots.hpp` rather than inside the type. (FELIGN/pantr#491
+did exactly that, so what the cardinal target waits on is now only its own ticket.) S4 is
+unchanged:
 it needs `BsplineSpace` (the nD one), not `BsplineSpace1D`.
 
 **The rule the original finding rests on has not changed**, and it is why the cardinal half
@@ -512,7 +514,8 @@ only ever comparing zero against zero. Case 2 must assert the observed error is 
     identity change of basis -- degree 1 with equispaced, Gauss-Lobatto-Legendre or
     second-kind Chebyshev nodes -- is the exception and falls back to the Bézier claim.
 
-  **Cardinal still waits** on the interval scan.
+  **Cardinal still waits**, on its own builder ticket rather than on the interval scan,
+  which FELIGN/pantr#491 ported into `knots.hpp`.
 
   The fused branch of the Lagrange claim was **run, not reasoned about**, against an
   extension built at `-march=x86-64-v3` -- the target `design/simd.md` schedules, and the

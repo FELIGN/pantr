@@ -182,6 +182,21 @@ _CASES: Final = tuple(
         ),
         # Clamped on the left and not on the right, so a swapped end index shows.
         ("asymmetric ends", [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0], 2, False, True),
+        # The one vector whose answer separates the scan's window index from the one
+        # the definition alone would give. The first knot repeats four times at
+        # degree 2 -- `check_last_multiplicity` refuses that only at the *last* knot --
+        # so the walk is seeded one place before the class's true last index and every
+        # window is read one place to the left. Interval 1 is cardinal by the
+        # definition and is reported non-cardinal by both backends, which is the
+        # faithfulness claim `cpp/include/pantr/bspline/knots.hpp` argues for; nothing
+        # else here would notice a C++ port that "corrected" it.
+        (
+            "over-clamped first knot",
+            [0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 6.0],
+            2,
+            False,
+            True,
+        ),
         # Snapping off, with two knots closer than the tolerance: the classes the
         # scan walks are then the only thing merging them.
         (
@@ -191,11 +206,22 @@ _CASES: Final = tuple(
             False,
             False,
         ),
-        # Degree 5, where the window spans nine knot intervals and reaches four
-        # either side of the interval it judges.
+        # Degree 4, which no hand-written case anywhere else reaches.
+        (
+            "degree four",
+            [0.0] * 4 + [float(k) for k in range(11)] + [10.0] * 4,
+            4,
+            False,
+            True,
+        ),
+        # Degree 5, where the window spans nine knot intervals and reaches four either
+        # side of the interval it judges. Twelve intervals rather than eight, because
+        # a degree-5 window does not fit inside a domain of eight: every interval
+        # would answer False and four single-token mutations of the scan were shown
+        # to leave such a case unchanged.
         (
             "degree five",
-            [0.0] * 6 + [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0] + [8.0] * 6,
+            [0.0] * 5 + [float(k) for k in range(13)] + [12.0] * 5,
             5,
             False,
             True,
@@ -400,8 +426,19 @@ _REFUSALS: Final = (
     _Refusal("wrong shape", lambda n: np.zeros(n + 1, dtype=np.bool_), "Output array has shape"),
     _Refusal("wrong dtype", lambda n: np.zeros(n, dtype=np.int_), "Output array has dtype"),
     _Refusal("read-only", None, "Output array is not writeable"),
+    _Refusal(
+        "masked",
+        lambda n: np.ma.masked_array(np.zeros(n, dtype=np.bool_)),
+        "which pantr does not accept",
+    ),
 )
-"""The three ``out`` refusals ``tests/test_bspline_space_1D.py`` already pins by regex.
+"""The four refusals of a bad ``out``, three of them pinned by regex before the port.
+
+``tests/test_bspline_space_1D.py`` already asserted the first three for this accessor.
+The masked-array one is a ``TypeError`` rather than a ``ValueError`` and is here
+because the C++ route would otherwise write straight through the mask into the
+caller's own array, which is the divergence
+:func:`pantr.basis._basis_utils._reject_masked_array` exists to stop.
 
 The read-only case builds its array in the test body, because a flag has to be
 cleared after construction.
@@ -415,9 +452,10 @@ def test_the_out_refusals_are_identical(cpp_backend: None, refusal: _Refusal) ->
     ``out`` is validated above the branch in :mod:`pantr.bspline._knots_backend`, so
     this is a claim about where the check sits rather than about two texts that
     happen to match. The pattern each message is also matched against is the one
-    ``tests/test_bspline_space_1D.py`` has asserted since before the port, which is
-    what makes this an unchanged-messages check rather than a fresh one.
+    ``tests/test_bspline_space_1D.py`` has asserted since before the port, except for
+    the masked-array case, which is new here.
     """
+    expected_error: type[Exception] = TypeError if refusal.label == "masked" else ValueError
     knots = [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 4.0]
     messages = []
     for backend in (Backend.PYTHON, Backend.CPP):
@@ -428,7 +466,7 @@ def test_the_out_refusals_are_identical(cpp_backend: None, refusal: _Refusal) ->
                 out.setflags(write=False)
             else:
                 out = refusal.make(space.num_intervals)  # type: ignore[operator]
-            with pytest.raises(ValueError, match=refusal.pattern) as caught:
+            with pytest.raises(expected_error, match=refusal.pattern) as caught:
                 space.get_cardinal_intervals(out=out)
         messages.append(str(caught.value))
 
@@ -438,26 +476,109 @@ def test_the_out_refusals_are_identical(cpp_backend: None, refusal: _Refusal) ->
     )
 
 
-def test_a_cross_backend_space_is_refused(cpp_backend: None) -> None:
-    """A space built under the Python backend is refused on the C++ route, not converted.
+@pytest.mark.parametrize("backend", _BACKENDS)
+def test_out_is_cleared_before_the_gated_writes(backend: Backend) -> None:
+    """An ``out`` arriving full of ``True`` comes back with the False entries cleared.
 
-    ``design/cross_backend_types.md`` forbids converting one implementation into the
-    other, so the catalogue refuses. The reverse direction is not a refusal: the
-    oracle reads a C++ space's knots happily, which is asserted here so that the
-    asymmetry is pinned rather than assumed.
+    Both implementations write only the entries they find cardinal and clear the rest
+    up front -- the numba kernel with ``out.fill``, the C++ one with ``std::fill``. A
+    caller reusing a buffer across calls, which is what the ``out=`` convention is
+    for, is the one who would see that clear go missing, and every other test here
+    hands in an array of zeros and so could not tell.
     """
-    knots = [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0]
+    _demand_the_extension_if_needed(backend)
+    with use_backend(backend):
+        space = BsplineSpace1D([0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 4.0], 2)
+        expected = space.get_cardinal_intervals()
+        assert not expected.all(), "the fixture must have a False entry or this proves nothing"
+
+        out = np.ones(space.num_intervals, dtype=np.bool_)
+        space.get_cardinal_intervals(out=out)
+
+    np.testing.assert_array_equal(out, expected)
+
+
+def test_a_python_space_is_scanned_by_the_oracle_under_the_cpp_backend(
+    cpp_backend: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A space the Python backend built is served by the oracle, not refused.
+
+    The C++ route needs the backend *and* the handle. This pins the second condition,
+    which is what lets a caller hold a space across a backend switch -- and what lets
+    ``tests/parity/`` read an accessor off two spaces outside a ``use_backend`` block,
+    the way every field-by-field comparison in this directory does.
+
+    Nothing is converted: the Python implementation answers about its own knots, and
+    the answer is the C++ one. That is asserted here rather than assumed.
+    """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (the extension is present here)
+
+    knots = [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 4.0]
     with use_backend(Backend.PYTHON):
         python_space = BsplineSpace1D(knots, 2)
     with use_backend(Backend.CPP):
         cpp_space = BsplineSpace1D(knots, 2)
-        with pytest.raises(TypeError, match="built under a different backend"):
-            python_space.get_cardinal_intervals()
 
-    with use_backend(Backend.PYTHON):
-        np.testing.assert_array_equal(
-            cpp_space.get_cardinal_intervals(), python_space.get_cardinal_intervals()
-        )
+    calls: list[str] = []
+    real = _pantr_cpp.bspline_space_cardinal_intervals_1d
+
+    def recording(space: object, *, out: npt.NDArray[np.bool_]) -> None:
+        calls.append(type(space).__name__)
+        # `object` rather than the two handle classes; see the vacuity guard above.
+        real(space, out=out)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_pantr_cpp, "bspline_space_cardinal_intervals_1d", recording)
+
+    with use_backend(Backend.CPP):
+        flags = python_space.get_cardinal_intervals()
+        assert calls == [], "a Python-backed space reached the binding"
+        np.testing.assert_array_equal(flags, cpp_space.get_cardinal_intervals())
+        assert calls == ["BsplineSpace1D64"], "the C++ space did not reach the binding"
+
+
+@pytest.mark.parametrize("dtype", _DTYPES, ids=["float64", "float32"])
+def test_the_length_gate_turns_over_near_the_space_tolerance(
+    cpp_backend: None,
+    dtype: npt.DTypeLike,
+) -> None:
+    """A span off by a quarter of the tolerance is the same length; off by four times is not.
+
+    The length gate compares ``abs(span - reference)`` against the space's tolerance,
+    and nothing else in this file puts a span anywhere near it: the fixed table is
+    built from whole units and the sweep jitters by a third of one, so the gate is
+    only ever exercised far from the threshold it is written in terms of.
+
+    The two deltas **bracket** the threshold within a factor of four rather than
+    pinning which side of it the exact value falls on. That is deliberate: near the
+    last ulp the two backends' arithmetic is a faithfulness question
+    ``cpp/include/pantr/bspline/knots.hpp`` discusses at length, and a test there would
+    pin which of two defensible answers wins rather than that the two agree.
+
+    The tolerance is read off a space with equal spans rather than written down, so the
+    deltas are derived and would move with the storage format and the knot scale.
+    """
+
+    def build(delta: float) -> BsplineSpace1D:
+        """One space whose third span is longer than the rest by ``delta``."""
+        breaks = [0.0, 1.0, 2.0, 3.0 + delta, 4.0 + delta, 5.0 + delta, 6.0 + delta]
+        knots = [breaks[0]] * 2 + breaks + [breaks[-1]] * 2
+        return BsplineSpace1D(np.asarray(knots, dtype=dtype), 2)
+
+    with use_backend(Backend.CPP):
+        tol = build(0.0).tolerance
+        inside = build(tol / 4.0)
+        outside = build(4.0 * tol)
+        inside_flags = inside.get_cardinal_intervals()
+        outside_flags = outside.get_cardinal_intervals()
+
+    # Read off the vector: the odd span sits in the window of intervals 1, 2 and 3,
+    # interval 4's window is clear of it, and the clamped ends take 0 and 5.
+    assert inside_flags.tolist() == [False, True, True, True, True, False]
+    assert outside_flags.tolist() == [False, False, False, False, True, False]
+
+    np.testing.assert_array_equal(inside_flags, _oracle(inside))
+    np.testing.assert_array_equal(outside_flags, _oracle(outside))
 
 
 def _draw(rng: np.random.Generator) -> _Case:
