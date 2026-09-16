@@ -55,9 +55,11 @@ both backends or in neither, as the section on the bound says of a zero coeffici
 
 **Within a derived bound** -- the truncation coefficients, and the level-space knot
 vectors. The knots are graded against ``BsplineSpace1D.tolerance``, which is the
-library's own absolute parametric tolerance for exactly this question, and they are
-observed bit-identical; the count is in :class:`_SweepReport` rather than written here,
-for the reason the coefficients' own count gives. The coefficients are
+library's own absolute parametric tolerance for exactly this question. They are
+**observed** to agree bit for bit over the shipped sweep, which is stronger than the
+bound requires and is not counted: unlike the coefficients, nothing here reports a
+per-run figure for them, and reading one off a past run would be reading a number that
+nothing re-measures. The coefficients are
 floating point, and bit-identity is not available for them: the oracle's ``_refine_box``
 contracts through :func:`numpy.tensordot`, which reshapes and calls BLAS, whose summation
 order is the implementation's -- ``CLAUDE.md`` records that a quantity round-off dominates
@@ -635,9 +637,15 @@ def _compare_the_level_knots(py: THBSplineSpace, cpp: THBSplineSpace, context: s
 
     The bound is **the space's own** ``tolerance``: an absolute parametric tolerance the
     library derives for deciding whether two knots are the same one, which is exactly the
-    question here. No constant is minted for it. Bit-identity is observed and counted by
-    the caller, never required, for the reason the module docstring gives about the
-    coefficients.
+    question here -- two coordinates obtained by different routes, which is the case its
+    own derivation is written for. No constant is minted for it.
+
+    The two routes were **engineered** to agree rather than merely observed to:
+    ``cpp/include/pantr/bspline/knot_insertion.hpp`` spells the subdivision points as
+    ``numpy``'s own expression rather than a tidier equivalent, and says so. So a run
+    where this fires at all is a run where that agreement broke, and the tolerance is
+    what separates "broke by an ulp" from "broke". Bit-identity is not required and is
+    not counted.
 
     Args:
         py (THBSplineSpace): The oracle's space.
@@ -1202,8 +1210,122 @@ def test_refine_and_coarsen_never_hand_back_the_receivers_grid(
 # The wrapper itself: construction, the forwards, and the round trip
 # ----------------------------------------------------------------------------
 
-_REFINE_MARKED: Final = np.array([0, 1, 2], dtype=np.int64)
-"""Cells the forwarding probes for the three rebuilding members mark."""
+_PROBE_REGION: Final = ([2, 2], [4, 4])
+"""The level-0 box the ``refine_region`` probes refine.
+
+Outside the reference case's own refinement, so both gradings change the space, and
+positioned so the graded one pulls in a neighbourhood the ungraded one does not.
+"""
+
+
+def _cells_at(space: Any, level: int) -> npt.NDArray[np.int64]:
+    """The flat ids of every active cell at one level, from a space or a raw handle.
+
+    Both carry a ``grid`` answering ``num_cells`` and ``cell_level``, which is all this
+    needs, so one reader serves the wrapper and the handle it holds.
+
+    Args:
+        space (Any): The space or handle to read.
+        level (int): The level to collect.
+
+    Returns:
+        npt.NDArray[np.int64]: The ids, ascending; empty if the level has none.
+    """
+    grid = space.grid
+    return np.ascontiguousarray(
+        [cid for cid in range(grid.num_cells) if grid.cell_level(cid) == level], dtype=np.int64
+    )
+
+
+def _refine_pair_wrapper(space: THBSplineSpace) -> tuple[Any, Any]:
+    """Fingerprint a graded and an ungraded refinement, through the public class.
+
+    Args:
+        space (THBSplineSpace): The space to refine.
+
+    Returns:
+        tuple[Any, Any]: The graded and ungraded fingerprints.
+    """
+    marked = _cells_at(space, 1)[:1]
+    return (
+        _fingerprint(space.refine(marked, admissible_class=2)),
+        _fingerprint(space.refine(marked, admissible_class=None)),
+    )
+
+
+def _refine_pair_impl(impl: Any) -> tuple[Any, Any]:
+    """The same two refinements, through the implementation the wrapper holds.
+
+    Args:
+        impl (Any): The oracle instance or the C++ handle.
+
+    Returns:
+        tuple[Any, Any]: The graded and ungraded fingerprints.
+    """
+    marked = _cells_at(impl, 1)[:1]
+    return (_fingerprint(impl.refine(marked, 2)), _fingerprint(impl.refine(marked, None)))
+
+
+def _refine_region_pair_wrapper(space: THBSplineSpace) -> tuple[Any, Any]:
+    """Fingerprint a graded and an ungraded region refinement, through the public class.
+
+    Args:
+        space (THBSplineSpace): The space to refine.
+
+    Returns:
+        tuple[Any, Any]: The graded and ungraded fingerprints.
+    """
+    lo, hi = _PROBE_REGION
+    return (
+        _fingerprint(space.refine_region(1, lo, hi, admissible_class=2)),
+        _fingerprint(space.refine_region(1, lo, hi, admissible_class=None)),
+    )
+
+
+def _refine_region_pair_impl(impl: Any) -> tuple[Any, Any]:
+    """The same two region refinements, through the implementation.
+
+    Args:
+        impl (Any): The oracle instance or the C++ handle.
+
+    Returns:
+        tuple[Any, Any]: The graded and ungraded fingerprints.
+    """
+    lo = np.ascontiguousarray(_PROBE_REGION[0], dtype=np.int64)
+    hi = np.ascontiguousarray(_PROBE_REGION[1], dtype=np.int64)
+    return (
+        _fingerprint(impl.refine_region(1, lo, hi, 2)),
+        _fingerprint(impl.refine_region(1, lo, hi, None)),
+    )
+
+
+def _coarsen_pair_wrapper(space: THBSplineSpace) -> tuple[Any, Any]:
+    """Fingerprint a graded and an ungraded coarsening, through the public class.
+
+    Args:
+        space (THBSplineSpace): The space to coarsen.
+
+    Returns:
+        tuple[Any, Any]: The graded and ungraded fingerprints.
+    """
+    marked = _cells_at(space, 1)
+    return (
+        _fingerprint(space.coarsen(marked, admissible_class=2)),
+        _fingerprint(space.coarsen(marked, admissible_class=None)),
+    )
+
+
+def _coarsen_pair_impl(impl: Any) -> tuple[Any, Any]:
+    """The same two coarsenings, through the implementation.
+
+    Args:
+        impl (Any): The oracle instance or the C++ handle.
+
+    Returns:
+        tuple[Any, Any]: The graded and ungraded fingerprints.
+    """
+    marked = _cells_at(impl, 1)
+    return (_fingerprint(impl.coarsen(marked, 2)), _fingerprint(impl.coarsen(marked, None)))
 
 
 def _fingerprint(space: Any) -> tuple[int, int, tuple[int, ...]]:
@@ -1274,29 +1396,14 @@ _FORWARDS: Final[tuple[tuple[str, Callable[[Any], Any], Callable[[Any], Any]], .
         lambda s: _read_truncated(s),
         lambda i: _read_truncated(i),
     ),
-    # Rebuilding members: a returned space, compared by what it is.
-    (
-        "refine",
-        lambda s: _fingerprint(s.refine(_REFINE_MARKED, admissible_class=2)),
-        lambda i: _fingerprint(i.refine(_REFINE_MARKED, 2)),
-    ),
-    (
-        "refine_region",
-        lambda s: _fingerprint(s.refine_region(0, [0, 0], [2, 2], admissible_class=2)),
-        lambda i: _fingerprint(
-            i.refine_region(
-                0,
-                np.ascontiguousarray([0, 0], dtype=np.int64),
-                np.ascontiguousarray([2, 2], dtype=np.int64),
-                2,
-            )
-        ),
-    ),
-    (
-        "coarsen",
-        lambda s: _fingerprint(s.coarsen(_REFINE_MARKED, admissible_class=None)),
-        lambda i: _fingerprint(i.coarsen(_REFINE_MARKED, None)),
-    ),
+    # Rebuilding members: a returned space, compared by what it is, under **both**
+    # gradings. The pair is what makes the probe see an `admissible_class` a forward
+    # dropped, and the arguments are chosen so that neither half is a no-op on the
+    # reference case -- `test_the_rebuilding_probes_are_not_no_ops` is what keeps both
+    # properties from quietly lapsing.
+    ("refine", _refine_pair_wrapper, _refine_pair_impl),
+    ("refine_region", _refine_region_pair_wrapper, _refine_region_pair_impl),
+    ("coarsen", _coarsen_pair_wrapper, _coarsen_pair_impl),
     ("__repr__", repr, repr),
 )
 """Every member the binding registers, with how to read it through each side.
@@ -1331,6 +1438,21 @@ def _read_truncated(space: Any) -> tuple[Any, ...]:
                 )
             )
     return tuple(out)
+
+
+def _truncation_shape(entries: tuple[Any, ...]) -> tuple[Any, ...]:
+    """The wholly integer part of a truncation: which dofs, at which level, over which box.
+
+    What survives a cross-backend round trip as a verdict rather than as a displaced
+    value, so it can be compared exactly whatever recomputed the coefficients.
+
+    Args:
+        entries (tuple[Any, ...]): What :func:`_read_truncated` returned.
+
+    Returns:
+        tuple[Any, ...]: One ``(dof, rep_level, box_lo, coeffs.shape)`` per entry.
+    """
+    return tuple((dof, rep, box, coeffs.shape) for dof, rep, box, coeffs in entries)
 
 
 def _agree(left: Any, right: Any) -> bool:
@@ -1407,18 +1529,63 @@ def test_the_forward_table_names_every_bound_member(cpp_backend: None) -> None:
     Args:
         cpp_backend (None): Requires the compiled extension.
     """
-    handle_type = _bindings().THBSplineSpace64
-    bound = {name for name in dir(handle_type) if not name.startswith("_")} | {"__repr__"}
+    cpp = _bindings()
     covered = {name for name, _, _ in _FORWARDS}
-    assert covered == bound, (
-        f"the forward table and the binding disagree; "
-        f"bound but untested {sorted(bound - covered)}, "
-        f"tested but not bound {sorted(covered - bound)}"
-    )
+    for handle_type in (cpp.THBSplineSpace64, cpp.THBSplineSpace32):
+        bound = {name for name in dir(handle_type) if not name.startswith("_")} | {"__repr__"}
+        assert covered == bound, (
+            f"the forward table and {handle_type.__name__} disagree; "
+            f"bound but untested {sorted(bound - covered)}, "
+            f"tested but not bound {sorted(covered - bound)}"
+        )
     assert covered <= set(dir(THBSplineSpace)), (
         f"bound members the public class does not expose: "
         f"{sorted(covered - set(dir(THBSplineSpace)))}"
     )
+
+
+def test_the_rebuilding_probes_are_not_no_ops(cpp_backend: None) -> None:
+    """The three rebuilding forwards are probed with operations that change the space.
+
+    Without this the sweep above is vacuous for exactly three of its twenty-four cases,
+    and silently: ``refine``, ``refine_region`` and ``coarsen`` return a space, so a
+    forward replaced by ``return self`` still hands back something with a fingerprint,
+    and if the probe's marked cells happen to refine or coarsen nothing then that
+    fingerprint is the receiver's and the case passes. **Measured:** with the probes'
+    earlier arguments, stubbing ``coarsen`` and ``refine_region`` to ``return self`` left
+    every test in this file green.
+
+    One assertion per member carries both properties, because the stronger one implies the
+    weaker and a check that cannot fail on its own is not worth writing. The two gradings
+    must differ: that catches a forward which drops ``admissible_class``, and it also
+    catches two no-ops, since two calls that both change nothing return the receiver's
+    fingerprint twice. What it deliberately does **not** demand is that the *graded* call
+    change the space -- a graded call is entitled to be a no-op, and ``coarsen``'s
+    admissibility guard vetoes the reference case's whole level, which is the behaviour
+    under test rather than a badly chosen probe.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+    """
+    space = _cpp_space(_reference_case())
+    with use_backend(Backend.CPP):
+        base = _fingerprint(space)
+        for member, probe in (
+            ("refine", _refine_pair_wrapper),
+            ("refine_region", _refine_region_pair_wrapper),
+            ("coarsen", _coarsen_pair_wrapper),
+        ):
+            graded, ungraded = probe(space)
+            assert graded != ungraded, (
+                f"{member}: the probe's two gradings agree ({graded} against the "
+                f"receiver's {base}), so its forwarding case would pass both on a "
+                f"forward that dropped admissible_class and, if they also equal the "
+                f"receiver's, on one that did nothing at all"
+            )
+            assert graded != ungraded, (
+                f"{member}: the probe's two gradings agree, so its forwarding case would "
+                f"pass on a forward that dropped admissible_class"
+            )
 
 
 @pytest.mark.parametrize(
@@ -1501,14 +1668,121 @@ def test_a_thb_space_survives_pickling_across_every_backend_pair(
                         rebuilt.active_function_indices(level),
                         original.active_function_indices(level),
                     ), f"{where} {how}: level {level}"
-                np.testing.assert_array_equal(
-                    np.asarray(rebuilt.root_space.spaces[0].knots),
-                    np.asarray(original.root_space.spaces[0].knots),
-                    err_msg=f"{where} {how}",
-                )
-                assert _agree(_read_truncated(rebuilt), _read_truncated(original)), (
+                for k in range(original.dim):
+                    np.testing.assert_array_equal(
+                        np.asarray(rebuilt.root_space.spaces[k].knots),
+                        np.asarray(original.root_space.spaces[k].knots),
+                        err_msg=f"{where} {how}: direction {k}",
+                    )
+                rebuilt_entries = _read_truncated(rebuilt)
+                original_entries = _read_truncated(original)
+                assert _truncation_shape(rebuilt_entries) == _truncation_shape(original_entries), (
                     f"{where} {how}: the truncation did not survive the round trip"
                 )
+                # The coefficients are only compared bit for bit **within** one backend.
+                # Across a pair the reconstruction recomputes them on the reader's side,
+                # which is the very cross-backend situation `_COEFFICIENT_WHY` says needs
+                # a derived bound rather than bit-identity -- and `_compare` is where
+                # that comparison already happens, with the bound. Asserting equality
+                # here would be a bit-identity criterion on a floating-point quantity
+                # obtained by two summation orders, which is exactly what this file
+                # refuses everywhere else; it passes today and would fail on a machine
+                # whose BLAS sums differently.
+                if writer is reader:
+                    assert _agree(rebuilt_entries, original_entries), (
+                        f"{where} {how}: the truncation coefficients moved within one "
+                        f"backend, where nothing recomputes them differently"
+                    )
+
+
+def test_a_nested_object_from_the_other_backend_is_refused(cpp_backend: None) -> None:
+    """Building over a root space or a grid from the other backend raises, both ways.
+
+    The refusal exists because the two implementations take their nested objects
+    differently: the C++ class takes handles, and handing it a Python oracle raises a
+    nanobind ``TypeError`` naming C++ types -- loud, if unreadable. The oracle takes the
+    *wrappers* and would **succeed**, yielding a space whose hierarchical logic runs in
+    Python over C++ values, which no parity claim covers and nothing announces.
+    ``design/cross_backend_types.md`` forbids that second shape, which is why the check
+    is in ``_new_impl`` rather than left to whichever constructor happens to complain.
+
+    Both directions are exercised, and the silent one is the reason for the test.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+    """
+    case = _reference_case()
+    built: dict[Backend, tuple[BsplineSpace, Any]] = {}
+    for backend in (Backend.PYTHON, Backend.CPP):
+        with use_backend(backend):
+            directions = [
+                BsplineSpace1D(
+                    _open_knots(case.degrees[k], case.num_elements[k], *case.bounds[k]),
+                    case.degrees[k],
+                )
+                for k in range(len(case.degrees))
+            ]
+            grid = hierarchical_grid(
+                uniform_grid([list(b) for b in case.bounds], list(case.num_elements)),
+                list(case.factor),
+            )
+            built[backend] = (BsplineSpace(directions), grid)
+
+    for backend, other in ((Backend.PYTHON, Backend.CPP), (Backend.CPP, Backend.PYTHON)):
+        own_root, own_grid = built[backend]
+        foreign_root, foreign_grid = built[other]
+        with use_backend(backend):
+            with pytest.raises(ValueError, match="root_space must come from the active backend"):
+                THBSplineSpace(foreign_root, own_grid)
+            with pytest.raises(ValueError, match="grid must come from the active backend"):
+                THBSplineSpace(own_root, foreign_grid)
+
+
+@pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP], ids=["python", "cpp"])
+def test_the_borrowed_arrays_are_read_only_and_the_copied_ones_are_not(
+    cpp_backend: None, backend: Backend
+) -> None:
+    """Each array member is writable exactly where its own docstring says it is.
+
+    Two different failures, and neither is visible in a value comparison. A member
+    documented as a fresh copy that hands out a view lets a caller corrupt storage the
+    C++ space owns, for its whole life and for every other reader of it. A member
+    documented read-only that hands out a writable array is the same defect one step
+    later, since the wrapper would then be the only thing standing between a caller and
+    that storage.
+
+    ``design/bspline_ownership_lifetime.md`` records this class of regression as silent,
+    which is why it is asserted rather than left to the read of the binding.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+        backend (Backend): The backend the space is built under.
+    """
+    space = _space(_reference_case(), backend)
+    truncated = [
+        entry
+        for entry in (space.truncated(dof) for dof in range(space.num_total_basis))
+        if entry is not None
+    ]
+    assert truncated, "this case truncated nothing, so the read-only half is untested"
+
+    for name, block in (
+        ("level_offsets", space.level_offsets),
+        ("domain", space.domain),
+        ("active_function_indices", space.active_function_indices(0)),
+        ("active_basis", space.active_basis(0)),
+    ):
+        assert block.flags.writeable, f"{name} is documented as a fresh copy but is read-only"
+
+    for name, block in (
+        ("contributions.dofs", space.contributions(0)[0]),
+        ("contributions.levels", space.contributions(0)[1]),
+        ("contributions.multi_indices", space.contributions(0)[2]),
+        ("truncated.coeffs", truncated[0][2]),
+    ):
+        assert not block.flags.writeable, (
+            f"{name} is documented read-only but a caller could write through it"
+        )
 
 
 @pytest.mark.parametrize(
