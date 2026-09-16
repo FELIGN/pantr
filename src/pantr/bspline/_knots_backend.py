@@ -61,21 +61,32 @@ the length again for a caller holding the handle with no wrapper in front of it,
 is ``cpp/bindings/bspline_knots.cpp``'s own reason for restating it; no Python caller
 can reach that text.
 
-Cross-backend spaces
---------------------
+A space built under the other backend, which is served and not refused
+----------------------------------------------------------------------
 
-:func:`_cpp_handle` refuses a space built under the other backend rather than
-converting it, which is what ``design/cross_backend_types.md`` forbids. The refusal is
-a property of *taking the C++ route*, so it fires under the C++ backend and not under
-the Python one, where the oracle runs happily over a C++ space's read-only knots. That
-asymmetry is :func:`pantr.bspline._structural_backend._cpp_handle`'s, unchanged.
+The C++ route needs two things, not one: the C++ backend has to be active **and** the
+space has to hold a C++ handle. A space built under the Python backend runs the oracle
+instead, whatever backend is active when it is scanned.
 
-**It is also the one way this differs from the accessors beside it on the wrapper.**
+**That is deliberately unlike** :func:`pantr.bspline._structural_backend._cpp_handle`,
+which raises for the same shape of mismatch, and the difference is in what crosses
+back. Those operations *return a field*, so a mismatched handle would have to be
+converted into the other implementation, which ``design/cross_backend_types.md``
+forbids; there is no third answer and a refusal is the only honest one. This one
+returns a plain array of booleans. Nothing is converted: the Python implementation
+answers a question about its own knots, which it can always do, so a refusal would be
+a failure mode invented rather than forced. :mod:`pantr.bspline._refinement_backend`
+sets the precedent for routing a case the C++ side cannot take back to the oracle
+rather than letting a caller meet a refusal.
+
+It is also what keeps the scan consistent with the accessors beside it on
+:class:`~pantr.bspline.BsplineSpace1D`.
 :attr:`~pantr.bspline.BsplineSpace1D.num_intervals` and its siblings are answered by
-whichever implementation the space holds, so they never notice the active backend;
-this is an operation rather than a property, so the catalogue decides, and a space
-built under the other backend is refused rather than served. Stated here because the
-two sit next to each other on one class.
+whichever implementation the space holds; so is this, now. **It was not, briefly, and
+the evidence against that is worth keeping**: refusing instead broke every comparison
+that reads an accessor off two spaces outside a ``use_backend`` block, which is how
+``tests/parity/`` compares two backends' state, and which is the ordinary way a caller
+holds a space across a backend switch.
 """
 
 from __future__ import annotations
@@ -102,42 +113,24 @@ _Flags: TypeAlias = "npt.NDArray[np.bool_]"
 """One boolean per in-domain interval, which is what the scan returns."""
 
 
-def _cpp_handle(space: BsplineSpace1D) -> _CppHandle:
-    """The C++ implementation a space holds, refusing a Python one.
+def _the_cpp_handle_to_scan(space: BsplineSpace1D) -> _CppHandle | None:
+    """The handle the C++ route would scan, or None when the oracle runs instead.
+
+    Two conditions rather than one: the C++ backend has to be the active one, **and**
+    the space has to hold a C++ handle. The module docstring argues the second -- a
+    space built under the Python backend is served by the oracle rather than refused,
+    because nothing has to be converted to answer for it.
+
+    There is no periodicity condition here, unlike refinement's: the scan reads the
+    knot vector as it stands and needs no conversion to reach a periodic space's
+    intervals.
 
     Args:
-        space (~pantr.bspline.BsplineSpace1D): The space whose handle is wanted.
+        space (~pantr.bspline.BsplineSpace1D): The space to scan.
 
     Returns:
-        _CppHandle: The ``BsplineSpace1D32`` or ``BsplineSpace1D64`` handle.
-
-    Raises:
-        TypeError: If the space holds the Python implementation. That means the active
-            backend changed after it was built, and converting one implementation into
-            the other is what ``design/cross_backend_types.md`` forbids.
-    """
-    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
-
-    impl = space._impl  # same package; the wrapper exposes no public handle
-    if not isinstance(impl, _pantr_cpp.BsplineSpace1D32 | _pantr_cpp.BsplineSpace1D64):
-        raise TypeError(
-            f"BsplineSpace1D: cannot scan a space built under a different backend "
-            f"({type(impl).__name__} against the active C++ one); the backend is "
-            f"chosen per process, so this means the active one changed after this "
-            f"BsplineSpace1D was built."
-        )
-    return impl
-
-
-def _the_cpp_backend_can_take_it() -> bool:
-    """Report whether the C++ path covers a call into this catalogue.
-
-    One condition: the C++ backend has to be the active one. There is no periodicity
-    question here, unlike refinement's -- the scan reads the knot vector as it stands
-    and needs no conversion to reach a periodic space's intervals.
-
-    Returns:
-        bool: True when the ``_cpp_*`` functions below may run.
+        _CppHandle | None: The ``BsplineSpace1D32`` or ``BsplineSpace1D64`` handle when
+        the C++ route applies, and None when it does not.
 
     Raises:
         RuntimeError: If the C++ backend is the active one and is not available. That
@@ -146,31 +139,33 @@ def _the_cpp_backend_can_take_it() -> bool:
             states the never-fall-back rule rather than relying on where it was
             enforced.
     """
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
+
     if active_backend() is Backend.PYTHON:
-        return False
+        return None
     if Backend.CPP not in available_backends():
         raise RuntimeError("the CPP backend is not available in this installation")
-    return True
+
+    impl = space._impl  # same package; the wrapper exposes no public handle
+    if isinstance(impl, _pantr_cpp.BsplineSpace1D32 | _pantr_cpp.BsplineSpace1D64):
+        return impl
+    return None
 
 
-def _cpp_cardinal_intervals(space: BsplineSpace1D, out: _Flags) -> _Flags:
+def _cpp_cardinal_intervals(handle: _CppHandle, out: _Flags) -> _Flags:
     """Scan a space's intervals through the C++ binding.
 
     Args:
-        space (~pantr.bspline.BsplineSpace1D): The space, holding a C++ handle.
-        out (npt.NDArray[np.bool_]): The destination, already validated by
+        handle (_CppHandle): The space's C++ implementation, from
+            :func:`_the_cpp_handle_to_scan`.
+        out (npt.NDArray[np.bool_]): The destination, already allocated or validated by
             :func:`cardinal_intervals`. Need not be contiguous.
 
     Returns:
         npt.NDArray[np.bool_]: ``out``, filled.
-
-    Raises:
-        TypeError: If the space holds the Python implementation; see
-            :func:`_cpp_handle`.
     """
     from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
 
-    handle = _cpp_handle(space)
     if out.flags["C_CONTIGUOUS"]:
         _pantr_cpp.bspline_space_cardinal_intervals_1d(handle, out=out)
     else:
@@ -186,7 +181,7 @@ def _cpp_cardinal_intervals(space: BsplineSpace1D, out: _Flags) -> _Flags:
 
 
 def cardinal_intervals(space: BsplineSpace1D, out: _Flags | None = None) -> _Flags:
-    """Report which of a space's intervals are cardinal, on whichever backend is active.
+    """Report which of a space's intervals are cardinal, on whichever backend serves it.
 
     Args:
         space (~pantr.bspline.BsplineSpace1D): The space to scan.
@@ -199,20 +194,22 @@ def cardinal_intervals(space: BsplineSpace1D, out: _Flags | None = None) -> _Fla
         entry per interval. ``out`` itself when it was provided.
 
     Raises:
-        TypeError: If ``out`` is a masked array, or if the C++ backend is active and
-            the space was built under the other one.
+        TypeError: If ``out`` is a masked array.
         ValueError: If ``out`` has the wrong shape or dtype, or is not writeable.
     """
-    if not _the_cpp_backend_can_take_it():
-        return _get_Bspline_cardinal_intervals_1D_impl(
-            space.knots, space.degree, space.tolerance, out=out
-        )
-
-    # Allocated or validated on this side of the branch, so that the message a caller
-    # sees is the oracle's under either backend; the module docstring says why.
+    # Allocated or validated above the branch, so that the message a caller sees is the
+    # oracle's whichever route runs; the module docstring says why. The oracle checks
+    # the same array again on its own path, which cannot disagree: it is the same
+    # helper on the same arguments, and the interval count has one source.
     num_intervals = space.num_intervals
     if out is None:
         out = np.empty(num_intervals, dtype=np.bool_)
     else:
         _validate_out_array(out, (num_intervals,), np.bool_)
-    return _cpp_cardinal_intervals(space, out)
+
+    handle = _the_cpp_handle_to_scan(space)
+    if handle is None:
+        return _get_Bspline_cardinal_intervals_1D_impl(
+            space.knots, space.degree, space.tolerance, out=out
+        )
+    return _cpp_cardinal_intervals(handle, out)

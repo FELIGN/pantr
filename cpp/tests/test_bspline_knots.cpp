@@ -401,6 +401,19 @@ void check_cardinal_intervals() {
     same(cardinal_pattern<float>({0.0F, 0.0F, 0.0F, 0.25F, 0.5F, 0.75F, 1.0F, 1.0F, 1.0F}, 2),
          "FTTF", "clamped uniform at float32");
 
+    // The off-by-one the scan's comment says it reproduces rather than corrects, and
+    // the only vector here whose answer distinguishes the two. The first knot repeats
+    // four times at degree 2, which `check_last_multiplicity` refuses only at the last
+    // knot, so `knot_id`'s seed of `degree` lands one place before that class's true
+    // last index and every window is read one place to the left. By the definition
+    // alone interval 1 is cardinal -- its window is `[0, 1, 2, 3]`, three unit spans --
+    // and the seeded walk reads `[0, 0, 1, 2]` instead, whose leading zero-length span
+    // disqualifies it. Seeding at the true last index would report "FTTTTF"; the oracle
+    // reports this, so this is what the port reports.
+    same(cardinal_pattern<double>(
+             {0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 6.0}, 2),
+         "FFTTTF", "an over-clamped first knot shifts every window left");
+
     // A single span of the wrong length disqualifies itself and the `p - 1`
     // intervals either side of it, and nothing further: degree 2 over seven
     // intervals with the fourth widened, so intervals 2, 3 and 4 go and 1 and 5

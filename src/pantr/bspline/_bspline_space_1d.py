@@ -15,8 +15,12 @@ checked against, and the C++ handle is the thing being checked.
 Only the *state and what it determines* moved. The operations -- basis
 tabulation, the three extraction families, knot insertion, subdivision and
 restriction -- are unchanged, still run on numba kernels, and now live on the
-wrapper. That mixed dispatch is the temporary seam this front introduces; a
-cleanup ticket removes it once the whole front lands.
+wrapper. The one exception is :meth:`BsplineSpace1D.get_cardinal_intervals`,
+which is an operation rather than a property and reaches C++ through
+:mod:`pantr.bspline._knots_backend` rather than through ``self._impl``; that
+module says why an operation cannot be a member of the C++ type. That mixed
+dispatch is the temporary seam this front introduces; a cleanup ticket removes it
+once the whole front lands.
 """
 
 from __future__ import annotations
@@ -629,7 +633,10 @@ class BsplineSpace1D:
     ``_impl_class``, which is the C++ type
     (``cpp/include/pantr/bspline/space_1d.hpp``) or the oracle
     ``_BsplineSpace1DPython``. The operations below are still Python over
-    numba kernels and are unchanged; only the state moved.
+    numba kernels and are unchanged; only the state moved. The exception is
+    :meth:`get_cardinal_intervals`, which is dispatched by
+    :mod:`pantr.bspline._knots_backend` and runs in C++ for a space the C++
+    backend built.
 
     Instances are immutable, and ``__slots__`` is what says so: there is no
     ``__dict__``, so nothing can be attached to a space after it is built.
@@ -1022,13 +1029,13 @@ class BsplineSpace1D:
                 It has length equal to the number of intervals. If `out` was provided,
                 returns the same array.
 
+        The scan is an *operation* rather than a property of the knots, so
+        :mod:`pantr.bspline._knots_backend` dispatches it rather than
+        ``self._impl``; it runs in C++ for a space the C++ backend built, and on the
+        numba kernel otherwise. The answer is the same either way.
+
         Raises:
-            TypeError: If `out` is a masked array, or if the C++ backend is active and
-                this space was built under the other one. The scan is an *operation*
-                rather than a property of the knots, so it is dispatched by
-                :mod:`pantr.bspline._knots_backend` on the active backend, where the
-                accessors beside it are answered by whichever implementation this
-                space holds.
+            TypeError: If `out` is a masked array.
             ValueError: If `out` is provided and has incorrect shape or dtype.
 
         Example:
