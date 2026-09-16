@@ -459,6 +459,17 @@ def test_the_clamped_uniform_closed_form(backend: Backend, degree: int, num_inte
     interval and ``first_basis_per_interval() == range(n)``; and the domain is the
     requested pair exactly, because the ends are stored values rather than computed
     ones.
+
+    ``get_cardinal_intervals`` has a closed form on the same family, from its two
+    gates. The **multiplicity** gate asks that neither knot bounding the interval be
+    repeated, and on a clamped vector at ``p >= 1`` the two end knots are repeated
+    ``p + 1`` times, so intervals ``0`` and ``n - 1`` are out. The **length** gate
+    asks that the ``2p - 1`` spans of the window reaching ``p - 1`` intervals either
+    side all have the interval's own length; on a uniform mesh they do exactly when
+    the window stays inside the domain, so ``p - 1 <= e <= n - p``. Together:
+    ``max(p - 1, 1) <= e <= min(n - p, n - 2)``. At ``p == 0`` the window is empty,
+    the length gate is vacuous and no knot is repeated, so every interval is
+    cardinal -- which is why that case is stated separately rather than folded in.
     """
     _demand_the_extension_if_needed(backend)
     breakpoints = np.linspace(0.0, 1.0, num_intervals + 1)
@@ -474,6 +485,14 @@ def test_the_clamped_uniform_closed_form(backend: Backend, degree: int, num_inte
     assert float(space.domain[1]) == 1.0
     assert space.has_open_knots()
     assert space.has_Bezier_like_knots() == (num_intervals == 1)
+
+    if degree == 0:
+        cardinal = [True] * num_intervals
+    else:
+        first = max(degree - 1, 1)
+        last = min(num_intervals - degree, num_intervals - 2)
+        cardinal = [first <= interval <= last for interval in range(num_intervals)]
+    assert space.get_cardinal_intervals().tolist() == cardinal
 
 
 @pytest.mark.parametrize("backend", _BACKENDS)
