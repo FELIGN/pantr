@@ -148,11 +148,10 @@ enum class ExtractionTarget : std::int64_t {
 /// Instances are immutable: no operation changes one, and the memo is a function of
 /// state frozen at construction.
 ///
-/// **Move-only.** The three per-direction bundles include an identity mask held as
-/// `std::unique_ptr<bool[]>`, because `std::vector<bool>` is a bitset with no `bool`
-/// storage to hand out and the mask goes to Python as a `numpy.bool_` array viewing
-/// this object's own memory. Nothing copies an extraction: the binding constructs in
-/// place, the wrapper holds one handle, and a derived extraction is a fresh object.
+/// Copyable, like every other domain type here, and the copy is deep: see
+/// `Direction`'s rule of five for why the identity mask makes that explicit work
+/// rather than the compiler's. A copy starts with a cold memo, which is
+/// `LazySlot`'s own contract.
 ///
 /// \tparam T The scalar type the operators are stored in.
 template <Real T>
@@ -351,7 +350,33 @@ class SpanwiseElementExtraction {
     [[nodiscard]] bool is_identity() const noexcept { return is_identity_; }
 
   private:
+    /// Copy `n` flags into a fresh array.
+    ///
+    /// \param source The flags; may be null only when `n` is zero.
+    /// \param n How many.
+    /// \return The copy.
+    [[nodiscard]] static std::unique_ptr<bool[]> clone_flags(const bool* source, std::int64_t n) {
+        const auto size = static_cast<std::size_t>(n);
+        auto copy = std::make_unique<bool[]>(size);
+        for (std::size_t i = 0; i < size; ++i) {
+            copy[i] = source[i];
+        }
+        return copy;
+    }
+
     /// One direction's compacted storage.
+    ///
+    /// The mask is `std::unique_ptr<bool[]>` because `std::vector<bool>` is a bitset
+    /// with no `bool` objects to point at, and the mask goes to Python as a
+    /// `numpy.bool_` array viewing this storage. That makes the rule of five
+    /// unavoidable: the implicit copy would be deleted, and a deleted copy on a member
+    /// of a `std::vector` is a trap rather than a restriction, because
+    /// `std::is_copy_constructible_v<std::vector<MoveOnly>>` is **`true`** -- the
+    /// container's copy constructor is declared unconditionally and fails only when
+    /// instantiated. Measured: nanobind reads that trait to decide whether to register
+    /// a copy constructor for the bound class, so an owner that merely *looks*
+    /// copyable produces a hard error inside `uninitialized_copy` rather than a
+    /// non-copyable Python type.
     struct Direction {
         std::vector<T> compact;             ///< Row-major `(n_compact, n_out, n_in)`.
         std::vector<std::int64_t> idx_map;  ///< `n_elements` rows into `compact`.
@@ -361,6 +386,37 @@ class SpanwiseElementExtraction {
         std::int64_t n_out = 0;             ///< Operator rows.
         std::int64_t n_in = 0;              ///< Operator columns.
         std::int64_t n_identity = 0;        ///< `true` entries of `mask`.
+
+        /// Start empty.
+        Direction() = default;
+
+        /// Copy the flags rather than the pointer to them.
+        ///
+        /// \param other The direction to copy.
+        Direction(const Direction& other)
+            : compact(other.compact),
+              idx_map(other.idx_map),
+              mask(clone_flags(other.mask.get(), other.n_elements)),
+              n_elements(other.n_elements),
+              n_compact(other.n_compact),
+              n_out(other.n_out),
+              n_in(other.n_in),
+              n_identity(other.n_identity) {}
+
+        Direction(Direction&&) noexcept = default;
+        Direction& operator=(Direction&&) noexcept = default;
+        ~Direction() = default;
+
+        /// Copy through the move assignment, so the flags are cloned exactly once.
+        ///
+        /// \param other The direction to copy.
+        /// \return This direction.
+        Direction& operator=(const Direction& other) {
+            if (this != &other) {
+                *this = Direction(other);
+            }
+            return *this;
+        }
     };
 
     /// Compact one direction's operators, keeping only the non-identity rows.
