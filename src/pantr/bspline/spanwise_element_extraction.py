@@ -45,6 +45,7 @@ from ..basis import LagrangeVariant
 from ..basis._basis_utils import _allocate_or_validate_out
 from ..change_basis import _cached_lagrange_to_bernstein_matrix
 from ._bspline_space_nd import _impl_class as _space_impl_class
+from ._bspline_space_nd import _stored_dtype
 from ._extraction_backend import bezier_identity_mask_kernel, lagrange_identity_mask_kernel
 from ._extraction_helpers import (
     OpKind,
@@ -243,7 +244,7 @@ class _SpanwiseElementExtractionPython:
             index a Numba kernel computed before checking the mask is in range.
         _idx_maps_1d (tuple[npt.NDArray[np.intp], ...]): Per-direction row indices
             into :attr:`compact_ops_1d`, shape ``(n_elements_k,)``.
-        _is_identity_mask_1d (tuple[npt.NDArray[np.bool_], ...]): Per-direction
+        _is_identity_mask_1d (``tuple[npt.NDArray[np.bool_], ...]``): Per-direction
             identity masks, shape ``(n_elements_k,)``.
         _num_identity_elements (int): Fully-identity elements on the grid.
     """
@@ -268,20 +269,56 @@ class _SpanwiseElementExtractionPython:
                 ``(n_elements_k, n_out_k, n_in_k)`` block per direction.
             masks (Sequence[npt.NDArray[np.bool_]]): One ``(n_elements_k,)`` identity
                 mask per direction.
+
+        Raises:
+            ValueError: If ``operators`` does not have one entry per direction of
+                ``space``, if a direction's operator count or mask length disagrees
+                with that direction's element count, or if a direction's operators have
+                no rows or no columns.
+
+        Note:
+            Every refusal above is the C++ counterpart's, message for message; see
+            ``cpp/include/pantr/bspline/spanwise_extraction.hpp``. They are duplicated
+            rather than inherited because the two implementations are compared against
+            *each other*: one that accepted what the other rejects is a divergence no
+            comparison of values could see, and the parity suite reaches it because it
+            constructs both directly. None of them is reachable through
+            :class:`SpanwiseElementExtraction`, whose own
+            :func:`_build_direction_operators` cannot produce a disagreeing shape.
         """
         self._space = space
         self._target = target
         self._lagrange_variant = lagrange_variant
 
+        num_intervals = tuple(int(n) for n in space.num_intervals)
+        if len(operators) != len(num_intervals):
+            raise ValueError(
+                f"expected one operator bundle per direction; got {len(operators)} for a "
+                f"space of dimension {len(num_intervals)}"
+            )
+
         compact_ops_1d: list[npt.NDArray[np.float32 | np.float64]] = []
         idx_maps_1d: list[npt.NDArray[np.intp]] = []
         masks_1d: list[npt.NDArray[np.bool_]] = []
         num_identity = 1
-        for ops, mask_in in zip(operators, masks, strict=True):
+        for direction, (ops, mask_in) in enumerate(zip(operators, masks, strict=True)):
             mask = np.array(mask_in, dtype=np.bool_)
             non_id_idx = np.where(~mask)[0]
             n_non_id = int(non_id_idx.shape[0])
             n_out, n_in = int(ops.shape[1]), int(ops.shape[2])
+            n_elements = num_intervals[direction]
+            if int(ops.shape[0]) != n_elements:
+                raise ValueError(
+                    f"direction {direction} has {int(ops.shape[0])} operators for "
+                    f"{n_elements} elements"
+                )
+            if int(mask.shape[0]) != n_elements:
+                raise ValueError(
+                    f"direction {direction} has an identity mask of length "
+                    f"{int(mask.shape[0])} for {n_elements} elements"
+                )
+            if n_out == 0 or n_in == 0:
+                raise ValueError(f"direction {direction} has operators with no rows or no columns")
             if n_non_id > 0:
                 compact_ops = ops[non_id_idx].copy()
             else:
@@ -516,20 +553,30 @@ def _new_impl(
                     f"ops_1d[0].dtype={dtype_0}, ops_1d[{k}].dtype={ops.dtype}"
                 )
 
-    dtype = np.dtype(space.dtype)
+    # `_stored_dtype` rather than `space.dtype`, because a dimensionless space is
+    # legal -- `tests/test_bspline_space.py::test_empty_spaces_list` pins it -- and its
+    # `dtype` raises `IndexError`. The oracle constructed over one before this class
+    # became a wrapper, so picking the implementation must not be what starts refusing.
+    dtype = _stored_dtype(space.spaces)
     cls = _impl_class(dtype)
-    if cls is _SpanwiseElementExtractionPython:
-        return _SpanwiseElementExtractionPython(
-            space._impl, int(target), str(lagrange_variant), operators, masks
-        )
-    # `cls` is one of the C++ classes here. Handing it a space built under the Python
-    # backend raises a nanobind `TypeError` naming C++ types, which is loud but
-    # unreadable, so the same refusal `_bspline_space_nd._new_impl` writes is written
-    # here, in the oracle's own vocabulary.
+
+    # Checked BEFORE the branch, and both directions fail the same way, which is what
+    # `_bspline_space_nd._new_impl` does and why. The two directions are not symmetric
+    # in how they would fail on their own, and the quiet one is the dangerous one:
+    # handing a Python oracle to a C++ class raises a nanobind `TypeError` naming C++
+    # types, loud but unreadable; handing a C++ handle to the oracle **succeeds** and
+    # yields an extraction whose reductions run in Python over C++ values, which no
+    # parity claim covers and nothing announces. `design/cross_backend_types.md`
+    # forbids exactly that second shape.
     if not isinstance(space._impl, _space_impl_class(dtype)):
         raise ValueError(
             "The B-spline space must come from the active backend; it was built under "
             "a different one."
+        )
+
+    if cls is _SpanwiseElementExtractionPython:
+        return _SpanwiseElementExtractionPython(
+            space._impl, int(target), str(lagrange_variant), operators, masks
         )
     cpp_cls: Any = cls
     return cast(
@@ -604,7 +651,7 @@ class SpanwiseElementExtraction:
             per-direction compact index maps of shape ``(n_elements_k,)``;
             ``_idx_maps_1d[k][e]`` is the row index into ``_compact_ops_1d[k]`` for
             element ``e`` (undefined for identity elements, stored as 0).
-        _is_identity_mask_1d (tuple[npt.NDArray[np.bool_], ...]): Likewise for the
+        _is_identity_mask_1d (``tuple[npt.NDArray[np.bool_], ...]``): Likewise for the
             per-direction identity masks of shape ``(n_elements_k,)``.
         _dense_ops_1d (tuple[npt.NDArray[np.float32 | np.float64], ...] | None): The
             same memo for :attr:`ops_1d`, filled on first read rather than at
@@ -830,6 +877,17 @@ class SpanwiseElementExtraction:
             downstream ``@njit`` code when the full dense layout is required.
             For compact-aware downstream code, prefer :attr:`compact_ops_1d` and
             :attr:`idx_maps_1d`.
+
+        Note:
+            The slot's first fill is read-check-compute-write and is **not** atomic,
+            unlike the implementation's own memo, which ``pantr/core/lazy.hpp``
+            publishes under double-checked locking. Two threads racing the first
+            access can each build a tuple and only one wins the slot; both tuples hold
+            views of the same memo and compare equal entry for entry, so the loser is
+            garbage rather than a second truth. The final ``object.__setattr__`` is a
+            single store, so nothing can be observed half-filled. This is exactly
+            :func:`functools.cached_property`'s own behaviour, which is what this slot
+            replaced.
         """
         dense = self._dense_ops_1d
         if dense is None:
