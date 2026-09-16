@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import operator
 import string
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, NoReturn, TypeAlias, cast
 
@@ -75,6 +76,7 @@ if TYPE_CHECKING:
 
     from .._pantr_cpp import THBSplineSpace32 as _CppTHB32
     from .._pantr_cpp import THBSplineSpace64 as _CppTHB64
+    from ..grid import TensorProductGrid
     from ._bspline_space_1d import BsplineSpace1D
 
     _Impl: TypeAlias = "_THBSplineSpacePython | _CppTHB32 | _CppTHB64"
@@ -648,7 +650,7 @@ def _cell_ids(values: npt.ArrayLike) -> npt.NDArray[np.int64]:
     return np.ascontiguousarray(np.asarray(values, dtype=np.int64).ravel())
 
 
-def _as_grid(value: object, root: object) -> HierarchicalGrid:
+def _as_grid(value: object, root: TensorProductGrid | None) -> HierarchicalGrid:
     """Present an implementation's grid as the public wrapper.
 
     The two backends hand back different things from ``impl.grid``. The oracle is
@@ -657,7 +659,7 @@ def _as_grid(value: object, root: object) -> HierarchicalGrid:
     ``pantr::grid::HierarchicalGrid`` and its binding hands back the raw handle. Both
     have to reach the caller as the one public class, and this is the single place
     that reconciles them -- the same shape, and for the same reason, as
-    ``pantr.grid._grid._grid_value``.
+    :func:`pantr.grid._grid._adopt`.
 
     Written as "already the right type, or adopt it" rather than as a test on which
     backend is active, because that is the actual question and it stays true if a
@@ -666,9 +668,9 @@ def _as_grid(value: object, root: object) -> HierarchicalGrid:
 
     Args:
         value (object): What the implementation returned for its grid.
-        root (object): The level-0 :class:`~pantr.grid.TensorProductGrid` to seed the
-            new wrapper's root memo with, so that a derived grid keeps the root
-            object -- and its tags -- the space was built over.
+        root (TensorProductGrid | None): The level-0 grid to seed the new wrapper's
+            root memo with, so that a derived grid keeps the root object -- and its
+            tags -- the space was built over.  ``None`` leaves the memo empty.
 
     Returns:
         HierarchicalGrid: ``value`` if it already is one, otherwise a wrapper
@@ -676,7 +678,7 @@ def _as_grid(value: object, root: object) -> HierarchicalGrid:
     """
     if isinstance(value, HierarchicalGrid):
         return value
-    return HierarchicalGrid._wrap_over(cast("Any", value), cast("Any", root))
+    return HierarchicalGrid._wrap_over(cast("Any", value), root)
 
 
 class _THBSplineSpacePython:
@@ -2382,14 +2384,17 @@ class THBSplineSpace:
             BsplineSpace: The root space subdivided to ``level``.
 
         Raises:
+            TypeError: If ``level`` is not an integer.
             ValueError: If ``level`` is out of range.
         """
-        value = self._impl.level_space(level)  # validates level
-        key = int(level)
+        key = operator.index(level)
         cached = self._level_space_memo.get(key)
         if cached is not None:
             return cached
-        space = self._as_space(value)
+        # Only past the memo, so a hit costs a dict lookup rather than a call across
+        # the binding. Nothing is lost: an entry can only exist under a key a previous
+        # call validated and returned for, so a hit has nothing left to refuse.
+        space = self._as_space(self._impl.level_space(level))
         self._level_space_memo[key] = space
         return space
 
@@ -2445,13 +2450,14 @@ class THBSplineSpace:
             npt.NDArray[np.int64]: Sorted flat (C-order) indices, read-only.
 
         Raises:
+            TypeError: If ``level`` is not an integer.
             ValueError: If ``level`` is out of range.
         """
-        value = self._impl.active_function_indices(level)  # validates level
-        key = int(level)
+        key = operator.index(level)
         cached = self._active_memo.get(key)
         if cached is None:
-            cached = np.asarray(value, dtype=np.int64)
+            # Past the memo for the reason :meth:`level_space` gives.
+            cached = np.asarray(self._impl.active_function_indices(level), dtype=np.int64)
             self._active_memo[key] = cached
         return cached
 
