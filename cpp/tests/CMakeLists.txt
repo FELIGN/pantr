@@ -44,7 +44,8 @@ set(PANTR_TEST_SOURCES
     test_bspline_structural.cpp
     test_bspline_degree.cpp
     test_thb_space.cpp
-    test_bspline_type.cpp)
+    test_bspline_type.cpp
+    test_spanwise_extraction.cpp)
 
 # Reserved slots (FELIGN/pantr#380): registered ahead of the port so the thirteen
 # tickets this milestone unblocks do not collide on this file.
