@@ -33,16 +33,18 @@ structural (multiplicity-based) identity predicates:
 from __future__ import annotations
 
 import functools
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from enum import IntEnum
-from typing import TYPE_CHECKING, Final, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, NoReturn, TypeAlias, cast
 
 import numpy as np
 import numpy.typing as npt
 
+from .._backend import Backend, active_backend, available_backends
 from ..basis import LagrangeVariant
 from ..basis._basis_utils import _allocate_or_validate_out
 from ..change_basis import _cached_lagrange_to_bernstein_matrix
+from ._bspline_space_nd import _impl_class as _space_impl_class
 from ._extraction_backend import bezier_identity_mask_kernel, lagrange_identity_mask_kernel
 from ._extraction_helpers import (
     OpKind,
@@ -52,8 +54,29 @@ from ._extraction_helpers import (
 )
 
 if TYPE_CHECKING:
+    from .._pantr_cpp import SpanwiseElementExtraction32 as _CppExtraction32
+    from .._pantr_cpp import SpanwiseElementExtraction64 as _CppExtraction64
     from ._bspline_space_1d import BsplineSpace1D
     from ._bspline_space_nd import BsplineSpace
+
+    _Impl: TypeAlias = "_SpanwiseElementExtractionPython | _CppExtraction32 | _CppExtraction64"
+    """The implementation a :class:`SpanwiseElementExtraction` holds.
+
+    The same alias shape :mod:`pantr.bspline._bspline_space_nd` declares: three
+    unrelated nominal types that happen to offer one surface, which is the port's
+    whole claim.
+    """
+
+    _SpaceImpl: TypeAlias = "Any"
+    """The space's implementation, as either backend holds it.
+
+    Deliberately opaque, for :mod:`pantr.bspline._bspline_space_nd`'s reason: that
+    module owns the union of the concrete types and restating it here would be a
+    second place to keep in step.
+    """
+
+_Ops1D: TypeAlias = "tuple[npt.NDArray[np.float32 | np.float64], ...]"
+"""One per-direction 3D operator array per direction, in axis order."""
 
 
 class ExtractionTarget(IntEnum):
@@ -142,6 +165,379 @@ May be:
 """
 
 
+def _build_direction_operators(
+    space: BsplineSpace,
+    target: ExtractionTarget,
+    lagrange_variant: LagrangeVariant,
+) -> tuple[list[npt.NDArray[np.float32 | np.float64]], list[npt.NDArray[np.bool_]]]:
+    """Build each direction's dense extraction operators and identity mask.
+
+    Common mode between the two backends, and deliberately so: the 1D builders and
+    the two mask predicates are already dispatched on their own by
+    :mod:`pantr.bspline._extraction_backend`, so building them here keeps one
+    implementation of each and keeps the cardinal target -- which has no C++ builder,
+    because it needs the cardinal-interval scan -- working under both backends.
+
+    Args:
+        space (BsplineSpace): The space to extract from.
+        target (ExtractionTarget): The element-local basis, already resolved.
+        lagrange_variant (LagrangeVariant): Point distribution, used only for
+            :attr:`ExtractionTarget.LAGRANGE`.
+
+    Returns:
+        tuple[list, list]: ``(operators, masks)``, one entry each per direction in
+        axis order. ``operators[k]`` has shape ``(n_elements_k, n_out_k, n_in_k)``
+        and ``masks[k]`` has shape ``(n_elements_k,)``.
+    """
+    operators: list[npt.NDArray[np.float32 | np.float64]] = []
+    masks: list[npt.NDArray[np.bool_]] = []
+    for space_1d in space.spaces:
+        if target is ExtractionTarget.BEZIER:
+            ops = space_1d.tabulate_Bezier_extraction_operators()
+            mask = _bezier_structural_identity_mask(space_1d)
+        elif target is ExtractionTarget.LAGRANGE:
+            ops = space_1d.tabulate_Lagrange_extraction_operators(lagrange_variant=lagrange_variant)
+            mask = _lagrange_structural_identity_mask(space_1d, lagrange_variant)
+        else:  # target is ExtractionTarget.CARDINAL
+            ops = space_1d.tabulate_cardinal_extraction_operators()
+            mask = space_1d.get_cardinal_intervals()
+        operators.append(ops)
+        masks.append(mask)
+    return operators, masks
+
+
+class _SpanwiseElementExtractionPython:
+    """The pure-Python spanwise element extraction: the port's parity oracle.
+
+    Holds the space *implementation* rather than its wrapper, which is what makes it
+    the exact counterpart of ``pantr::bspline::SpanwiseElementExtraction<T>``: that
+    type holds a ``BsplineSpace<T>`` handle, and this one holds whatever
+    :class:`~pantr.bspline.BsplineSpace` selected for the same backend. The two
+    constructors therefore take the same five arguments in the same order, which is
+    what lets :class:`SpanwiseElementExtraction` build either without a branch.
+
+    The per-direction operators arrive built. That is the type's seam rather than a
+    gap, and ``cpp/include/pantr/bspline/spanwise_extraction.hpp`` carries the
+    argument; the short version is that the builders are their own port and the
+    cardinal target has none in C++.
+
+    What this class does own is the *compaction* -- only the non-identity rows are
+    kept -- plus the two derived quantities ``design/bspline_derived_caches.md``
+    assigns here: :attr:`ops_1d`, the dense block, memoised; and
+    :attr:`num_identity_elements`, eager.
+
+    No ``__slots__``, matching :class:`pantr.bspline._bspline_space_1d`'s oracle:
+    :func:`functools.cached_property` needs an instance dictionary, and the immutability
+    that matters to a caller is enforced on the wrapper, which is the object a caller
+    ever holds.
+
+    Attributes:
+        _space (Any): The space implementation, as either backend holds it.
+        _target (int): The :class:`ExtractionTarget` member's integer value, carried
+            as the integer because that is what crosses the binding.
+        _lagrange_variant (str): The :class:`~pantr.basis.LagrangeVariant` member's
+            own string, carried and handed back unread.
+        _compact_ops_1d (tuple[npt.NDArray[np.float32 | np.float64], ...]):
+            Per-direction compact operators, shape ``(n_compact_k, n_out_k, n_in_k)``.
+            At least one row, of zeros where every element is the identity, so that an
+            index a Numba kernel computed before checking the mask is in range.
+        _idx_maps_1d (tuple[npt.NDArray[np.intp], ...]): Per-direction row indices
+            into :attr:`compact_ops_1d`, shape ``(n_elements_k,)``.
+        _is_identity_mask_1d (tuple[npt.NDArray[np.bool_], ...]): Per-direction
+            identity masks, shape ``(n_elements_k,)``.
+        _num_identity_elements (int): Fully-identity elements on the grid.
+    """
+
+    def __init__(
+        self,
+        space: _SpaceImpl,
+        target: int,
+        lagrange_variant: str,
+        operators: Sequence[npt.NDArray[np.float32 | np.float64]],
+        masks: Sequence[npt.NDArray[np.bool_]],
+    ) -> None:
+        """Compact the given per-direction operators and hold them.
+
+        Args:
+            space (Any): The space implementation, already validated by
+                :class:`SpanwiseElementExtraction`.
+            target (int): The :class:`ExtractionTarget` member's integer value.
+            lagrange_variant (str): The :class:`~pantr.basis.LagrangeVariant` member's
+                own string.
+            operators (Sequence[npt.NDArray[np.float32 | np.float64]]): One dense
+                ``(n_elements_k, n_out_k, n_in_k)`` block per direction.
+            masks (Sequence[npt.NDArray[np.bool_]]): One ``(n_elements_k,)`` identity
+                mask per direction.
+        """
+        self._space = space
+        self._target = target
+        self._lagrange_variant = lagrange_variant
+
+        compact_ops_1d: list[npt.NDArray[np.float32 | np.float64]] = []
+        idx_maps_1d: list[npt.NDArray[np.intp]] = []
+        masks_1d: list[npt.NDArray[np.bool_]] = []
+        num_identity = 1
+        for ops, mask_in in zip(operators, masks, strict=True):
+            mask = np.array(mask_in, dtype=np.bool_)
+            non_id_idx = np.where(~mask)[0]
+            n_non_id = int(non_id_idx.shape[0])
+            n_out, n_in = int(ops.shape[1]), int(ops.shape[2])
+            if n_non_id > 0:
+                compact_ops = ops[non_id_idx].copy()
+            else:
+                compact_ops = np.zeros((1, n_out, n_in), dtype=ops.dtype)
+            idx_map = np.zeros(int(mask.shape[0]), dtype=np.intp)
+            idx_map[non_id_idx] = np.arange(n_non_id, dtype=np.intp)
+            compact_ops.flags.writeable = False
+            idx_map.flags.writeable = False
+            mask.flags.writeable = False
+            compact_ops_1d.append(compact_ops)
+            idx_maps_1d.append(idx_map)
+            masks_1d.append(mask)
+            num_identity *= int(np.count_nonzero(mask))
+
+        self._compact_ops_1d = tuple(compact_ops_1d)
+        self._idx_maps_1d = tuple(idx_maps_1d)
+        self._is_identity_mask_1d = tuple(masks_1d)
+        self._num_identity_elements = num_identity
+
+    @property
+    def space(self) -> _SpaceImpl:
+        """Get the space implementation this extraction was built over.
+
+        Returns:
+            Any: The implementation, shared rather than copied, exactly as the C++
+            counterpart shares its handle.
+        """
+        return self._space
+
+    @property
+    def target(self) -> int:
+        """Get the target basis, as the enum's integer value.
+
+        Returns:
+            int: The :class:`ExtractionTarget` member's value.
+        """
+        return self._target
+
+    @property
+    def lagrange_variant(self) -> str:
+        """Get the Lagrange point distribution's own name.
+
+        Returns:
+            str: The :class:`~pantr.basis.LagrangeVariant` member's value.
+        """
+        return self._lagrange_variant
+
+    @property
+    def dim(self) -> int:
+        """Get the number of tensor-product directions.
+
+        Returns:
+            int: The dimension of the space.
+        """
+        return int(self._space.dim)
+
+    @property
+    def num_intervals(self) -> tuple[int, ...]:
+        """Get the per-direction number of elements.
+
+        Returns:
+            tuple[int, ...]: One count per direction, in axis order.
+        """
+        return tuple(int(n) for n in self._space.num_intervals)
+
+    @property
+    def num_total_intervals(self) -> int:
+        """Get the total number of elements on the tensor-product grid.
+
+        Returns:
+            int: The product of :attr:`num_intervals`.
+        """
+        return int(self._space.num_total_intervals)
+
+    @property
+    def compact_ops_1d(self) -> _Ops1D:
+        """Get the per-direction compact operator arrays.
+
+        Returns:
+            tuple[npt.NDArray[np.float32 | np.float64], ...]: One read-only
+            ``(n_compact_k, n_out_k, n_in_k)`` array per direction.
+        """
+        return self._compact_ops_1d
+
+    @property
+    def idx_maps_1d(self) -> tuple[npt.NDArray[np.intp], ...]:
+        """Get the per-direction compact index maps.
+
+        Returns:
+            tuple[npt.NDArray[np.intp], ...]: One read-only ``(n_elements_k,)`` array
+            per direction.
+        """
+        return self._idx_maps_1d
+
+    @property
+    def is_identity_mask_1d(self) -> tuple[npt.NDArray[np.bool_], ...]:
+        """Get the per-direction identity masks.
+
+        Returns:
+            tuple[npt.NDArray[np.bool_], ...]: One read-only ``(n_elements_k,)`` array
+            per direction.
+        """
+        return self._is_identity_mask_1d
+
+    @functools.cached_property
+    def ops_1d(self) -> _Ops1D:
+        """Get the per-direction dense operator arrays, decompressed on first access.
+
+        Identity elements read as ``numpy.eye(n_out, n_in)``; everything else is read
+        from :attr:`compact_ops_1d`.
+
+        Returns:
+            tuple[npt.NDArray[np.float32 | np.float64], ...]: One read-only
+            ``(n_elements_k, n_out_k, n_in_k)`` array per direction.
+        """
+        dense: list[npt.NDArray[np.float32 | np.float64]] = []
+        for compact_ops, idx_map, mask in zip(
+            self._compact_ops_1d, self._idx_maps_1d, self._is_identity_mask_1d, strict=True
+        ):
+            n_el = int(mask.shape[0])
+            # shape[1] and shape[2] are direction-wide constants (same for compact and full)
+            n_out, n_in = int(compact_ops.shape[1]), int(compact_ops.shape[2])
+            full: npt.NDArray[np.float32 | np.float64] = np.empty(
+                (n_el, n_out, n_in), dtype=compact_ops.dtype
+            )
+            eye = np.eye(n_out, n_in, dtype=compact_ops.dtype)
+            full[mask] = eye
+            full[~mask] = compact_ops[idx_map[~mask]]
+            full.flags.writeable = False
+            dense.append(full)
+        return tuple(dense)
+
+    @property
+    def input_shape_per_dir(self) -> tuple[int, ...]:
+        """Get the per-direction input sizes of each element's operator.
+
+        Returns:
+            tuple[int, ...]: ``(n_in_0, …, n_in_{d-1})``.
+        """
+        # shape[2] is the per-direction input size, identical between compact and full layouts
+        return tuple(int(ops.shape[2]) for ops in self._compact_ops_1d)
+
+    @property
+    def output_shape_per_dir(self) -> tuple[int, ...]:
+        """Get the per-direction output sizes of each element's operator.
+
+        Returns:
+            tuple[int, ...]: ``(n_out_0, …, n_out_{d-1})``.
+        """
+        # shape[1] is the per-direction output size, identical between compact and full layouts
+        return tuple(int(ops.shape[1]) for ops in self._compact_ops_1d)
+
+    @property
+    def num_identity_elements(self) -> int:
+        """Count elements whose per-direction operators are all identity.
+
+        Returns:
+            int: The number of fully-identity elements on the grid.
+        """
+        return self._num_identity_elements
+
+    @property
+    def is_identity(self) -> bool:
+        """Check whether every element on the grid has an identity operator.
+
+        Returns:
+            bool: ``True`` iff every per-direction mask is all-``True``.
+        """
+        return all(bool(mask.all()) for mask in self._is_identity_mask_1d)
+
+
+def _impl_class(dtype: np.dtype[Any]) -> type[_SpanwiseElementExtractionPython] | type[Any]:
+    """Get the implementation class the active backend and the dtype select.
+
+    The backend is per process rather than per instance, for the reason
+    :func:`pantr.bspline._bspline_space_nd._impl_class` gives.
+
+    Args:
+        dtype (np.dtype[Any]): The storage format the operators share.
+
+    Returns:
+        type: The oracle under the Python backend, and the C++ class for that storage
+        format otherwise.
+
+    Raises:
+        RuntimeError: If the C++ backend is requested and is not available.
+    """
+    if active_backend() is Backend.PYTHON:
+        return _SpanwiseElementExtractionPython
+    if Backend.CPP not in available_backends():
+        raise RuntimeError("the CPP backend is not available in this installation")
+    from pantr import _pantr_cpp  # noqa: PLC0415  (optional, imported only when selected)
+
+    if dtype == np.float32:
+        return _pantr_cpp.SpanwiseElementExtraction32
+    return _pantr_cpp.SpanwiseElementExtraction64
+
+
+def _new_impl(
+    space: BsplineSpace,
+    target: ExtractionTarget,
+    lagrange_variant: LagrangeVariant,
+) -> _Impl:
+    """Build an extraction in whichever implementation the backend selects.
+
+    Args:
+        space (BsplineSpace): The space to extract from, already checked for periodic
+            directions.
+        target (ExtractionTarget): The element-local basis, already resolved.
+        lagrange_variant (LagrangeVariant): The point distribution.
+
+    Returns:
+        _Impl: The implementation object; an oracle instance or a C++ handle.
+
+    Raises:
+        ValueError: If the per-direction operators do not share one dtype, or if
+            ``space`` was built under a different backend.
+        RuntimeError: If the C++ backend is requested and is not available.
+    """
+    operators, masks = _build_direction_operators(space, target, lagrange_variant)
+
+    # A type-kind check, so it stays here: `SpanwiseElementExtraction<T>` can hold only
+    # one width and a mixed collection is not representable, exactly as
+    # `BsplineSpace<T>` cannot hold directions of two dtypes. The message is the
+    # oracle's, character for character.
+    if len(operators) > 1:
+        dtype_0 = operators[0].dtype
+        for k, ops in enumerate(operators[1:], start=1):
+            if ops.dtype != dtype_0:
+                raise ValueError(
+                    f"Per-direction operators have inconsistent dtypes: "
+                    f"ops_1d[0].dtype={dtype_0}, ops_1d[{k}].dtype={ops.dtype}"
+                )
+
+    dtype = np.dtype(space.dtype)
+    cls = _impl_class(dtype)
+    if cls is _SpanwiseElementExtractionPython:
+        return _SpanwiseElementExtractionPython(
+            space._impl, int(target), str(lagrange_variant), operators, masks
+        )
+    # `cls` is one of the C++ classes here. Handing it a space built under the Python
+    # backend raises a nanobind `TypeError` naming C++ types, which is loud but
+    # unreadable, so the same refusal `_bspline_space_nd._new_impl` writes is written
+    # here, in the oracle's own vocabulary.
+    if not isinstance(space._impl, _space_impl_class(dtype)):
+        raise ValueError(
+            "The B-spline space must come from the active backend; it was built under "
+            "a different one."
+        )
+    cpp_cls: Any = cls
+    return cast(
+        "_Impl",
+        cpp_cls(space._impl, int(target), str(lagrange_variant), operators, masks),
+    )
+
+
 class SpanwiseElementExtraction:
     """Tensor-product change-of-basis operator across B-spline elements.
 
@@ -171,29 +567,77 @@ class SpanwiseElementExtraction:
     a consumer serializing the 1D factors should use; ``__getitem__`` is the
     convenience form that materializes an explicit identity matrix instead.
 
+    **This class is a wrapper.** The value -- the space, the target, the point
+    distribution and the three per-direction array bundles -- is owned by an
+    implementation chosen by ``_impl_class``, which is the C++ type
+    (``cpp/include/pantr/bspline/spanwise_extraction.hpp``) or the oracle
+    ``_SpanwiseElementExtractionPython``. The *operations* below -- the apply
+    family, :meth:`operator`, :meth:`tabulate`, :meth:`factors`, the indexing and
+    the cell-index normalisation -- are computations *over* an extraction rather
+    than properties *of* one, so they are unchanged, still run on the Layer-3
+    kernels, and live on the wrapper. Only the state moved.
+
+    Instances are immutable, and that is enforced rather than documented:
+    ``__slots__`` means there is no ``__dict__`` to attach anything to, and
+    ``__setattr__`` refuses even a rebinding of the slots. The wrapper fills them
+    through ``object.__setattr__``, which is the pattern
+    ``design/bspline_ownership_lifetime.md`` asks for and
+    :class:`~pantr.bspline.BsplineSpace` already ships.
+
     Attributes:
-        _space (BsplineSpace): Underlying multi-dimensional B-spline space.
-        _target (ExtractionTarget): Target basis.
-        _lagrange_variant (LagrangeVariant): Point distribution used when
-            the target is :attr:`ExtractionTarget.LAGRANGE`; ignored otherwise.
-        _compact_ops_1d (tuple[npt.NDArray[np.float32 | np.float64], ...]):
-            Per-direction compact 3D operator arrays of shape
-            ``(n_compact_k, n_out_k, n_in_k)``; only non-identity rows are
-            stored. Always has at least one row to ensure safe Numba indexing.
-        _idx_maps_1d (tuple[npt.NDArray[np.intp], ...]): Per-direction compact
-            index maps of shape ``(n_elements_k,)``; ``_idx_maps_1d[k][e]`` is
-            the row index into ``_compact_ops_1d[k]`` for element ``e``
-            (undefined for identity elements, stored as 0).
-        _is_identity_mask_1d (tuple[npt.NDArray[bool], ...]): Per-direction
-            identity masks of shape ``(n_elements_k,)``.
+        _impl: The implementation this wrapper holds; see ``_impl_class``. Its type
+            is the private ``_Impl`` alias, a union of three unrelated nominal types
+            with no documented form to name here.
+        _space (BsplineSpace): The space wrapper this extraction was built from, so
+            that ``extraction.space is space`` holds -- ``design/bspline_ownership_
+            lifetime.md`` F6's identity contract. A *presentation* memo and never a
+            second truth: every count comes from ``_impl`` on every access.
+        _compact_ops_1d (tuple[npt.NDArray[np.float32 | np.float64], ...]): The
+            implementation's compact 3D operator arrays of shape
+            ``(n_compact_k, n_out_k, n_in_k)``, read once at construction; only
+            non-identity rows are stored, and there is always at least one row to
+            ensure safe Numba indexing. Held rather than re-read because under the
+            C++ backend each property access builds a fresh tuple of fresh views over
+            the same storage, which is an allocation per element in the per-cell
+            paths and loses the object identity the Python backend has always had.
+        _idx_maps_1d (tuple[npt.NDArray[np.intp], ...]): Likewise for the
+            per-direction compact index maps of shape ``(n_elements_k,)``;
+            ``_idx_maps_1d[k][e]`` is the row index into ``_compact_ops_1d[k]`` for
+            element ``e`` (undefined for identity elements, stored as 0).
+        _is_identity_mask_1d (tuple[npt.NDArray[np.bool_], ...]): Likewise for the
+            per-direction identity masks of shape ``(n_elements_k,)``.
+        _dense_ops_1d (tuple[npt.NDArray[np.float32 | np.float64], ...] | None): The
+            same memo for :attr:`ops_1d`, filled on first read rather than at
+            construction, because the implementation's own block is lazy and
+            decompressing it eagerly would undo that.
     """
 
+    __slots__ = (
+        "_compact_ops_1d",
+        "_dense_ops_1d",
+        "_idx_maps_1d",
+        "_impl",
+        "_is_identity_mask_1d",
+        "_space",
+    )
+
+    _impl: _Impl
+    """The implementation this wrapper holds; see :func:`_impl_class`."""
+
     _space: BsplineSpace
-    _target: ExtractionTarget
-    _lagrange_variant: LagrangeVariant
+    """The space wrapper this extraction was built from; see the class docstring."""
+
     _compact_ops_1d: tuple[npt.NDArray[np.float32 | np.float64], ...]
+    """The implementation's compact operators; see the class docstring."""
+
     _idx_maps_1d: tuple[npt.NDArray[np.intp], ...]
+    """The implementation's index maps; see the class docstring."""
+
     _is_identity_mask_1d: tuple[npt.NDArray[np.bool_], ...]
+    """The implementation's identity masks; see the class docstring."""
+
+    _dense_ops_1d: tuple[npt.NDArray[np.float32 | np.float64], ...] | None
+    """The implementation's dense operators once read; see the class docstring."""
 
     def __init__(
         self,
@@ -213,9 +657,12 @@ class SpanwiseElementExtraction:
                 :attr:`pantr.basis.LagrangeVariant.EQUISPACES`.
 
         Raises:
-            ValueError: If ``target`` is not a recognized tag.
+            ValueError: If ``target`` is not a recognized tag, if the per-direction
+                operators do not share one dtype, or if ``space`` was built under a
+                different backend.
             NotImplementedError: If any direction of ``space`` is periodic;
                 periodic support is deferred to a later version.
+            RuntimeError: If the C++ backend is requested and is not available.
         """
         resolved_target = _coerce_target(target)
 
@@ -225,59 +672,83 @@ class SpanwiseElementExtraction:
                 "Convert the B-spline to open form first (see Bspline.to_open_bspline)."
             )
 
-        self._space = space
-        self._target = resolved_target
-        self._lagrange_variant = lagrange_variant
+        impl = _new_impl(space, resolved_target, lagrange_variant)
+        object.__setattr__(self, "_impl", impl)
+        object.__setattr__(self, "_space", space)
+        object.__setattr__(self, "_compact_ops_1d", tuple(impl.compact_ops_1d))
+        object.__setattr__(self, "_idx_maps_1d", tuple(impl.idx_maps_1d))
+        object.__setattr__(self, "_is_identity_mask_1d", tuple(impl.is_identity_mask_1d))
+        object.__setattr__(self, "_dense_ops_1d", None)
 
-        compact_ops_1d: list[npt.NDArray[np.float32 | np.float64]] = []
-        idx_maps_1d: list[npt.NDArray[np.intp]] = []
-        masks_1d: list[npt.NDArray[np.bool_]] = []
-        for space_1d in space.spaces:
-            if resolved_target is ExtractionTarget.BEZIER:
-                ops = space_1d.tabulate_Bezier_extraction_operators()
-                mask = _bezier_structural_identity_mask(space_1d)
-            elif resolved_target is ExtractionTarget.LAGRANGE:
-                ops = space_1d.tabulate_Lagrange_extraction_operators(
-                    lagrange_variant=lagrange_variant
-                )
-                mask = _lagrange_structural_identity_mask(space_1d, lagrange_variant)
-            else:  # resolved_target is ExtractionTarget.CARDINAL
-                ops = space_1d.tabulate_cardinal_extraction_operators()
-                mask = space_1d.get_cardinal_intervals()
-            non_id_idx = np.where(~mask)[0]
-            n_non_id = int(non_id_idx.shape[0])
-            n_out, n_in = int(ops.shape[1]), int(ops.shape[2])
-            if n_non_id > 0:
-                compact_ops = ops[non_id_idx].copy()
-            else:
-                compact_ops = np.zeros((1, n_out, n_in), dtype=ops.dtype)
-            idx_map = np.zeros(int(mask.shape[0]), dtype=np.intp)
-            idx_map[non_id_idx] = np.arange(n_non_id, dtype=np.intp)
-            compact_ops.flags.writeable = False
-            idx_map.flags.writeable = False
-            mask.flags.writeable = False
-            compact_ops_1d.append(compact_ops)
-            idx_maps_1d.append(idx_map)
-            masks_1d.append(mask)
+    def __setattr__(self, name: str, value: object) -> NoReturn:
+        """Refuse to set an attribute, because an extraction is immutable.
 
-        self._compact_ops_1d = tuple(compact_ops_1d)
-        self._idx_maps_1d = tuple(idx_maps_1d)
-        self._is_identity_mask_1d = tuple(masks_1d)
+        Args:
+            name (str): The attribute a caller tried to set.
+            value (object): The value it tried to set.
 
-        if len(self._compact_ops_1d) > 1:
-            dtype_0 = self._compact_ops_1d[0].dtype
-            for k, _ops in enumerate(self._compact_ops_1d[1:], start=1):
-                if _ops.dtype != dtype_0:
-                    raise ValueError(
-                        f"Per-direction operators have inconsistent dtypes: "
-                        f"ops_1d[0].dtype={dtype_0}, ops_1d[{k}].dtype={_ops.dtype}"
-                    )
+        Raises:
+            AttributeError: Always.
+        """
+        raise AttributeError(f"{type(self).__name__} is immutable; cannot set {name!r}")
+
+    def __delattr__(self, name: str) -> NoReturn:
+        """Refuse to delete an attribute, because an extraction is immutable.
+
+        Args:
+            name (str): The attribute a caller tried to delete.
+
+        Raises:
+            AttributeError: Always.
+        """
+        raise AttributeError(f"{type(self).__name__} is immutable; cannot delete {name!r}")
+
+    def __reduce__(
+        self,
+    ) -> tuple[object, tuple[BsplineSpace, ExtractionTarget, LagrangeVariant]]:
+        """Pickle by the constructor's arguments rather than by implementation.
+
+        The C++ handle is not picklable and must not become part of the wire format:
+        a pickle written under the C++ backend has to load under the Python one and
+        the other way round, or the backend switch would silently become a
+        data-format switch. ``design/bspline_pickle_tolerance.md`` fixes the rule.
+
+        The space goes out as its *wrapper*, so its own ``__reduce__`` runs and the
+        knot vectors survive rather than a handle being smuggled through -- and with
+        them the tolerance-drift bound that note derives for a univariate space. It
+        is also what makes sharing survive a single pickle for free, since ``pickle``
+        memoises: dumping ``(ext, ext.space)`` restores a pair that still satisfies
+        ``ext.space is space``. Sharing does not survive two independent ``dumps``
+        calls, which is true of every other type in this front.
+
+        The operators are **not** in the payload. They are a function of the space,
+        the target and the point distribution, and rebuilding them is what keeps a
+        pickle valid across a change of backend: shipping the arrays instead would
+        pin a reader to the writer's own builders.
+
+        A module-level rebuilder rather than ``type(self)`` directly, because
+        ``lagrange_variant`` is keyword-only and ``__reduce__``'s argument tuple is
+        positional.
+
+        Returns:
+            tuple: The rebuilder and the three arguments to rebuild from.
+        """
+        return (
+            _rebuild_spanwise_element_extraction,
+            (self.space, self.target, self.lagrange_variant),
+        )
 
     # ---------------------------------------------------------------- properties
 
     @property
     def space(self) -> BsplineSpace:
         """Get the underlying B-spline space.
+
+        The object a caller passed to the constructor, not a re-wrapping of what the
+        implementation holds, so ``extraction.space is space`` holds under both
+        backends. ``design/bspline_ownership_lifetime.md`` F6 records why: no C++
+        object can supply the constructor argument's own Python object, and only the
+        wrapper can, by keeping what it was built from.
 
         Returns:
             BsplineSpace: The space supplied at construction time.
@@ -293,7 +764,7 @@ class SpanwiseElementExtraction:
                 A string passed at construction is resolved to its enum member,
                 so this never returns a string.
         """
-        return self._target
+        return ExtractionTarget(self._impl.target)
 
     @property
     def lagrange_variant(self) -> LagrangeVariant:
@@ -302,7 +773,7 @@ class SpanwiseElementExtraction:
         Returns:
             LagrangeVariant: The point distribution. Meaningless for other targets.
         """
-        return self._lagrange_variant
+        return LagrangeVariant(self._impl.lagrange_variant)
 
     @property
     def dim(self) -> int:
@@ -311,7 +782,7 @@ class SpanwiseElementExtraction:
         Returns:
             int: The dimension ``d`` of the space.
         """
-        return self._space.dim
+        return int(self._impl.dim)
 
     @property
     def dtype(self) -> npt.DTypeLike:
@@ -329,7 +800,7 @@ class SpanwiseElementExtraction:
         Returns:
             tuple[int, ...]: Length-``d`` tuple ``(n_elements_0, …, n_elements_{d-1})``.
         """
-        return self._space.num_intervals
+        return tuple(int(n) for n in self._impl.num_intervals)
 
     @property
     def num_total_intervals(self) -> int:
@@ -338,17 +809,18 @@ class SpanwiseElementExtraction:
         Returns:
             int: ``prod(num_intervals)``.
         """
-        return self._space.num_total_intervals
+        return int(self._impl.num_total_intervals)
 
-    @functools.cached_property
+    @property
     def ops_1d(self) -> tuple[npt.NDArray[np.float32 | np.float64], ...]:
         """Get the per-direction 1D operator arrays (dense, reconstructed lazily).
 
-        Reconstructs the full ``(n_elements_k, n_out_k, n_in_k)`` array from
-        compact storage on first access and caches the result. Identity elements
-        are filled with ``numpy.eye(n_out, n_in)``; non-identity elements are read
-        from :attr:`compact_ops_1d`. Every extraction target builds square
-        per-direction operators, and :meth:`apply` and :meth:`apply_many` refuse an
+        The implementation reconstructs the full ``(n_elements_k, n_out_k, n_in_k)``
+        array from compact storage on first access and memoises it; this hands back a
+        read-only view *of that memo* and never a copy. Identity elements are filled
+        with ``numpy.eye(n_out, n_in)``; non-identity elements are read from
+        :attr:`compact_ops_1d`. Every extraction target builds square per-direction
+        operators, and :meth:`apply` and :meth:`apply_many` refuse an
         identity-flagged operator that is not square.
 
         Returns:
@@ -359,22 +831,11 @@ class SpanwiseElementExtraction:
             For compact-aware downstream code, prefer :attr:`compact_ops_1d` and
             :attr:`idx_maps_1d`.
         """
-        dense: list[npt.NDArray[np.float32 | np.float64]] = []
-        for compact_ops, idx_map, mask in zip(
-            self._compact_ops_1d, self._idx_maps_1d, self._is_identity_mask_1d, strict=True
-        ):
-            n_el = int(mask.shape[0])
-            # shape[1] and shape[2] are direction-wide constants (same for compact and full)
-            n_out, n_in = int(compact_ops.shape[1]), int(compact_ops.shape[2])
-            full: npt.NDArray[np.float32 | np.float64] = np.empty(
-                (n_el, n_out, n_in), dtype=compact_ops.dtype
-            )
-            eye = np.eye(n_out, n_in, dtype=compact_ops.dtype)
-            full[mask] = eye
-            full[~mask] = compact_ops[idx_map[~mask]]
-            full.flags.writeable = False
-            dense.append(full)
-        return tuple(dense)
+        dense = self._dense_ops_1d
+        if dense is None:
+            dense = tuple(self._impl.ops_1d)
+            object.__setattr__(self, "_dense_ops_1d", dense)
+        return dense
 
     @property
     def compact_ops_1d(self) -> tuple[npt.NDArray[np.float32 | np.float64], ...]:
@@ -431,8 +892,7 @@ class SpanwiseElementExtraction:
         Returns:
             tuple[int, ...]: ``(n_in_0, …, n_in_{d-1})``.
         """
-        # shape[2] is the per-direction input size, identical between compact and full layouts
-        return tuple(int(ops.shape[2]) for ops in self._compact_ops_1d)
+        return tuple(int(n) for n in self._impl.input_shape_per_dir)
 
     @property
     def output_shape_per_dir(self) -> tuple[int, ...]:
@@ -441,8 +901,7 @@ class SpanwiseElementExtraction:
         Returns:
             tuple[int, ...]: ``(n_out_0, …, n_out_{d-1})``.
         """
-        # shape[1] is the per-direction output size, identical between compact and full layouts
-        return tuple(int(ops.shape[1]) for ops in self._compact_ops_1d)
+        return tuple(int(n) for n in self._impl.output_shape_per_dir)
 
     # ---------------------------------------------------------------- identity queries
 
@@ -459,17 +918,19 @@ class SpanwiseElementExtraction:
         multi = self._normalize_cell_idx(cell_idx)
         return all(bool(mask[i]) for mask, i in zip(self._is_identity_mask_1d, multi, strict=True))
 
-    @functools.cached_property
+    @property
     def num_identity_elements(self) -> int:
         """Count elements whose per-direction operators are all identity.
+
+        An eager field of the implementation rather than a memo here, which is what
+        ``design/bspline_derived_caches.md`` assigns it: the count is one pass over
+        the masks at construction, and the oracle memoised it only because a Python
+        attribute read is dearer than the count.
 
         Returns:
             int: The number of fully-identity elements on the tensor-product grid.
         """
-        count = 1
-        for mask in self._is_identity_mask_1d:
-            count *= int(np.count_nonzero(mask))
-        return count
+        return int(self._impl.num_identity_elements)
 
     @property
     def is_identity(self) -> bool:
@@ -479,7 +940,7 @@ class SpanwiseElementExtraction:
             bool: ``True`` iff all per-direction identity masks are all-``True``,
             meaning every element's operator is the identity.
         """
-        return all(bool(mask.all()) for mask in self._is_identity_mask_1d)
+        return bool(self._impl.is_identity)
 
     def per_direction_identity_flags(self, cell_idx: CellIndex) -> tuple[bool, ...]:
         """Return the per-direction identity flags for a single element.
@@ -1047,6 +1508,29 @@ class SpanwiseElementExtraction:
             NotImplementedError: If the space has more than 3 directions.
         """
         return self._apply_many(K, cell_indices, "M_K_MT", out, scratch)
+
+
+def _rebuild_spanwise_element_extraction(
+    space: BsplineSpace,
+    target: ExtractionTarget,
+    lagrange_variant: LagrangeVariant,
+) -> SpanwiseElementExtraction:
+    """Rebuild an extraction from its constructor's arguments, for :mod:`pickle`.
+
+    Module-level rather than :class:`SpanwiseElementExtraction` itself, because
+    ``lagrange_variant`` is keyword-only and ``__reduce__``'s argument tuple is
+    positional. It re-runs the constructor in full, so a pickle written under one
+    backend rebuilds under whichever is active at load time.
+
+    Args:
+        space (BsplineSpace): The space to extract from.
+        target (ExtractionTarget): The element-local basis.
+        lagrange_variant (LagrangeVariant): The point distribution.
+
+    Returns:
+        SpanwiseElementExtraction: The rebuilt extraction.
+    """
+    return SpanwiseElementExtraction(space, target, lagrange_variant=lagrange_variant)
 
 
 def normalize_cell_indices(
