@@ -97,9 +97,10 @@ def quasi_interpolate_thb_spline(
     candidates: dict[int, list[tuple[int, tuple[int, ...]]]] = {}
     for cid in range(grid.num_cells):
         cell_lvl = grid.cell_level(cid)
-        for dof, level, multi in space._cell_contributions(cid):
+        dofs, levels, multis = space.contributions(cid)
+        for dof, level, multi in zip(dofs.tolist(), levels.tolist(), multis.tolist(), strict=True):
             if level == cell_lvl:
-                candidates.setdefault(dof, []).append((cid, multi))
+                candidates.setdefault(int(dof), []).append((cid, tuple(multi)))
 
     greville_cache: dict[tuple[int, int], npt.NDArray[np.float64]] = {}
 
@@ -124,7 +125,7 @@ def quasi_interpolate_thb_spline(
             raise RuntimeError(
                 f"active dof {dof} has no leaf cell at its level; the THB space is inconsistent."
             )
-        level = space._dof_level(dof)
+        level = space.dof_level(dof)
         multi = cand[0][1]
         target = np.array([_greville(level, k)[multi[k]] for k in range(dim)], dtype=np.float64)
 
