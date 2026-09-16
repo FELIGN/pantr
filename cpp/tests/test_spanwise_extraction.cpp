@@ -416,6 +416,44 @@ void check_no_directions() {
     PANTR_CHECK_MSG(ext.is_identity(), "every one of no directions is all-identity");
 }
 
+/// A copy is deep, and its memo starts cold.
+///
+/// The identity mask is the one member whose copy the compiler will not write, so a
+/// copy that shared it would read correctly right up until the source died. Comparing
+/// addresses is what separates the two.
+void check_copy_and_move() {
+    const std::vector<double> knots = open_knots(1, 3);
+    const auto space = std::make_shared<const BsplineSpace<double>>(
+        std::vector<std::shared_ptr<const BsplineSpace1D<double>>>{one_d(knots, 1)});
+    const Block b = block_of({false, true, false}, 2, 2, 10.0);
+    const std::vector<Input> inputs{b.input()};
+
+    const Extraction original(space, ExtractionTarget::bezier, "equispaces",
+                              std::span<const Input>(inputs));
+    const double* original_dense = original.ops_1d(0).data_handle();
+
+    const Extraction copy(original);  // NOLINT(performance-unnecessary-copy-initialization)
+    PANTR_CHECK(copy.dim() == 1 && copy.num_identity_elements() == 1);
+    PANTR_CHECK(copy.target() == ExtractionTarget::bezier);
+    PANTR_CHECK(copy.lagrange_variant() == "equispaces");
+    PANTR_CHECK_MSG(copy.space().get() == space.get(), "the space is shared, not deep-copied");
+    PANTR_CHECK(copy.is_identity_mask(0)[1] == true && copy.is_identity_mask(0)[0] == false);
+    PANTR_CHECK_MSG(copy.is_identity_mask(0).data() != original.is_identity_mask(0).data(),
+                    "the mask is copied rather than aliased");
+    PANTR_CHECK_MSG(copy.compact_ops(0).data_handle() != original.compact_ops(0).data_handle(),
+                    "the compact operators are copied too");
+    PANTR_CHECK_MSG(copy.ops_1d(0).data_handle() != original_dense,
+                    "the copy's memo is its own, filled on its own first read");
+    PANTR_CHECK(entry(copy.ops_1d(0), 2, 0, 0) == 12.0);
+
+    // Non-const, or `std::move` would bind to the copy constructor and this case
+    // would silently test the copy twice.
+    Extraction donor(original);
+    const Extraction moved(std::move(donor));
+    PANTR_CHECK(moved.dim() == 1 && entry(moved.ops_1d(0), 0, 0, 0) == 10.0);
+    PANTR_CHECK(moved.is_identity_mask(0)[1] == true);
+}
+
 /// `float` storage behaves as `double` storage does.
 void check_float_storage() {
     using Ext32 = SpanwiseElementExtraction<float>;
@@ -570,6 +608,7 @@ int main() {
     check_the_space_is_shared_not_copied();
     check_a_space_outlives_the_extraction();
     check_no_directions();
+    check_copy_and_move();
     check_float_storage();
     check_refusals();
     check_the_target_range();
