@@ -584,9 +584,7 @@ def test_thb_admissible_refine_bounds_function_levels() -> None:
             for col, d in enumerate(np.asarray(dofs))
             if float(np.abs(values_arr[:, col]).max()) > 1e-12
         ]
-        levels = sorted(
-            {int(np.searchsorted(space._func_offset, d, side="right")) - 1 for d in nonzero}
-        )
+        levels = sorted({space.dof_level(d) for d in nonzero})
         assert levels[-1] - levels[0] + 1 <= 2
 
 
