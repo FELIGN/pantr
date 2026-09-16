@@ -279,11 +279,13 @@ def _the_oracle() -> Iterator[None]:
     """Run a block with the Python backend in effect.
 
     **Every oracle call that constructs a space needs this, not only the constructor.**
-    ``THBSplineSpace`` is still pure Python and builds its per-level spaces by calling
+    ``_THBSplineSpacePython`` builds its per-level spaces by calling
     ``BsplineSpace1D.subdivide``, which dispatches on the *ambient* backend -- so
     ``refine``, ``refine_region`` and ``coarsen``, each of which rebuilds, would under
     ``PANTR_BACKEND=cpp`` produce level spaces holding C++ handles over a root space
-    holding Python ones, and ``BsplineSpace`` refuses that mixture by design.
+    holding Python ones, and ``BsplineSpace`` refuses that mixture by design.  It is the
+    oracle rather than the wrapper that does this: since FELIGN/pantr#494 the wrapper
+    dispatches, so selecting the backend is what chooses which of the two it holds.
 
     That is not a defect in the oracle: it is what
     ``design/cross_backend_types.md`` forbids and what
@@ -1069,6 +1071,65 @@ def test_level_space_zero_shares_the_root_handle(cpp_backend: None, backend: Bac
     assert space.level_space(1) is space.level_space(1)
 
 
+@pytest.mark.parametrize("backend", [Backend.PYTHON, Backend.CPP], ids=["python", "cpp"])
+def test_the_space_hands_back_the_grid_and_root_it_was_built_from(
+    cpp_backend: None, backend: Backend
+) -> None:
+    """``grid`` and ``root_space`` are the constructor's own objects, not re-wrappings.
+
+    The other half of ``design/bspline_ownership_lifetime.md`` F6, which
+    :func:`test_level_space_zero_shares_the_root_handle` covers only for the level
+    spaces. :attr:`~pantr.bspline.THBSplineSpace.grid`'s own docstring makes the claim
+    -- "not a re-wrapping of the handle per access, so ``thb.grid is grid`` holds and a
+    tag set through it is seen again" -- and nothing in this file asserted it: replacing
+    either property with a fresh wrapper over the same handle left every test here
+    green, its own :data:`_FORWARDS` case included, because that case compares the
+    handle one level down and a fresh wrapper carries the same handle.
+
+    Per-access stability is the half that catches that. The handle comparison is kept
+    beside it because the two fail independently: a wrapper memoised over the *wrong*
+    handle would be stable and still wrong. It is asked of the C++ backend only --
+    the oracle holds the *wrappers* rather than their implementations, which
+    :func:`~pantr.bspline._thb_spline_space._new_impl` records as the deliberate
+    asymmetry between the two, so one level down is not the same place on both sides.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+        backend (Backend): The backend the space is built under.
+    """
+    case = _reference_case()
+    with use_backend(backend):
+        root = BsplineSpace(
+            [
+                BsplineSpace1D(
+                    _open_knots(case.degrees[k], case.num_elements[k], *case.bounds[k]).astype(
+                        case.dtype
+                    ),
+                    case.degrees[k],
+                )
+                for k in range(len(case.degrees))
+            ]
+        )
+        grid = hierarchical_grid(
+            uniform_grid([list(b) for b in case.bounds], list(case.num_elements)),
+            list(case.factor),
+        )
+        for level, lo, hi in case.refinements:
+            grid = grid.refine(level, list(lo), list(hi))
+        space = THBSplineSpace(root, grid, truncate=case.truncate, regularity=list(case.regularity))
+
+    assert space.grid is grid
+    assert space.root_space is root
+    # Stable across accesses: what a fresh wrapper per access breaks, and the only
+    # assertion here the handle comparisons below cannot stand in for.
+    assert space.grid is space.grid
+    assert space.root_space is space.root_space
+    # And memoised over the right handle, not merely over a stable one.
+    if backend is Backend.CPP:
+        assert space.grid._impl is space._impl.grid
+        assert space.root_space._impl is space._impl.root_space
+
+
 def test_every_rebuilding_oracle_call_stays_wholly_python(cpp_backend: None) -> None:
     """A rebuilt oracle space is Python at every level, and without the guard it is not.
 
@@ -1581,10 +1642,6 @@ def test_the_rebuilding_probes_are_not_no_ops(cpp_backend: None) -> None:
                 f"receiver's {base}), so its forwarding case would pass both on a "
                 f"forward that dropped admissible_class and, if they also equal the "
                 f"receiver's, on one that did nothing at all"
-            )
-            assert graded != ungraded, (
-                f"{member}: the probe's two gradings agree, so its forwarding case would "
-                f"pass on a forward that dropped admissible_class"
             )
 
 
