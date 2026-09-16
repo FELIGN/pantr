@@ -45,11 +45,11 @@ from ._bspline_knot_insertion import (
 from ._bspline_knots import (
     _check_snapping_kept_an_interval,
     _check_space_has_an_interval,
-    _get_Bspline_cardinal_intervals_1D_impl,
     _get_Bspline_num_basis_1D_impl,
     _get_unique_knots_and_multiplicity_impl,
     _knot_tolerance,
 )
+from ._knots_backend import cardinal_intervals
 
 if TYPE_CHECKING:
     from .._pantr_cpp import BsplineSpace1D32 as _CppSpace32
@@ -1023,6 +1023,12 @@ class BsplineSpace1D:
                 returns the same array.
 
         Raises:
+            TypeError: If `out` is a masked array, or if the C++ backend is active and
+                this space was built under the other one. The scan is an *operation*
+                rather than a property of the knots, so it is dispatched by
+                :mod:`pantr.bspline._knots_backend` on the active backend, where the
+                accessors beside it are answered by whichever implementation this
+                space holds.
             ValueError: If `out` is provided and has incorrect shape or dtype.
 
         Example:
@@ -1052,9 +1058,7 @@ class BsplineSpace1D:
             The recurrence whose knot footprint sets this window is Algorithm A2.2
             of :cite:p:`piegl1997nurbs`.
         """
-        return _get_Bspline_cardinal_intervals_1D_impl(
-            self.knots, self.degree, self.tolerance, out=out
-        )
+        return cardinal_intervals(self, out=out)
 
     def tabulate_basis(
         self,
