@@ -271,14 +271,17 @@ class _SpanwiseElementExtractionPython:
                 mask per direction.
 
         Raises:
-            ValueError: If ``operators`` does not have one entry per direction of
-                ``space``, if a direction's operator count or mask length disagrees
-                with that direction's element count, or if a direction's operators have
-                no rows or no columns.
+            ValueError: If ``operators`` and ``masks`` differ in length, if ``operators``
+                does not have one entry per direction of ``space``, if a direction's
+                operator count or mask length disagrees with that direction's element
+                count, or if a direction's operators have no rows or no columns.
 
         Note:
             Every refusal above is the C++ counterpart's, message for message; see
-            ``cpp/include/pantr/bspline/spanwise_extraction.hpp``. They are duplicated
+            ``cpp/include/pantr/bspline/spanwise_extraction.hpp`` and, for the first of
+            them, ``bundles`` in ``cpp/bindings/bspline_spanwise_extraction.cpp``, which
+            is where the binding refuses that pair before the constructor sees it --
+            which is also why it is checked first here. They are duplicated
             rather than inherited because the two implementations are compared against
             *each other*: one that accepted what the other rejects is a divergence no
             comparison of values could see, and the parity suite reaches it because it
@@ -289,6 +292,12 @@ class _SpanwiseElementExtractionPython:
         self._space = space
         self._target = target
         self._lagrange_variant = lagrange_variant
+
+        if len(operators) != len(masks):
+            raise ValueError(
+                f"got {len(operators)} operator blocks and {len(masks)} identity masks; "
+                "there must be one of each per direction"
+            )
 
         num_intervals = tuple(int(n) for n in space.num_intervals)
         if len(operators) != len(num_intervals):
