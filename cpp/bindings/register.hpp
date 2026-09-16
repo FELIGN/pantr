@@ -105,10 +105,22 @@ void register_bspline_types(nanobind::module_& m);
 
 /// Register `pantr.bspline`'s tensor-product extraction kernels.
 ///
-/// Kernels rather than a type: `SpanwiseElementExtraction` itself holds a
-/// `BsplineSpace`, which is FELIGN/pantr#396's, so the type's own registration
-/// arrives with it. See design/extraction_port.md.
+/// Kernels rather than a type. This entry point binds the apply kernels of
+/// `cpp/include/pantr/bspline/extraction_kernels.hpp` and nothing else;
+/// `SpanwiseElementExtraction`, which is what applies them, has its own entry point
+/// below. They are separate because they are separate ports with separate parity
+/// claims: a kernel contracts, so its claim is about roundings, while the type only
+/// selects and copies, so its claim is exact. See design/extraction_port.md's slices
+/// S2 and S4.
 void register_bspline_extraction(nanobind::module_& m);
+
+/// Register `pantr.bspline.SpanwiseElementExtraction`.
+///
+/// Its own entry point rather than a type inside `register_bspline_extraction`, for
+/// the reason above. This declaration once recorded that the type's registration
+/// would arrive with FELIGN/pantr#396's, because it holds a `BsplineSpace`; that was
+/// a statement of what blocked it, and #396 has since landed.
+void register_bspline_spanwise_extraction(nanobind::module_& m);
 
 /// Register `pantr.bspline.THBSplineSpace`.
 ///

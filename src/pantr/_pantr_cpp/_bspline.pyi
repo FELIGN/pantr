@@ -267,6 +267,149 @@ class BsplineSpace64:
     def domain(self) -> npt.NDArray[np.float64]: ...
     def has_Bezier_like_knots(self) -> bool: ...
 
+class SpanwiseElementExtraction32:
+    """A ``float32`` spanwise element extraction owned by the C++ core.
+
+    Wrapped by :class:`pantr.bspline.SpanwiseElementExtraction`, which is the class a
+    caller holds; this one is reached only through it. Bound by
+    ``cpp/bindings/bspline_spanwise_extraction.cpp`` over
+    ``cpp/include/pantr/bspline/spanwise_extraction.hpp``.
+
+    It **compacts** the per-direction operators rather than building them: the dense
+    blocks and their identity masks are constructor arguments, because the builders
+    are their own port and the cardinal target has none in C++. The space is
+    **shared**, so ``extraction.space is space`` holds at the wrapper level.
+
+    The target crosses as :class:`pantr.bspline.ExtractionTarget`'s own integer and
+    the point distribution as :class:`pantr.basis.LagrangeVariant`'s own string;
+    neither is a bound enum, and nothing in C++ reads the string.
+
+    Three refusals the oracle makes are the wrapper's rather than this class's: the
+    mixed-dtype ``ValueError``, the ``NotImplementedError`` for a periodic direction,
+    and the ``ValueError`` naming an unrecognised target spelling.
+
+    Attributes:
+        space (BsplineSpace32): The space this extraction was built over.
+        target (int): The :class:`pantr.bspline.ExtractionTarget` member's value.
+        lagrange_variant (str): The :class:`pantr.basis.LagrangeVariant` member's value.
+        dim (int): The number of tensor-product directions.
+        num_intervals (tuple[int, ...]): One element count per direction.
+        num_total_intervals (int): Their product; 1 with no directions.
+        compact_ops_1d (tuple[npt.NDArray[np.float32], ...]): One read-only
+            ``(n_compact, n_out, n_in)`` view per direction, ``n_compact`` at least 1.
+        idx_maps_1d (tuple[npt.NDArray[np.int64], ...]): One read-only
+            ``(n_elements,)`` view per direction.
+        is_identity_mask_1d (tuple[npt.NDArray[np.bool_], ...]): One read-only
+            ``(n_elements,)`` view per direction.
+        ops_1d (tuple[npt.NDArray[np.float32], ...]): One read-only
+            ``(n_elements, n_out, n_in)`` view per direction, of a memo filled on
+            first access and never of a copy.
+        input_shape_per_dir (tuple[int, ...]): One ``n_in`` per direction.
+        output_shape_per_dir (tuple[int, ...]): One ``n_out`` per direction.
+        num_identity_elements (int): Fully-identity elements on the grid.
+        is_identity (bool): Whether every element's operator is the identity.
+    """
+
+    def __init__(
+        self,
+        space: BsplineSpace32,
+        target: int,
+        lagrange_variant: str,
+        operators: Sequence[npt.NDArray[np.float32]],
+        masks: Sequence[npt.NDArray[np.bool_]],
+    ) -> None: ...
+    @property
+    def space(self) -> BsplineSpace32: ...
+    @property
+    def target(self) -> int: ...
+    @property
+    def lagrange_variant(self) -> str: ...
+    @property
+    def dim(self) -> int: ...
+    @property
+    def num_intervals(self) -> tuple[int, ...]: ...
+    @property
+    def num_total_intervals(self) -> int: ...
+    @property
+    def compact_ops_1d(self) -> tuple[npt.NDArray[np.float32], ...]: ...
+    @property
+    def idx_maps_1d(self) -> tuple[npt.NDArray[np.int64], ...]: ...
+    @property
+    def is_identity_mask_1d(self) -> tuple[npt.NDArray[np.bool_], ...]: ...
+    @property
+    def ops_1d(self) -> tuple[npt.NDArray[np.float32], ...]: ...
+    @property
+    def input_shape_per_dir(self) -> tuple[int, ...]: ...
+    @property
+    def output_shape_per_dir(self) -> tuple[int, ...]: ...
+    @property
+    def num_identity_elements(self) -> int: ...
+    @property
+    def is_identity(self) -> bool: ...
+
+class SpanwiseElementExtraction64:
+    """The ``float64`` twin of :class:`SpanwiseElementExtraction32`.
+
+    See it for what they share.
+
+    Attributes:
+        space (BsplineSpace64): The space this extraction was built over.
+        target (int): The :class:`pantr.bspline.ExtractionTarget` member's value.
+        lagrange_variant (str): The :class:`pantr.basis.LagrangeVariant` member's value.
+        dim (int): The number of tensor-product directions.
+        num_intervals (tuple[int, ...]): One element count per direction.
+        num_total_intervals (int): Their product; 1 with no directions.
+        compact_ops_1d (tuple[npt.NDArray[np.float64], ...]): One read-only view per
+            direction.
+        idx_maps_1d (tuple[npt.NDArray[np.int64], ...]): One read-only view per
+            direction.
+        is_identity_mask_1d (tuple[npt.NDArray[np.bool_], ...]): One read-only view
+            per direction.
+        ops_1d (tuple[npt.NDArray[np.float64], ...]): One read-only view per
+            direction, of a memo rather than of a copy.
+        input_shape_per_dir (tuple[int, ...]): One ``n_in`` per direction.
+        output_shape_per_dir (tuple[int, ...]): One ``n_out`` per direction.
+        num_identity_elements (int): Fully-identity elements on the grid.
+        is_identity (bool): Whether every element's operator is the identity.
+    """
+
+    def __init__(
+        self,
+        space: BsplineSpace64,
+        target: int,
+        lagrange_variant: str,
+        operators: Sequence[npt.NDArray[np.float64]],
+        masks: Sequence[npt.NDArray[np.bool_]],
+    ) -> None: ...
+    @property
+    def space(self) -> BsplineSpace64: ...
+    @property
+    def target(self) -> int: ...
+    @property
+    def lagrange_variant(self) -> str: ...
+    @property
+    def dim(self) -> int: ...
+    @property
+    def num_intervals(self) -> tuple[int, ...]: ...
+    @property
+    def num_total_intervals(self) -> int: ...
+    @property
+    def compact_ops_1d(self) -> tuple[npt.NDArray[np.float64], ...]: ...
+    @property
+    def idx_maps_1d(self) -> tuple[npt.NDArray[np.int64], ...]: ...
+    @property
+    def is_identity_mask_1d(self) -> tuple[npt.NDArray[np.bool_], ...]: ...
+    @property
+    def ops_1d(self) -> tuple[npt.NDArray[np.float64], ...]: ...
+    @property
+    def input_shape_per_dir(self) -> tuple[int, ...]: ...
+    @property
+    def output_shape_per_dir(self) -> tuple[int, ...]: ...
+    @property
+    def num_identity_elements(self) -> int: ...
+    @property
+    def is_identity(self) -> bool: ...
+
 _Array = npt.NDArray[np.float32 | np.float64]
 """A float32 or float64 array; the two dtypes these kernels are built for."""
 
