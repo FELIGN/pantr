@@ -161,6 +161,17 @@ void register_bspline_structural(nanobind::module_& m);
 /// somewhere else entirely.
 void register_bspline_degree(nanobind::module_& m);
 
+/// Register the knot computations of `pantr/bspline/knots.hpp`.
+///
+/// Its own entry point rather than a function inside `register_bspline_types`,
+/// because it is not a member of that type and must not become one: the file it
+/// binds is `knots.hpp`, and `pantr/bspline/space_1d.hpp` names the cardinal
+/// interval scan as the reason it keeps computations over the knots off the type.
+/// Everything the header holds beyond the scan is called from the space's own
+/// constructor and has no Python caller, which is why one entry point carries one
+/// function today.
+void register_bspline_knots(nanobind::module_& m);
+
 /// Register `pantr.bspline`'s Bézier extraction operator builder and its mask.
 ///
 /// Separate from `register_bspline_extraction` because the two are separate ports
