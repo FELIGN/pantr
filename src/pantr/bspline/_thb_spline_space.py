@@ -3264,8 +3264,17 @@ class THBSplineSpace:
         """Return the prolongation to a refinement ``fine`` in sparse CSR form.
 
         The same matrix :meth:`prolongation_to` returns, entry for entry: the columns come
-        from the same local two-scale solves in the same order, so ``toarray()`` is
-        **bitwise equal** to the dense result. Only the storage differs.
+        from the same local two-scale solves in the same order, so no entry is rounded
+        differently and ``toarray()`` **compares equal** to the dense result. Only the
+        storage differs.
+
+        **Equal as values, not bit for bit**, and the gap is exactly the sign of a zero.
+        The *stored* entries are bitwise what the solves produced, this array's own
+        ``data`` included; but :meth:`scipy.sparse.csr_array.toarray` densifies by adding
+        into a ``+0.0``-filled buffer, and ``+0.0 + -0.0`` is ``+0.0``, so a column that
+        solved to a negative zero comes back positive. ``-0.0 == 0.0``, so nothing that
+        compares values can see it, and nothing downstream of a matrix-vector product can
+        either. ``tests/test_thb_spline_space.py`` pins both halves.
 
         That storage is the whole point at scale. The dense variant is
         ``O(n_fine * n_coarse)`` -- for ``1e5`` fine by ``9e4`` coarse dofs, some 72 GB --

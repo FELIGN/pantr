@@ -1652,7 +1652,12 @@ class TestProlongationSparse:
 
     @pytest.mark.parametrize("truncate", [True, False])
     def test_equals_dense_1d(self, truncate: bool) -> None:
-        """Bitwise equality, not an approximation: the same solves in the same order."""
+        """Equality, not an approximation: the same solves in the same order.
+
+        Equality of values. ``test_the_stored_entries_are_bitwise_the_dense_ones`` is
+        where the sharper claim lives, and where the one place it does not hold is
+        pinned.
+        """
         coarse = THBSplineSpace(_root_1d(), _grid_1d(), truncate=truncate)
         fine = coarse.refine([0, 1], admissible_class=None)
 
@@ -1685,6 +1690,37 @@ class TestProlongationSparse:
 
         assert np.array_equal(
             coarse.prolongation_to_sparse(fine).toarray(), coarse.prolongation_to(fine)
+        )
+
+    @pytest.mark.parametrize("truncate", [True, False])
+    def test_the_stored_entries_are_bitwise_the_dense_ones(self, truncate: bool) -> None:
+        """What the sparse variant stores is bit for bit what the dense one holds there.
+
+        The stronger half of the claim, and the one worth a test: the two run the same
+        local solves in the same order, so a stored entry is not merely close to the
+        dense matrix's -- it is the same double. Anything that re-derived a column, or
+        reordered a solve, would move a last bit and be caught here while
+        ``np.array_equal`` on the values would not notice.
+
+        The second half is where it stops holding, and it is exactly the sign of a zero.
+        ``toarray()`` densifies by adding into a ``+0.0``-filled buffer, and
+        ``+0.0 + -0.0`` is ``+0.0``, so a column that solved to a negative zero comes
+        back positive. That is asserted as a *value* equality rather than a bitwise one,
+        deliberately: it is scipy's densification convention rather than a property of
+        this code, and pinning the sign would pin somebody else's implementation detail.
+        """
+        coarse = create_thb_space(create_uniform_space([2, 2], [8, 8]), truncate=truncate)
+        fine = coarse.refine_region(0, [0, 0], [4, 4], admissible_class=None)
+
+        dense = np.ascontiguousarray(coarse.prolongation_to(fine))
+        stored = coarse.prolongation_to_sparse(fine).tocoo()
+        at_their_positions = np.ascontiguousarray(dense[stored.row, stored.col])
+        assert np.array_equal(
+            np.ascontiguousarray(stored.data).view(np.uint64),
+            at_their_positions.view(np.uint64),
+        ), "a stored entry is not the double the dense variant holds at that position"
+        assert np.array_equal(
+            np.ascontiguousarray(coarse.prolongation_to_sparse(fine).toarray()), dense
         )
 
     def test_identity_when_no_refinement(self) -> None:
