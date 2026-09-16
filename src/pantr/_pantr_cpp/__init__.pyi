@@ -89,6 +89,8 @@ from ._bspline import BsplineSpace1D32 as BsplineSpace1D32
 from ._bspline import BsplineSpace1D64 as BsplineSpace1D64
 from ._bspline import BsplineSpace32 as BsplineSpace32
 from ._bspline import BsplineSpace64 as BsplineSpace64
+from ._bspline import THBSplineSpace32 as THBSplineSpace32
+from ._bspline import THBSplineSpace64 as THBSplineSpace64
 from ._bspline import apply_kron_1d as apply_kron_1d
 from ._bspline import apply_kron_2d as apply_kron_2d
 from ._bspline import apply_kron_3d as apply_kron_3d

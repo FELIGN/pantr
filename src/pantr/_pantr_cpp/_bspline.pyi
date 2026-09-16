@@ -84,6 +84,8 @@ from collections.abc import Sequence
 import numpy as np
 from numpy import typing as npt
 
+from ._grid import HierarchicalGrid
+
 class BsplineSpace1D32:
     """A ``float32`` 1D B-spline space owned by the C++ core.
 
@@ -268,6 +270,183 @@ class BsplineSpace64:
     @property
     def domain(self) -> npt.NDArray[np.float64]: ...
     def has_Bezier_like_knots(self) -> bool: ...
+
+class THBSplineSpace32:
+    """A truncated hierarchical B-spline space over a ``float32`` root space.
+
+    Bound by ``cpp/bindings/bspline_thb_space.cpp`` over
+    ``cpp/include/pantr/bspline/thb_space.hpp``. Wrapped by
+    :class:`pantr.bspline.THBSplineSpace`, which is the class a caller holds; this
+    one is reached only through it.
+
+    **The grid is ``float64`` under both registrations.** ``pantr.grid`` is
+    ``float64``-only by its own port's ruling while a root B-spline space stores
+    whatever it was handed, so the two scalars are independent and only the root's
+    width splits the class.
+
+    The root space and the grid are taken as handles and **shared**, so
+    ``level_space(0)`` hands back the very handle the space was built from, which is
+    ``design/bspline_ownership_lifetime.md`` F6's identity contract. The grid handle
+    is the port's single non-``const`` exception, because a grid's tag registries are
+    the reasoned accumulating-container exception to construct-then-freeze.
+
+    Every array below is a **read-only view** of storage the space owns, with the
+    space as the array's owner. The wrapper is what copies on the way out where the
+    oracle's own contract promises a fresh writable array.
+
+    Attributes:
+        root_space (BsplineSpace32): The level-0 tensor-product space, shared.
+        grid (HierarchicalGrid): The active-cell hierarchy, shared.
+        dim (int): The parametric dimension.
+        degrees (tuple[int, ...]): One degree per direction, the same at every level.
+        num_levels (int): The number of hierarchy levels.
+        truncate (bool): Whether the truncated (THB) basis is built.
+        regularity (tuple[int | None, ...]): Per-direction continuity used when
+            subdividing to finer levels; ``None`` means maximal smoothness.
+        num_total_basis (int): Total active hierarchical function count.
+        num_basis_per_level (tuple[int, ...]): Active-function count per level.
+        level_offsets (npt.NDArray[np.int64]): Per-level global-dof base, length
+            ``num_levels + 1``; read-only.
+        domain (npt.NDArray[np.float32]): Shape ``(dim, 2)``, read-only, the root
+            space's own storage.
+        tolerance (float): The root space's tolerance.
+        num_truncated (int): How many active functions the truncation touched.
+    """
+
+    def __init__(
+        self,
+        root_space: BsplineSpace32,
+        grid: HierarchicalGrid,
+        truncate: bool,
+        regularity: Sequence[int | None],
+    ) -> None: ...
+    @property
+    def root_space(self) -> BsplineSpace32: ...
+    @property
+    def grid(self) -> HierarchicalGrid: ...
+    @property
+    def dim(self) -> int: ...
+    @property
+    def degrees(self) -> tuple[int, ...]: ...
+    @property
+    def num_levels(self) -> int: ...
+    @property
+    def truncate(self) -> bool: ...
+    @property
+    def regularity(self) -> tuple[int | None, ...]: ...
+    @property
+    def num_total_basis(self) -> int: ...
+    @property
+    def num_basis_per_level(self) -> tuple[int, ...]: ...
+    @property
+    def level_offsets(self) -> npt.NDArray[np.int64]: ...
+    @property
+    def domain(self) -> npt.NDArray[np.float32]: ...
+    @property
+    def tolerance(self) -> float: ...
+    @property
+    def num_truncated(self) -> int: ...
+    def level_space(self, level: int) -> BsplineSpace32: ...
+    def active_function_indices(self, level: int) -> npt.NDArray[np.int64]: ...
+    def active_basis(self, cid: int) -> npt.NDArray[np.int64]: ...
+    def contributions(
+        self, cid: int
+    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
+    def max_active_per_cell(self) -> int: ...
+    def dof_level(self, dof: int) -> int: ...
+    def truncated(
+        self, dof: int
+    ) -> tuple[int, tuple[int, ...], npt.NDArray[np.float64]] | None: ...
+    def refine(
+        self, cell_ids: npt.NDArray[np.int64], admissible_class: int | None
+    ) -> THBSplineSpace32: ...
+    def refine_region(
+        self,
+        level: int,
+        lo: npt.NDArray[np.int64],
+        hi: npt.NDArray[np.int64],
+        admissible_class: int | None,
+    ) -> THBSplineSpace32: ...
+    def coarsen(
+        self, cell_ids: npt.NDArray[np.int64], admissible_class: int | None
+    ) -> THBSplineSpace32: ...
+
+class THBSplineSpace64:
+    """The ``float64``-root twin of :class:`THBSplineSpace32`; see it for what they share.
+
+    Attributes:
+        root_space (BsplineSpace64): The level-0 tensor-product space, shared.
+        grid (HierarchicalGrid): The active-cell hierarchy, shared.
+        dim (int): The parametric dimension.
+        degrees (tuple[int, ...]): One degree per direction.
+        num_levels (int): The number of hierarchy levels.
+        truncate (bool): Whether the truncated (THB) basis is built.
+        regularity (tuple[int | None, ...]): Per-direction continuity.
+        num_total_basis (int): Total active hierarchical function count.
+        num_basis_per_level (tuple[int, ...]): Active-function count per level.
+        level_offsets (npt.NDArray[np.int64]): Per-level global-dof base; read-only.
+        domain (npt.NDArray[np.float64]): Shape ``(dim, 2)``, read-only.
+        tolerance (float): The root space's tolerance.
+        num_truncated (int): How many active functions the truncation touched.
+    """
+
+    def __init__(
+        self,
+        root_space: BsplineSpace64,
+        grid: HierarchicalGrid,
+        truncate: bool,
+        regularity: Sequence[int | None],
+    ) -> None: ...
+    @property
+    def root_space(self) -> BsplineSpace64: ...
+    @property
+    def grid(self) -> HierarchicalGrid: ...
+    @property
+    def dim(self) -> int: ...
+    @property
+    def degrees(self) -> tuple[int, ...]: ...
+    @property
+    def num_levels(self) -> int: ...
+    @property
+    def truncate(self) -> bool: ...
+    @property
+    def regularity(self) -> tuple[int | None, ...]: ...
+    @property
+    def num_total_basis(self) -> int: ...
+    @property
+    def num_basis_per_level(self) -> tuple[int, ...]: ...
+    @property
+    def level_offsets(self) -> npt.NDArray[np.int64]: ...
+    @property
+    def domain(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def tolerance(self) -> float: ...
+    @property
+    def num_truncated(self) -> int: ...
+    def level_space(self, level: int) -> BsplineSpace64: ...
+    def active_function_indices(self, level: int) -> npt.NDArray[np.int64]: ...
+    def active_basis(self, cid: int) -> npt.NDArray[np.int64]: ...
+    def contributions(
+        self, cid: int
+    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
+    def max_active_per_cell(self) -> int: ...
+    def dof_level(self, dof: int) -> int: ...
+    def truncated(
+        self, dof: int
+    ) -> tuple[int, tuple[int, ...], npt.NDArray[np.float64]] | None: ...
+    def refine(
+        self, cell_ids: npt.NDArray[np.int64], admissible_class: int | None
+    ) -> THBSplineSpace64: ...
+    def refine_region(
+        self,
+        level: int,
+        lo: npt.NDArray[np.int64],
+        hi: npt.NDArray[np.int64],
+        admissible_class: int | None,
+    ) -> THBSplineSpace64: ...
+    def coarsen(
+        self, cell_ids: npt.NDArray[np.int64], admissible_class: int | None
+    ) -> THBSplineSpace64: ...
 
 _Array = npt.NDArray[np.float32 | np.float64]
 """A float32 or float64 array; the two dtypes these kernels are built for."""
