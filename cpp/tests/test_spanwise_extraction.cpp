@@ -34,9 +34,12 @@
 /// **`check_the_all_identity_sentinel`.** A direction with no non-identity element
 /// still gets one compact row, of zeros. The oracle does this so that
 /// `compact[idx_map[e]]` is in range for a numba kernel that computed the index
-/// before it checked the mask. No caller ever reads the row, so an implementation
-/// that allocated zero rows would pass every value assertion here and fail only
-/// inside a kernel, out of process, as an out-of-bounds read.
+/// before it checked the mask. No caller ever *reads* the row, so nothing about a
+/// value would reveal its absence; the shape is asserted directly instead. Note that
+/// `PANTR_CHECK_MSG` records and continues rather than aborting, so against a
+/// zero-row implementation the assertion below fires and the very next line then
+/// performs the out-of-bounds read itself, in this process -- which is what the
+/// sanitizer legs are there to turn into a diagnosis.
 ///
 /// **`check_the_space_is_shared_not_copied`.** Compared by address, because the
 /// Python identity contract `extraction.space is space` rests on the C++ type
@@ -527,6 +530,8 @@ void check_refusals() {
     }
     PANTR_CHECK_MSG(threw, "the mask length must match the element count");
 
+    // Both halves of the degenerate check, because an implementation that dropped
+    // one of the two disjuncts would pass a case set that exercised only the other.
     threw = false;
     try {
         const Block flat = block_of({false, false}, 2, 0, 1.0);
@@ -537,6 +542,17 @@ void check_refusals() {
         threw = true;
     }
     PANTR_CHECK_MSG(threw, "operators with no columns are refused");
+
+    threw = false;
+    try {
+        const Block thin = block_of({false, false}, 0, 2, 1.0);
+        const std::vector<Input> inputs{thin.input()};
+        const Extraction ext(space, ExtractionTarget::bezier, "", std::span<const Input>(inputs));
+        (void)ext.dim();
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    PANTR_CHECK_MSG(threw, "operators with no rows are refused");
 
     const std::vector<Input> inputs{good.input()};
     const Extraction ext(space, ExtractionTarget::bezier, "", std::span<const Input>(inputs));

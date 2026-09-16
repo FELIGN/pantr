@@ -145,8 +145,16 @@ enum class ExtractionTarget : std::int64_t {
 /// -- a cardinal space on a uniform mesh, a spline already in Bézier form -- cost
 /// almost nothing. The dense layout is reconstructed on demand and memoised.
 ///
-/// Instances are immutable: no operation changes one, and the memo is a function of
-/// state frozen at construction.
+/// Instances are immutable in the sense this port uses everywhere: no *operation*
+/// changes one, and the memo is a function of state frozen at construction.
+/// **Assignment is the exception, and it is not enforced against** -- the implicit
+/// copy- and move-assignment operators are live, and assigning over an instance
+/// replaces `directions_` and clears the memo, which invalidates every span a caller
+/// is still holding from `compact_ops`, `idx_map`, `is_identity_mask` or `ops_1d`.
+/// `BsplineSpace` has the same gap and the Python wrapper does not (its
+/// `__setattr__` refuses), so whether the domain types should delete their
+/// assignment operators is one decision for the port rather than this type's to take
+/// alone.
 ///
 /// Copyable, like every other domain type here, and the copy is deep: see
 /// `Direction`'s rule of five for why the identity mask makes that explicit work
@@ -346,7 +354,8 @@ class SpanwiseElementExtraction {
 
     /// Whether every element on the grid has an identity operator.
     ///
-    /// \return `true` iff every per-direction mask is all-`true`.
+    /// \return `true` iff every per-direction mask is all-`true`; `true` for a
+    ///         dimensionless space, matching the oracle's `all(())`.
     [[nodiscard]] bool is_identity() const noexcept { return is_identity_; }
 
   private:
@@ -373,10 +382,13 @@ class SpanwiseElementExtraction {
     /// of a `std::vector` is a trap rather than a restriction, because
     /// `std::is_copy_constructible_v<std::vector<MoveOnly>>` is **`true`** -- the
     /// container's copy constructor is declared unconditionally and fails only when
-    /// instantiated. Measured: nanobind reads that trait to decide whether to register
-    /// a copy constructor for the bound class, so an owner that merely *looks*
-    /// copyable produces a hard error inside `uninitialized_copy` rather than a
-    /// non-copyable Python type.
+    /// instantiated. **Observed** while building this binding: with the mask held
+    /// move-only, compiling `cpp/bindings/bspline_spanwise_extraction.cpp` failed
+    /// inside `std::uninitialized_copy`'s `static_assert`, from a nanobind-
+    /// instantiated path, for both scalar types; giving `Direction` the rule of five
+    /// below made it compile. That nanobind selects the copy on the trait is the
+    /// explanation those two observations fit, not something checked against its
+    /// source.
     struct Direction {
         std::vector<T> compact;             ///< Row-major `(n_compact, n_out, n_in)`.
         std::vector<std::int64_t> idx_map;  ///< `n_elements` rows into `compact`.
@@ -445,10 +457,17 @@ class SpanwiseElementExtraction {
                                         "of length " + std::to_string(input.is_identity.size())
                                         + " for " + std::to_string(n_elements) + " elements");
         }
-        // The oracle reads `n_out` and `n_in` off the operator array and would raise an
-        // index error rather than a diagnosis on a degenerate one. Refusing here is
-        // cheaper than the sentinel row of a zero-column operator, which is a shape no
-        // builder produces and no kernel could use.
+        // A zero-extent operator is refused because the *binding* cannot hand one back:
+        // an empty block's `data()` may be null, and nanobind reads a null pointer as
+        // "no array" rather than as an empty one, which is why `bspline_types.cpp` keeps
+        // a stand-in address for the one accessor that can legitimately be empty. Here
+        // the refusal removes that case instead, and `bspline_spanwise_extraction.cpp`'s
+        // file comment rests on it. No builder in the tree produces such an operator.
+        //
+        // The oracle carries the same refusal, with the same message, for the reason
+        // every refusal in this port is duplicated rather than inherited: the two
+        // implementations are compared against each other, and one that accepted what
+        // the other rejects is a divergence a value comparison cannot see.
         if (input.operators.extent(1) == 0 || input.operators.extent(2) == 0) {
             throw std::invalid_argument("direction " + std::to_string(d)
                                         + " has operators with no rows or no columns");
@@ -497,9 +516,10 @@ class SpanwiseElementExtraction {
         for (const Direction& dir : directions_) {
             input_shape_.push_back(dir.n_in);
             output_shape_.push_back(dir.n_out);
-            // A product over `dim() <= 3` per-direction counts, each at most the
-            // direction's element count, so it is bounded by `num_total_intervals()`,
-            // which `BsplineSpace` has already refused to let overflow.
+            // Cannot overflow, whatever the dimension: each factor is at most its
+            // direction's element count and every factor is non-negative, so the
+            // product is at most `num_total_intervals()` -- which `BsplineSpace`'s
+            // constructor has already refused to let exceed `std::int64_t`.
             num_identity_elements_ *= dir.n_identity;
             is_identity_ = is_identity_ && dir.n_identity == dir.n_elements;
         }
