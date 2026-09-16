@@ -1479,3 +1479,57 @@ def test_the_bezier_claim_and_column_sum_hold_over_a_sweep_ten_times_the_shipped
         f"AC8 sweep ({np.dtype(dtype).name}): {checked} draws, worst column-sum deviation "
         f"{worst_column_sum:.3e}, worst ratio to bound {worst_column_ratio:.3e}"
     )
+
+
+@pytest.mark.parametrize("dtype", DTYPES, ids=["float64", "float32"])
+@pytest.mark.parametrize("backend", _BACKENDS, ids=["python", "cpp"])
+@pytest.mark.parametrize(
+    "case",
+    [c for c in _BEZIER_CASES if c.accuracy],
+    ids=[c.label for c in _BEZIER_CASES if c.accuracy],
+)
+def test_the_bezier_columns_of_compact_ops_1d_sum_to_one(
+    case: _Case, backend: Backend, dtype: npt.DTypeLike
+) -> None:
+    """The same identity, read off ``compact_ops_1d`` rather than off ``ops_1d``.
+
+    The criterion names both properties, and this is the second. It adds no new
+    *numbers*: ``ops_1d`` is built by copying ``compact_ops_1d``'s rows into the
+    non-identity slots and writing an exact ``eye`` into the rest, so every value the
+    ``ops_1d`` check sees for a non-identity element already came from here. What it
+    adds is independence from that argument -- an ``ops_1d`` that stopped being a pure
+    copy would be caught by the pair disagreeing rather than by a reader noticing.
+
+    **The sentinel row is excluded, and must be.** A direction with no non-identity
+    element carries one row of zeros, whose columns sum to zero rather than to one; it
+    is never read by anything and asserting over it would be asserting about padding.
+    The rows reached through ``idx_maps_1d`` at the non-identity elements are exactly
+    the real ones.
+
+    Args:
+        case (_Case): The knot vector.
+        backend (Backend): Which implementation builds the extraction.
+        dtype (npt.DTypeLike): Storage format.
+    """
+    ext = _build_extraction(
+        (case,), dtype, ExtractionTarget.BEZIER, LagrangeVariant.EQUISPACES, backend
+    )
+    mask = np.asarray(ext.is_identity_mask_1d[0])
+    if bool(mask.all()):
+        pytest.skip("every element is the identity, so compact storage holds only the sentinel")
+    rows = np.unique(np.asarray(ext.idx_maps_1d[0])[~mask])
+    compact = np.asarray(ext.compact_ops_1d[0])[rows]
+    column_sums = compact.astype(np.float64).sum(axis=1)
+    assert_accuracy(
+        column_sums,
+        np.ones_like(column_sums),
+        derived_accuracy(
+            bound=np.full(column_sums.shape, _column_sum_bound(case, dtype)),
+            why=(
+                "the same bound as the ops_1d check, because these are the same numbers: "
+                "reused unchanged from tests.parity.test_bspline_bezier_extraction."
+                "_column_sum_bound"
+            ),
+        ),
+        context=f"compact {case.label} in {np.dtype(dtype).name} on {backend.name}",
+    )
