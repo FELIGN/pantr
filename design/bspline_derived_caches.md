@@ -18,6 +18,14 @@ plus `feat/387-tensor-product-grid` at `d7b8654` read through `git show`. Python
 `pantr` env, CPython **3.14.6**, GIL enabled. C++ timings g++ **14.4.0** `-O2`, one pinned core.
 TSan is g++ 14.4's `-fsanitize=thread`.
 
+**Re-verified against `proto/cpp` at `cf958bf`** (FELIGN/pantr#501). `a45e935` is 259 commits
+behind it, and every counted fact below was re-checked claim by claim rather than re-asserted;
+what changed is marked where it stands and the "Epistemic status" block records the per-claim
+verdicts. The measurements are **not** re-taken -- they are dated readings of one machine and
+stay attributed to the day they were made. Each re-verified claim now carries **the command that
+re-checks it**, so the next reader re-runs it rather than re-deriving it; a count with no command
+beside it is the shape that went stale here.
+
 ## The decision in one paragraph
 
 **A derived quantity of a domain type's frozen state lives in the C++ type. The Python wrapper
@@ -42,39 +50,68 @@ factor of 1.4 to 2.1 against a Numba dispatch the port removes anyway.
 
 ### F1 (important). The count is right and the framing is not: seven of the fourteen are not caches
 
-Verified by reading both classes. `BsplineSpace1D` has 7 `cached_property` and `BsplineSpace`
-has 7, so the ticket's fourteen is exact. (`src/pantr/bspline/` has 16 in total; the other two
-are on `SpanwiseElementExtraction`, outside the ticket's scope and inside #399's.)
+Verified by reading both classes. At `a45e935` `BsplineSpace1D` had 7 `cached_property` and
+`BsplineSpace` had 7, so the ticket's fourteen was exact. (`src/pantr/bspline/` had 16 in total;
+the other two are on `SpanwiseElementExtraction`, outside the ticket's scope and inside #399's.)
 
-But **all seven of `BsplineSpace`'s are O(dim) reductions over its own children**, with `dim`
+> **Re-verified at `cf958bf`: the split is now 7 + 0 + 2, nine in all -- and that is this
+> finding's own decision having landed, not drift.** `BsplineSpace`'s seven became plain
+> `@property` when #396 landed; `BsplineSpace1D`'s seven and `SpanwiseElementExtraction`'s two
+> are unchanged. Re-check by **enumerating the sites**, not by counting matches:
+> `grep -rn '@functools\.cached_property' src/pantr/bspline/`.
+> A cold reader's `grep -rc cached_property src/pantr/bspline/` answers **13** instead, because
+> four matches are prose in docstrings describing the memos this note removed. The enumerating
+> form is the one to quote, and the difference between the two is why.
+
+But **all seven of `BsplineSpace`'s were O(dim) reductions over its own children**, with `dim`
 at most 3 in every use in the tree: `degrees`, `tolerance`, `num_basis`, `num_total_basis`,
-`num_intervals`, `num_total_intervals`, `domain`
-(`src/pantr/bspline/_bspline_space_nd.py:76,85,108,117,126,135,144`). Each reads a scalar off
-each 1D space and combines them. In C++ they are either fields set in the constructor or
-three-iteration loops in the accessor. **They are memos only because a Python attribute read
-that walks three objects costs more than a `__dict__` hit** -- measured, 56 to 60 ns for a warm
-`cached_property` hit -- which is a fact about CPython, not about the mathematics.
+`num_intervals`, `num_total_intervals`, `domain` -- today plain `@property`, on the wrapper and
+on the Python-backend class alike, located with
+`grep -n 'def \(degrees\|tolerance\|num_basis\|num_total_basis\|num_intervals\|num_total_intervals\|domain\)(' src/pantr/bspline/_bspline_space_nd.py`.
+Each reads a scalar off each 1D space and combines them. In C++ they are either fields set in
+the constructor or three-iteration loops in the accessor. **They were memos only because a
+Python attribute read that walks three objects costs more than a `__dict__` hit** -- measured,
+56 to 60 ns for a warm `cached_property` hit -- which is a fact about CPython, not about the
+mathematics.
 
 So: **`BsplineSpace` acquires zero memos.** That removes half the problem before any mechanism
 is chosen, and it should be said in #396's acceptance criteria, because "port fourteen memos" and
-"port one" are different tickets.
+"port one" are different tickets. (Done: at `cf958bf` `BsplineSpace` carries no
+`cached_property` at all, which is the recount in the box above.)
 
 ### F2 (critical). The GIL is not available as the memo's protection, and the tree already proves it
 
 The obvious reasoning -- nanobind holds the GIL for the duration of a bound call, so a memo
 filled inside one is serialised against every other Python thread -- is true of a call that does
-not release it. **The extension releases the GIL at 19 sites already**
-(`basis.cpp` 1, `change_basis.cpp` 3, `quad.cpp` 5, `bezier.cpp` 10, counted under `cpp/bindings/` at `a45e935`),
-and `src/pantr/_backend.py:551-552` states the intent in the same breath as the hazard: *"use_backend
+not release it. **The extension already releases the GIL at every kernel binding it has**, and
+the number grows with the port: **19 sites across four files at `a45e935`** (`basis.cpp` 1,
+`change_basis.cpp` 3, `quad.cpp` 5, `bezier.cpp` 10), **32 across seven at `cf958bf`**
+(`bezier.cpp` 10, `quad.cpp` 5, `bspline_basis.cpp` 4, `bspline_extraction.cpp` 4,
+`bspline_extraction_operators.cpp` 4, `change_basis.cpp` 3, `basis.cpp` 2 -- three of those
+files did not exist at `a45e935`). Recount with, in this order,
+`grep -rn gil_scoped_release cpp/bindings/` to enumerate the sites and
+`grep -rc gil_scoped_release cpp/bindings/*.cpp | grep -v ':0$'` to split them per file.
+**Read the enumeration, not the total**: the direction of travel is the finding, and any figure
+written here is a reading of one commit that the next port invalidates.
+`src/pantr/_backend.py` states the intent in the same breath as the hazard --
+`grep -n 'scoped per thread' src/pantr/_backend.py` -- : *"use_backend
 is scoped per thread precisely so callers may thread, and the extension releases the GIL to invite
 it."*
 
-Every one of those 19 is a kernel binding rather than a method of a domain type, so **no bound
-method releases the GIL today**. That is the honest state. It is also not a place to build on: the
-method that fills the biggest of these memos, `get_unique_knots_and_multiplicity`, was measured
-at 16.9 microseconds on a 2055-knot vector, and a 17-microsecond bound call holding the GIL is
-exactly what gets a `gil_scoped_release` at the first performance pass. A memo whose safety
-depends on nobody adding one line to its binding is not safe.
+Every one of them is a free function bound with `m.def`, a kernel binding rather than a method of
+a domain type, so **no bound method releases the GIL today**. That is the honest state, and it
+still holds at `cf958bf`: no file that calls `nb::class_` contains a `gil_scoped_release`, which
+`comm -12 <(grep -rl gil_scoped_release cpp/bindings/ | sort) <(grep -rl 'nb::class_' cpp/bindings/ | sort)`
+reports as empty. **But the wall has thinned.** Four of the 32 now take a *bound domain type* as
+an argument rather than raw arrays -- `evaluate_bezier` and `evaluate_bezier_on_lattice` in
+`bezier.cpp`, `tabulate_bspline_space_basis_1d` and
+`tabulate_bspline_space_basis_derivatives_1d` in `bspline_basis.cpp` -- so a GIL-releasing call
+that reaches a domain object's memo is now one `.def` away rather than a whole port away. It was
+never a place to build on: the method that fills the biggest of these memos,
+`get_unique_knots_and_multiplicity`, was measured at 16.9 microseconds on a 2055-knot vector, and
+a 17-microsecond bound call holding the GIL is exactly what gets a `gil_scoped_release` at the
+first performance pass. A memo whose safety depends on nobody adding one line to its binding is
+not safe.
 
 And the ruling settles it regardless: *"En el futuro, solo C++."* There is no GIL in the future
 this port is for.
@@ -593,16 +630,53 @@ main decision is reversed.
   the bare `mutable std::optional` variant, all frames in its accessor; 0 in the `call_once` and
   eager variants in the same binary. **And measured without TSan: 60 of 60 runs produced the
   correct total**, which is the point of the finding.
-- **Verified by reading the tree at `a45e935`:** all 16 `cached_property` sites and the 7 + 7
-  split; the `lru_cache`'s key construction at `_bspline_space_1d.py:320` and its definition at
-  `:40`; that `_get_unique_knots_and_multiplicity_impl` is not backend-dispatched
-  (`_bspline_knots.py:286`); the 19 `gil_scoped_release` sites, their four files, and that all are kernel bindings rather than methods of a domain type;
-  `backend_keyed_cache`'s recorded measurement (`_backend.py:525-555`); that no domain class in
-  `bspline` or `grid` defines `__eq__` or `__hash__`; `_contrib_cache`'s and `_coeffs_cache`'s
-  shapes and unboundedness; the CI Python matrix.
-- **Verified by execution in the `pantr` env:** that `BsplineSpace.domain` hands out a writable
-  array and a write through it persists in the cache; that `functools.cached_property` on a
-  `__slots__` class raises `TypeError: No '__dict__' attribute ... to cache`.
+- **Verified by reading the tree, first at `a45e935` and re-verified claim by claim at `cf958bf`
+  (2026-09-17, FELIGN/pantr#501).** Each claim carries the command that re-checks it, so the next
+  reader re-runs rather than re-derives, and each says whether it **held** or **changed**. A claim
+  with no command beside it is the shape that went stale here.
+  - *Changed.* The `cached_property` sites and their split: **16, as 7 + 7 + 2, at `a45e935`;
+    9, as 7 + 0 + 2, at `cf958bf`** -- `BsplineSpace`'s seven went when #396 landed, which is
+    F1's decision working rather than drift.
+    `grep -rn '@functools\.cached_property' src/pantr/bspline/`
+  - *Changed.* The `lru_cache` at `_bspline_space_1d.py:40` with its key construction at `:320`:
+    **gone**, deleted by #396 as this note's decision required, and replaced by a per-space memo
+    in two slots with nothing to key on. `grep -rn lru_cache src/pantr/bspline/` returns nothing;
+    `grep -n 'process-global cache this port removed' src/pantr/bspline/_bspline_space_1d.py`
+    finds where the code now records it.
+  - *Held.* `_get_unique_knots_and_multiplicity_impl` is not backend-dispatched, and is still at
+    `_bspline_knots.py:286` -- the one locator in this block that did not drift.
+    `grep -n 'def _get_unique_knots_and_multiplicity_impl' src/pantr/bspline/_bspline_knots.py`
+    and `grep -c backend src/pantr/bspline/_bspline_knots.py`, which answers 0.
+  - *Changed in the number, held in the finding.* The `gil_scoped_release` sites: **19 across
+    four files at `a45e935`, 32 across seven at `cf958bf`**, and all of them still free kernel
+    bindings rather than methods of a domain type. The per-file split and the three commands that
+    regenerate it are in F2 above; the shortest of them is
+    `grep -rn gil_scoped_release cpp/bindings/`.
+  - *Changed in the locator only.* `backend_keyed_cache`'s recorded measurement has moved from
+    `_backend.py:525-555` to the function's own docstring at `_backend.py:589` onward.
+    `grep -n 'def backend_keyed_cache' src/pantr/_backend.py` and
+    `grep -n 'Measured on' src/pantr/_backend.py`, which finds the two measured failures the
+    decorator records.
+  - *Held.* No domain class in `bspline` or `grid` defines `__eq__` or `__hash__`.
+    `grep -rn 'def __eq__\|def __hash__' src/pantr/bspline/ src/pantr/grid/`, which returns
+    nothing.
+  - *Half changed.* `_contrib_cache`'s shape and unboundedness hold --
+    `grep -n '_contrib_cache' src/pantr/bspline/_thb_spline_space.py` still finds the
+    `dict[int, list[tuple[int, int, tuple[int, ...]]]]` slot and the per-`cid` fill with no
+    eviction. **`_coeffs_cache` no longer exists**, removed by #336, as the "Not investigated"
+    entry below already records. `grep -rn '_coeffs_cache' src/pantr/` returns nothing.
+  - *Held.* The CI Python matrix is `3.11`, `3.13`, `3.14`, still at
+    `.github/workflows/ci.yaml:20,80,131`.
+    `grep -n 'python-version: \[' .github/workflows/ci.yaml`
+- **Verified by execution in the `pantr` env, and re-run at `cf958bf`:** that
+  `functools.cached_property` on a `__slots__` class raises
+  `TypeError: No '__dict__' attribute ... to cache` -- **held**. That `BsplineSpace.domain` hands
+  out a writable array **and a write through it persists in the cache** -- **changed, and the
+  hazard is gone**: the array is still writable, but `domain` is a plain `@property` since #396
+  removed the memo, so it builds a fresh array per read and a write through one is simply
+  discarded. Re-run with
+  `python -c "import numpy as np; from pantr.bspline import BsplineSpace, BsplineSpace1D; s=BsplineSpace1D(np.array([0.,0.,0.,1.,1.,1.]),2); sp=BsplineSpace((s,s)); d=sp.domain; d[0,0]=-99.0; print(sp.domain)"`,
+  which prints the unmodified domain.
 - **Derived, not measured:** that fusing `num_intervals`'s distinct-knot count into the
   constructor's validation scan is free. It is one comparison per knot inside a loop that already
   reads every knot, so it cannot be more than a constant factor on a pass that is already there;
