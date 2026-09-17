@@ -44,13 +44,22 @@ Where the two backends differ, and there are two places
 a round trip through the open representation --
 ``_to_open_bspline_1d_impl``, insert, ``_to_periodic_bspline_1d_impl`` -- and those two
 are the *boundary and periodic conversions*, which
-``cpp/include/pantr/bspline/bspline.hpp`` lists as their own port and which no ticket in
-this milestone covers. ``cpp/include/pantr/bspline/refinement.hpp`` therefore refuses a
+``cpp/include/pantr/bspline/bspline.hpp`` lists as their own port and which
+``FELIGN/pantr#500`` covers -- its table names "periodic conversion (``to_periodic``,
+and the periodic half of ``to_open_bspline``)" and gates it on a dense factorization
+that is LAPACK on one side and Eigen on the other.
+``cpp/include/pantr/bspline/refinement.hpp`` therefore refuses a
 periodic direction outright, and :func:`_the_cpp_backend_can_take_it` keeps the Python
 path for such a field rather than letting a caller meet that refusal. It is the same
 declared boundary ``cpp/include/pantr/bspline/space_1d.hpp`` draws around
-``get_cardinal_intervals``, and the same shape as the cardinal extraction builder having
-no C++ half in :mod:`pantr.bspline._extraction_backend`.
+``get_cardinal_intervals``.
+
+This paragraph used to say the conversions were something "no ticket in this milestone
+covers", which was false, and it drew a parallel to the cardinal extraction builder
+having no C++ half -- also now false, since ``FELIGN/pantr#491`` ported the
+cardinal-interval scan. Both are the same failure: a comment asserting the state of the
+ticket graph, which goes stale the day somebody files or lands something, with nothing
+to notice. Cite the issue instead.
 
 A periodic direction that receives **no** knots is not affected: C++ carries its space
 handle into the result untouched, exactly as the oracle carries its wrapper.
