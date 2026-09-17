@@ -19,6 +19,15 @@ wrapper precedent. Every Python line number below was read in one of those two t
 which. **nanobind 2.14.0**, CPython **3.14.6** (GIL enabled: `sys._is_gil_enabled()` is `True`
 and `sysconfig.get_config_var("Py_GIL_DISABLED")` is `0`), g++ **14.4.0** at `-O2`.
 
+**Re-verified against `proto/cpp` at `cf958bf`** (FELIGN/pantr#501). `a45e935` is 259 commits
+behind it. Every claim in the two verified blocks below was re-checked claim by claim rather
+than re-asserted, and the "Epistemic status" block records the per-claim verdicts. **Nearly
+every Python line number in this note has drifted** -- the files moved by up to about 1900 lines
+-- so each locator below is now given with **the command that finds it again**, rather than
+being trusted to stay put. Where a locator alone appears with no command, treat it as a reading
+of `cf958bf` and re-derive it. The measurements are not re-taken; they stay attributed to the
+day they were made.
+
 ## The decision in one paragraph
 
 **Classify the accessor, not the type.** Every accessor that returns a domain object falls into
@@ -165,38 +174,79 @@ Verified by reading each site.
 
 **Three of the nine carry no lifetime question at all**, because they hold a freshly constructed
 object rather than a subobject of anything: `BsplineSpaceRestriction.space` (the field is filled
-at `src/pantr/bspline/_bspline_space_nd.py:390` from a `BsplineSpace(...)` built on the spot),
-`THBSplineSpaceRestriction.space` (`_thb_spline_space.py:1064`), and `LocalSpace.space`
-(`_local_space.py:353,478`, from `global_space.restrict(window)`).
+from a `BsplineSpace(...)` built on the spot -- `_bspline_space_nd.py:390` at `a45e935`, `:905`
+at `cf958bf`), `THBSplineSpaceRestriction.space` (`_thb_spline_space.py:1064`, now the
+`THBSplineSpace(...)` at `:1135` feeding the tuple at `:1165-1167`), and `LocalSpace.space`
+(`_local_space.py:353,478`, now the two `global_space.restrict(window)` calls at `:339` and
+`:486`). All three re-verified at `cf958bf`: still constructed on the spot, still class V. Find
+them with `grep -n 'Restriction(\|\.restrict(' src/pantr/bspline/_bspline_space_nd.py
+src/pantr/bspline/_thb_spline_space.py src/pantr/bspline/_local_space.py`.
 
-**A fourth is not the aggregation case at all.** `ExtractionStructView`
-(`spanwise_element_extraction.py:1119-1196`) has **no `space` field** -- its fields
-(`:1152-1158`) are three per-direction array bundles plus integer shape metadata. So #399's
-premise, that its lifetime "is exactly what the aggregation-lifetime note settles", is half
-right: it is class **A** below, the array-view case that `cpp/bindings/bezier_type.cpp:43-56`
+**A fourth is not the aggregation case at all.** `ExtractionStructView` has **no `space` field**
+-- its fields are three per-direction array bundles (`compact_ops_1d`, `idx_maps_1d`,
+`is_identity_mask_1d`) plus integer shape metadata (`num_intervals`, `input_shape_per_dir`,
+`output_shape_per_dir`, `dim`). Seven fields, none of them a space: re-verified field by field
+at `cf958bf`, where the class is at `spanwise_element_extraction.py:1198-1237` and the fields at
+`:1231-1237` -- it was `:1119-1196` and `:1152-1158` at `a45e935`. Re-read it with
+`grep -n 'class ExtractionStructView' src/pantr/bspline/spanwise_element_extraction.py`.
+So #399's premise, that its lifetime "is exactly what the aggregation-lifetime note settles", is
+half right: it is class **A** below, the array-view case that `cpp/bindings/bezier_type.cpp:43-56`
 already settled, and it needs nothing from the aggregation rule.
 
-**What is left is eight held accessors**, and the ticket misses three of them:
-`BsplineSpace.spaces` (`_bspline_space_nd.py:68-74`), `Bspline.space` (`_bspline.py:126-136`),
-`THBSpline.space` (`_thb_spline.py:87-94`), `MultiLevelExtraction.space`
-(`multilevel_extraction.py:121-128`), `SpanwiseElementExtraction.space`
-(`spanwise_element_extraction.py:210-217`), `THBSplineSpace.grid`
-(`_thb_spline_space.py:809-816`), and -- not in the ticket -- `THBSplineSpace.root_space`
-(`:818-825`), `THBSplineSpace.level_space` (`:917-934`), plus `HierarchicalGrid.root`
-(`_hierarchical_grid.py:477-484`) on the grid side of #395.
+**What is left is eight held accessors**, and the ticket misses three of them. The table gives
+both readings: the locator as read at `a45e935` and the locator at `cf958bf`. **All eight still
+exist, on the same class, under the same name, still handing back a stored attribute** -- only
+one of the nine locators survived the 259 commits, which is why the last column is the command
+rather than a number.
+
+| accessor | at `a45e935` | at `cf958bf` | find it again with |
+|---|---|---|---|
+| `BsplineSpace.spaces` | `_bspline_space_nd.py:68-74` | `:532-546` | `grep -n 'def spaces' src/pantr/bspline/_bspline_space_nd.py` |
+| `Bspline.space` | `_bspline.py:126-136` | `:665-679` | `grep -n 'def space' src/pantr/bspline/_bspline.py` |
+| `THBSpline.space` | `_thb_spline.py:87-94` | `:87-94` (unmoved) | `grep -n 'def space' src/pantr/bspline/_thb_spline.py` |
+| `MultiLevelExtraction.space` | `multilevel_extraction.py:121-128` | `:254-261` | `grep -n 'def space' src/pantr/bspline/multilevel_extraction.py` |
+| `SpanwiseElementExtraction.space` | `spanwise_element_extraction.py:210-217` | `:278-285` | `grep -n 'def space' src/pantr/bspline/spanwise_element_extraction.py` |
+| `THBSplineSpace.grid` | `_thb_spline_space.py:809-816` | `:872-879` | `grep -n 'def grid' src/pantr/bspline/_thb_spline_space.py` |
+| `THBSplineSpace.root_space` | `:818-825` | `:881-888` | `grep -n 'def root_space' src/pantr/bspline/_thb_spline_space.py` |
+| `THBSplineSpace.level_space` | `:917-934` | `:980-997` | `grep -n 'def level_space' src/pantr/bspline/_thb_spline_space.py` |
+| `HierarchicalGrid.root` (#395's) | `_hierarchical_grid.py:477-484` | `:2345-2360` | `grep -n 'def root' src/pantr/grid/_hierarchical_grid.py` |
+
+**Three of those commands return two hits, and the second one is the trap.**
+`_bspline_space_nd.py`, `_bspline.py` and `_hierarchical_grid.py` each carry a leading-underscore
+Python-backend twin -- `_BsplineSpaceNDPython`, `_BsplinePython`, `_HierarchicalGridPython` --
+with an identically named accessor, so the earlier hit is the oracle's and the later one is the
+wrapper's. Read the enclosing `class` before quoting a line.
+
+Two notes on that table, both re-verified at `cf958bf`. `THBSplineSpace.level_space` is a
+**method**, not a property: it validates the level and then indexes a stored list, so it is held
+by this note's definition but is the one entry that is not a bare getter. And
+**`HierarchicalGrid.root` is no longer a bare `return self._root`** -- it is now
+memoise-then-hold (`if self._root is None: object.__setattr__(self, "_root", _adopt(...))`),
+which is this note's own wrapper pattern already partly landed on the grid side rather than a
+drift away from class H.
 
 **And roughly thirty-one more accessors return a domain object by construction**, which is the
-number that matters for effort: 17 on `Bspline`, 3 on `BsplineSpace1D`, 6 on `THBSplineSpace`,
-2 on `THBSpline`, 1 on `BsplineSpace`, plus the module-level factories. They are all class **V**
-and none of them needs a decision. **Restate #393's "at least nine accessors qualify" as "eight
-hold, about thirty-one construct, and the classification is the deliverable."**
+number that matters for effort: 17 on `Bspline`, 3 on `BsplineSpace1D`, **4** on
+`THBSplineSpace`, 2 on `THBSpline`, 1 on `BsplineSpace`, plus the seven module-level factories
+(`create_uniform_space`, `create_thb_space`, `create_from_bezier`, `fit_bspline`,
+`interpolate_bspline`, `l2_project_bspline`, `quasi_interpolate_bspline`). They are all class
+**V** and none of them needs a decision. **Restate #393's "at least nine accessors qualify" as
+"eight hold, about thirty construct, and the classification is the deliverable."**
+
+> **The `THBSplineSpace` figure was 6 here and is wrong, and it was wrong when it was written
+> rather than having drifted.** The class has `restrict`, `refine`, `refine_region` and
+> `coarsen`, and it had exactly those four at `a45e935` too:
+> `git show a45e935:src/pantr/bspline/_thb_spline_space.py | grep -n '^    def '` against
+> `grep -n '^    def ' src/pantr/bspline/_thb_spline_space.py` shows the same four public
+> constructing methods in both, with `restriction_to` returning an array rather than a domain
+> object. Nothing about the decision moves: 4 and 6 are both "class V, no decision owed".
 
 ### F6 (critical). Two identity assertions in the suite are stronger than "the same object twice", and one of them fixes the C++ constructor's signature
 
 - `tests/test_bspline_space.py:89` is `assert space.spaces[0] is space_1d`. The object that
   comes back is **the constructor argument's own Python object**. No C++ object can supply
   that; only the wrapper can, by keeping what it was built from.
-- `tests/test_transform.py:634` is `assert s2.space is s.space  # same space object`, where
+- `tests/test_transform.py:649` is `assert s2.space is s.space  # same space object`, where
   `s2 = s.transform(...)`. A **derived** object hands back the **source's** space wrapper.
   Wrapping `s2._impl.space` afresh gives a different Python object even when the C++ pointer is
   identical, so this one cannot be satisfied by memoisation alone.
@@ -385,17 +435,44 @@ is discoverable:
   identical to.
 - **Propagate when the nested object is known unchanged.** A method that returns a derived object
   sharing this one's nested object passes its own wrapper down:
-  `type(self)._wrap(new_impl, space=self.space)`. In the current suite there is exactly one site
-  that needs this, `Bspline.transform` (non-in-place), pinned by
-  `tests/test_transform.py:634`. Every other `is` assertion in the suite is constructor
-  identity, which seeding covers: `tests/test_bspline_space.py:89`,
-  `tests/test_bspline.py:22,241`, `tests/test_multilevel_extraction.py:103`,
-  `tests/test_quasi_interpolation.py:314`, `tests/test_grid_hierarchical.py:199`
-  (`assert g.root is root`, which is #395's), `tests/test_mpi_collocation.py:188,202`,
-  `tests/test_mpi_qi.py:153`, `tests/test_mpi_l2.py:251`, `tests/test_mpi_thb_qi.py:151`.
+  `type(self)._wrap(new_impl, space=self.space)`.
+
+  > **"Exactly one site" was true at `a45e935` and is false at `cf958bf`.** The suite now pins
+  > propagation at a dozen sites, and pins it **per direction** -- shared where the direction was
+  > untouched, distinct where it was rebuilt -- which is a stronger contract than this bullet
+  > described. On `Bspline`: `transform`
+  > (`tests/parity/test_bspline_type.py:1189` and `tests/test_transform.py:649`),
+  > `to_open_bspline`, `split` and `slice`
+  > (`tests/parity/test_bspline_structural.py:544,666,766`), `derivative` and `elevate_degree`
+  > (`tests/parity/test_bspline_degree.py:1464`), and the refinement entry points
+  > (`tests/parity/test_bspline_refinement.py:986,1109`). On `HierarchicalGrid.root`: `refine`,
+  > `refine_cells`, `coarsen`, `coarsen_cells` and `_copy`
+  > (`tests/parity/test_grid_hierarchical.py:1237`) and `restrict`
+  > (`tests/test_grid_hierarchical.py:2038`). **Do not read the list off this page** -- it is a
+  > count of a growing suite, which is what went stale here. Regenerate it with
+  > `grep -rn 'assert .*\.space.*\bis\b.*\.space\|assert .*\.root\b.*\bis\b.*root' tests/ | grep -v 'is not'`
+  > and read the enclosing test name.
+  >
+  > The decision does not move: propagation is still the rule, and the seeding rule below still
+  > covers everything else. What moved is the *effort* -- an implementer planning from the "one
+  > site" sentence would under-scope the change.
+
+  Every other `is` assertion in the suite is constructor
+  identity, which seeding covers. **All of them still exist and none changed shape. Seven of the
+  fifteen locators named in this bullet drifted; the readings below are `cf958bf`'s**, with the
+  `a45e935` one in brackets where it differs: `tests/test_bspline_space.py:89`,
+  `tests/test_bspline.py:22,263` [`:241`], `tests/test_multilevel_extraction.py:109` [`:103`],
+  `tests/test_quasi_interpolation.py:333` [`:314`], `tests/test_grid_hierarchical.py:201`
+  [`:199`] (`assert g.root is root`, which is #395's), `tests/test_mpi_collocation.py:188,202`,
+  `tests/test_mpi_qi.py:153`, `tests/test_mpi_l2.py:252` [`:251`],
+  `tests/test_mpi_thb_qi.py:151`.
   The three `dfn.local.space is ds.local.space` assertions
-  (`tests/test_mpi_qi.py:164`, `test_mpi_l2.py:262`, `test_mpi_thb_qi.py:162`) compare two Python
-  `LocalSpace` records and are untouched by any of this.
+  (`tests/test_mpi_qi.py:164`, `test_mpi_l2.py:263` [`:262`], `test_mpi_thb_qi.py:162`) compare
+  two Python `LocalSpace` records and are untouched by any of this.
+
+  **Regenerate the whole list rather than trusting these numbers**, which is what made them wrong
+  in the first place:
+  `grep -rn 'assert .* is .*\(space\|root\)' tests/ | grep -v 'is not'`.
 
 There is no reference cycle to worry about under class H: the child holds no Python reference to
 the owner, so the owner's wrapper -> child wrapper -> child handle chain is acyclic and plain
@@ -407,15 +484,32 @@ where the child handle does hold the owner handle.
 free, because `pickle` memoises: dumping `(b, b.space)` restores a pair that shares one space.
 Sharing does **not** survive two independent `dumps` calls, which is also true today.
 
-**`__reduce__` is an addition here, not a change, and every one of the nine tickets owes one.**
+**`__reduce__` was an addition here, not a change, and every one of the nine tickets owes one.**
 Verified: `grep -rn "__reduce__\|__getstate__\|__setstate__" src/pantr/bspline/` at `a45e935`
-returns nothing -- not one class in the module defines any of them, so every type pickles today
+returned nothing -- not one class in the module defined any of them, so every type pickled
 through the default protocol over its `__dict__` or its `__slots__`. The moment a slot holds a
 nanobind handle that default fails, and it fails at `dumps` time with a `TypeError` about the
 handle rather than anywhere near the design decision that caused it. The milestone's cross-cutting
 requirement already asks for a round-trip per type under both backends; what this note adds is
 *what the reduction must contain*: the public arrays and the nested **wrappers**, so that the
 identity contracts of F6 survive the round trip through the seeding rule rather than by accident.
+
+> **That grep no longer returns nothing, and this is the note's own rule having been adopted.**
+> Re-run it -- the same command, unchanged -- and at `cf958bf` it finds **three** `__reduce__`
+> definitions and still **no** `__getstate__` or `__setstate__` anywhere in `src/pantr/`:
+> `_bspline.py:616` (`Bspline`), `_bspline_space_1d.py:712` (`BsplineSpace1D`) and
+> `_bspline_space_nd.py:500` (`BsplineSpace`). Use
+> `grep -rn 'def __reduce__' src/pantr/bspline/` for the definitions alone; the original form
+> also matches two docstring mentions.
+>
+> All three do what this section specifies: they return the constructor's arguments, hand the
+> nested space out as its **wrapper** rather than its `_impl`, and cite the memoising-pickle
+> argument above by name. One thing they add that this note did not foresee -- `BsplineSpace1D`
+> recomputes its tolerance from the stored knots rather than carrying it, so a round trip moves
+> it by a bounded relative amount; `design/bspline_pickle_tolerance.md` derives that bound and
+> `tests/parity/test_bspline_space_1d.py` pins it. **Four of the module's types still owe one**:
+> `THBSplineSpace`, `THBSpline`, `MultiLevelExtraction` and `SpanwiseElementExtraction`, which
+> is #397, #399 and #400.
 
 ## The failure modes, and the test that catches each
 
@@ -556,14 +650,14 @@ all. It is not -- it is the premise of the 2026-08-27 amendment.
 **Return the nested object by value and accept the copy.** No lifetime question at all, and for a
 `BsplineSpace1D` of a dozen knots the copy is genuinely free (measured: 198 ns against 213 ns at
 width 4). Rejected on three grounds, in increasing order of weight: it is a factor of 33 at
-16384 doubles; it breaks `tests/test_bspline_space.py:89` and `tests/test_transform.py:634`
+16384 doubles; it breaks `tests/test_bspline_space.py:89` and `tests/test_transform.py:649`
 outright, because a copy cannot be the object the caller passed in; and it hands back an object
 with a cold derived cache, turning a memo into a per-access recomputation.
 **What would change it:** nothing available. Even dropping both identity assertions leaves the
 cold-cache problem.
 
 **`std::unique_ptr<const T>` plus a raw borrowing accessor.** Expresses single ownership honestly
-and costs no atomics. Rejected because it cannot satisfy `tests/test_transform.py:634` at all: two
+and costs no atomics. Rejected because it cannot satisfy `tests/test_transform.py:649` at all: two
 `Bspline`s sharing one space is the contract, and unique ownership forbids it.
 
 **An intern table -- a `WeakKeyDictionary` from handle to wrapper -- so that wrapping the same
@@ -679,18 +773,68 @@ between mechanisms:**
   forward (`include/nanobind/stl/detail/nb_list.h:60-67`); `nb_type_put`'s `inst_c2p` lookup and
   `nb_type_put_common`'s keep-alive, `destruct` flag and `shared_from_this` branch
   (`src/nb_type.cpp:1963-2050`, `2052-2124`).
-- **Verified by reading the tree at `a45e935`:** the eight held accessors and the roughly
-  thirty-one constructing ones, each at the line cited in F5; that `ExtractionStructView` has no
-  `space` field; that no `__reduce__`, `__getstate__` or `__setstate__` exists anywhere in
-  `src/pantr/bspline/`; that no domain class in `bspline` or `grid` defines `__eq__` or
-  `__hash__`; the shared-`Tag` rationale at `cpp/include/pantr/grid/tags.hpp:14-29`; the array-view
-  rationale at `cpp/bindings/bezier_type.cpp:43-56`; the CI Python matrix.
+- **Verified by reading the tree, first at `a45e935` and re-verified claim by claim at `cf958bf`
+  (2026-09-17, FELIGN/pantr#501).** Each claim carries the command that re-checks it, and each
+  says whether it **held** or **changed**. Where only the locator moved, the finding is unchanged
+  and the number is not worth trusting again -- run the command.
+  - *Held in substance, every locator changed.* The eight held accessors, plus
+    `HierarchicalGrid.root`: all nine still exist, on the same class, under the same name, still
+    handing back a stored attribute. Only `THBSpline.space` kept its line range. The `a45e935`
+    and `cf958bf` locators and a `grep` per accessor are tabulated in F5.
+  - *Changed, and it was wrong when written rather than drifted.* The constructing accessors were
+    given as "roughly thirty-one", with 6 on `THBSplineSpace`. That class has four --
+    `restrict`, `refine`, `refine_region`, `coarsen` -- and had the same four at `a45e935`;
+    `git show a45e935:src/pantr/bspline/_thb_spline_space.py | grep -n '^    def '` against
+    `grep -n '^    def ' src/pantr/bspline/_thb_spline_space.py` shows it. The per-class figures
+    in F5 are corrected; the classification is untouched.
+  - *Held.* `ExtractionStructView` has no `space` field. Seven fields, re-read one by one:
+    `grep -n 'class ExtractionStructView' src/pantr/bspline/spanwise_element_extraction.py`.
+  - *Changed.* "No `__reduce__`, `__getstate__` or `__setstate__` anywhere in
+    `src/pantr/bspline/`" is **false now**: three `__reduce__` definitions exist, at
+    `_bspline.py:616`, `_bspline_space_1d.py:712` and `_bspline_space_nd.py:500`, each following
+    this note's rule. Still no `__getstate__` or `__setstate__` anywhere in `src/pantr/`.
+    `grep -rn 'def __reduce__\|def __getstate__\|def __setstate__' src/pantr/bspline/`
+  - *Held.* No domain class in `bspline` or `grid` defines `__eq__` or `__hash__`.
+    `grep -rn 'def __eq__\|def __hash__' src/pantr/bspline/ src/pantr/grid/`, which returns
+    nothing.
+  - *Held, locator narrowed.* The shared-`Tag` rationale is at
+    `cpp/include/pantr/grid/tags.hpp:21-29` -- point 1 of "Four things the port has to get
+    right", not `:14-29`, which starts in the paragraph before it.
+    `grep -n 'shared_ptr<const Tag>' cpp/include/pantr/grid/tags.hpp`
+  - *Held exactly.* The array-view rationale is still at `cpp/bindings/bezier_type.cpp:43-56`,
+    the one locator in this block that did not move at all.
+    `grep -n 'is a view, and read-only' cpp/bindings/bezier_type.cpp`
+  - *Held.* The CI Python matrix is `3.11`, `3.13`, `3.14`, at
+    `.github/workflows/ci.yaml:20,80,131`.
+    `grep -n 'python-version: \[' .github/workflows/ci.yaml`
 - **Verified by reading `feat/387-tensor-product-grid` at `d7b8654` through `git show`:** the
   wrapper pattern, `_adopt`, the memo slots, the raising `__setattr__`, the `view_of` owner
   argument, and the four `rv_policy` sites. That worktree was not entered.
-- **Verified by execution in the `pantr` env:** that `b.space` changes identity across
-  `reverse(direction=0, in_place=True)`; that `b.control_points is b._control_points` and the
-  array is writable.
+- **Verified by execution in the `pantr` env, and re-run at `cf958bf`:**
+  - *Held.* `b.space` changes identity across `reverse(direction=0, in_place=True)`.
+  - *Changed, because the port landed.* `b.control_points is b._control_points` and "the array is
+    writable" were read off a tree where `Bspline` itself held the array. At `cf958bf` the
+    wrapper's `__slots__` are `("_derived", "_impl", "_space")` and `control_points` delegates to
+    `self._impl.control_points`, so **there is no `_control_points` on the wrapper at all** and
+    the answer now depends on the backend: under `Backend.PYTHON` the array is the oracle's own
+    storage and is **writable**; under `Backend.CPP` it is a **read-only view**, which is the
+    aliasing defect this note wanted closed, closed. Re-run with:
+
+    ```python
+    import numpy as np
+    from pantr._backend import available_backends, use_backend
+    from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
+
+    for backend in available_backends():
+        with use_backend(backend):
+            one_d = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]), 2)
+            field = Bspline(BsplineSpace((one_d, one_d)), np.zeros((3, 3, 2)))
+            print(backend.name, field.control_points.flags.writeable)
+    ```
+
+    which prints `PYTHON True` and `CPP False`. `grep -n '__slots__' src/pantr/bspline/_bspline.py`
+    shows the two slot sets -- the wrapper's and the oracle twin's -- that the old claim
+    conflated.
 - **Measured, 2026-08-31:** the three-row reseat table in reason 3, with a destructor counter
   in the nested type, so the middle row's use-after-free is a count and not an inference.
 - **Asserted, not measured:** that a raw-reference version of a class-H accessor is a
