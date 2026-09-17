@@ -90,10 +90,18 @@
 /// defect.** `_insert_knots_bspline` refines a periodic direction by a round trip
 /// through the open representation: `_to_open_bspline_1d_impl`, insert, then
 /// `_to_periodic_bspline_1d_impl`. Those two are the *boundary and periodic
-/// conversions*, which `pantr/bspline/bspline.hpp` lists as their own port and which
-/// no ticket in this milestone covers -- exactly as `space_1d.hpp` treats
-/// `get_cardinal_intervals`. Porting them here would be porting two more operations
-/// under cover of this one.
+/// conversions*, which `pantr/bspline/bspline.hpp` lists as their own port -- exactly
+/// as `space_1d.hpp` keeps `get_cardinal_intervals` off its type. Porting them here
+/// would be porting two more operations under cover of this one.
+///
+/// **A ticket does cover them: `FELIGN/pantr#500`**, whose table names "periodic
+/// conversion (`to_periodic`, and the periodic half of `to_open_bspline`)" and gates it
+/// on a dense factorization that is LAPACK on one side and Eigen on the other. This
+/// paragraph used to say "no ticket in this milestone covers" them, which was false.
+/// The refusal below is unaffected and still right; what changed is that it waits on a
+/// ticket that exists rather than on nothing. Cite the issue rather than the state of
+/// the ticket graph: a comment asserting that *nothing* covers something goes stale the
+/// day somebody files it, and nothing announces that it has.
 ///
 /// So `refine_along_axis` is dimension-agnostic and periodicity-agnostic, and the two
 /// entry points refuse a periodic direction that would receive knots. A periodic
