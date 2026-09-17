@@ -139,12 +139,17 @@ def _the_cpp_handle_to_scan(space: BsplineSpace1D) -> _CppHandle | None:
             states the never-fall-back rule rather than relying on where it was
             enforced.
     """
-    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
-
     if active_backend() is Backend.PYTHON:
         return None
     if Backend.CPP not in available_backends():
         raise RuntimeError("the CPP backend is not available in this installation")
+
+    # Imported *below* the two guards and not above them, which is the shape
+    # `_structural_backend` and `_degree_backend` get from splitting the predicate
+    # from the handle fetch: the extension is optional, an installation without it
+    # is the ordinary serial one, and importing it before the Python path returns
+    # would make this accessor raise there rather than run the oracle.
+    from pantr import _pantr_cpp  # noqa: PLC0415  (resolved against the .pyi stub)
 
     impl = space._impl  # same package; the wrapper exposes no public handle
     if isinstance(impl, _pantr_cpp.BsplineSpace1D32 | _pantr_cpp.BsplineSpace1D64):
