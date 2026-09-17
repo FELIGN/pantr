@@ -1029,10 +1029,11 @@ class BsplineSpace1D:
                 It has length equal to the number of intervals. If `out` was provided,
                 returns the same array.
 
-        The scan is an *operation* rather than a property of the knots, so
-        :mod:`pantr.bspline._knots_backend` dispatches it rather than
-        ``self._impl``; it runs in C++ for a space the C++ backend built, and on the
-        numba kernel otherwise. The answer is the same either way.
+        Note:
+            The scan is an *operation* rather than a property of the knots, so
+            :mod:`pantr.bspline._knots_backend` dispatches it rather than
+            ``self._impl``; it runs in C++ for a space the C++ backend built, and on
+            the numba kernel otherwise. The answer is the same either way.
 
         Raises:
             TypeError: If `out` is a masked array.
