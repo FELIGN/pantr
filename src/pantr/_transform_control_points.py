@@ -10,6 +10,43 @@ import numpy as np
 from numpy import typing as npt
 
 
+def _geometric_rank(rank_full: int, is_rational: bool) -> int:
+    """The geometric rank of a control net, weight column excluded.
+
+    Args:
+        rank_full (int): The stored component count, weight column included.
+        is_rational (bool): Whether the last component is a homogeneous weight.
+
+    Returns:
+        int: The number of geometric coordinates.
+    """
+    return rank_full - 1 if is_rational else rank_full
+
+
+def _check_affine_rank(matrix: npt.NDArray[np.float64], rank: int) -> None:
+    """Refuse an affine map whose linear part does not match the geometric rank.
+
+    Split out of :func:`_apply_affine_to_control_points` so that a caller which must
+    refuse *before* the control points are touched -- the C++ route in
+    :func:`pantr.bspline._shape_backend.transform_field`, which hands the map across a
+    binding and cannot let the oracle's helper raise on the far side -- refuses with
+    this text rather than a second spelling of it. Two spellings of one refusal is what
+    this exists to prevent; the message and the rank expression now live here only.
+
+    Args:
+        matrix (npt.NDArray[np.float64]): The ``(n, n)`` linear part.
+        rank (int): The geometric rank the net has.
+
+    Raises:
+        ValueError: If ``matrix`` is not ``(rank, rank)``.
+    """
+    if matrix.shape != (rank, rank):
+        raise ValueError(
+            f"Transform dimension ({matrix.shape[0]}) does not match the "
+            f"geometric rank ({rank}) of the control points."
+        )
+
+
 def _apply_affine_to_control_points(
     control_points: npt.NDArray[np.float32 | np.float64],
     is_rational: bool,
@@ -51,13 +88,8 @@ def _apply_affine_to_control_points(
     dtype = cp.dtype
     rank_full = cp.shape[-1]
 
-    n = rank_full - 1 if is_rational else rank_full
-
-    if matrix.shape != (n, n):
-        raise ValueError(
-            f"Transform dimension ({matrix.shape[0]}) does not match the "
-            f"geometric rank ({n}) of the control points."
-        )
+    n = _geometric_rank(rank_full, is_rational)
+    _check_affine_rank(matrix, n)
 
     # Cast matrix and translation to control-point dtype for computation.
     A = matrix.astype(dtype, copy=False)
