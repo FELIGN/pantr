@@ -26,8 +26,9 @@
 /// `pantr.bspline.Bspline.evaluate`, `.evaluate_derivatives` and `.to_beziers`
 /// used to wait on basis tabulation. That port has landed --
 /// `pantr/bspline/tabulate.hpp`, bound in `bindings/bspline_basis.cpp` and
-/// dispatched from `src/pantr/bspline/_basis_backend.py` -- so the multivariate
-/// paths already run their per-direction tabulation in C++ and stop at the step
+/// dispatched from `src/pantr/bspline/_basis_backend.py` -- so **under
+/// `Backend.CPP`** the multivariate paths already run their per-direction
+/// tabulation in C++ and stop at the step
 /// after it: combining the per-direction tables with the control net, the rational
 /// quotient, and, for `to_beziers`, applying the extraction operators per element
 /// and assembling the result. None of that has a header here. The univariate
@@ -36,6 +37,13 @@
 /// `tabulate_basis` at all, so tabulation's landing did not move them.
 /// `FELIGN/pantr#497` is the open ticket for both, and it owns the correction of
 /// this paragraph as much as this file does.
+///
+/// The `Backend.CPP` qualifier is load-bearing, not throat-clearing:
+/// `PANTR_BACKEND` defaults to `python`, so on a default run that per-direction
+/// tabulation is still the Numba kernel and nothing here executes at all. This
+/// paragraph exists because its previous version overclaimed, which is reason
+/// enough to hold it to a stricter bar than the unqualified phrasing used
+/// elsewhere in these headers.
 ///
 /// Two earlier readings of this paragraph were wrong and are worth naming so they
 /// are not reintroduced: it said "two" while listing three operations, and it
