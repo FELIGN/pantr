@@ -70,9 +70,16 @@
 /// make the same error, which is what makes the *parity* claim exact while the
 /// *accuracy* claim is not.
 ///
-/// A knot vector reflected this way is still non-decreasing and still clamped, so the
-/// space it builds needs no repair; snapping stays on, which is the oracle's
-/// `BsplineSpace1D(new_knots, degree, periodic=...)` taking its default.
+/// A knot vector reflected this way is still **non-decreasing** -- subtracting a
+/// non-decreasing sequence read backwards from a constant gives a non-decreasing one --
+/// and that is what makes the space it builds need no repair. It also keeps whatever
+/// end structure it arrived with, the two ends exchanged: a clamped vector comes back
+/// clamped, a periodic one comes back periodic. Clampedness is deliberately not the
+/// premise here, because `reverse` serves periodic directions too and a periodic space
+/// is never clamped by this library's own definition -- `has_left_end_open()` and
+/// `has_right_end_open()` return `false` for one unconditionally. Snapping stays on,
+/// which is the oracle's `BsplineSpace1D(new_knots, degree, periodic=...)` taking its
+/// default.
 ///
 /// **A contraction.** `transform` is `cp @ A.T + b` in the oracle, a matrix product
 /// that reaches BLAS, whose summation order is not reproducible. It carries a bounded
