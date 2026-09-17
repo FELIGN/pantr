@@ -25,13 +25,44 @@
 /// values that the two backends already agree on bitwise, IEEE-754 addition and
 /// subtraction are correctly rounded, and there is **no multiplication for a fused
 /// multiply-add to absorb** -- so no `-ffp-contract` setting and no target ISA can
-/// separate the two results. That argument is why the parity suite claims this vector
-/// bitwise rather than within a rounding budget, and it carries two hypotheses beyond
-/// the absence of a multiplication, stated here rather than left implicit: both sides
-/// round under the **same IEEE-754 rounding mode** -- nothing here calls `fesetround`
-/// and neither does the oracle -- and neither evaluates in **excess precision**, which
-/// x86-64 SSE2 and every target this project builds for satisfy and legacy x87 would
-/// not.
+/// separate the two results. Because both operations are *correctly rounded*, each has
+/// exactly one right answer for given operands, format and rounding mode -- so the
+/// compiler, the optimisation level, the vectorisation width and the libm are all
+/// irrelevant here. There is no reduction whose order could change, no libm call, and
+/// no algebraic freedom in a single binary operation. The reversal itself is pure
+/// indexing and contributes no arithmetic at all.
+///
+/// That argument is why the parity suite claims this vector bitwise rather than within
+/// a rounding budget. Being an exactness claim, it holds only under hypotheses, and
+/// they are stated here rather than left implicit:
+///
+/// 1. The two backends' knot vectors and degrees already agree **bitwise**. This is a
+///    pre-existing claim of the space port, asserted by
+///    `tests/parity/test_bspline_space_1d.py`, and is inherited rather than
+///    established here.
+/// 2. Both sides take the domain from the same two indices, `{degree, n - degree - 1}`
+///    -- `BsplineSpace1D::domain()` against the oracle's `_get_domain_indices`.
+/// 3. Both sides evaluate **in the field's storage format**, with no intermediate
+///    widening. The oracle satisfies this because `BsplineSpace1D.domain` returns numpy
+///    scalars of the space's *own dtype*, so `a + b` is a `float32` operation for a
+///    `float32` space. Were that property ever to change, the oracle would form the sum
+///    in `double` and narrow, and the claim would then rest on the further argument
+///    that double rounding of a *single* operation is innocuous here.
+/// 4. Both sides round under the **same IEEE-754 rounding mode** -- nothing here calls
+///    `fesetround` and neither does the oracle.
+/// 5. Neither evaluates in **excess precision**, which x86-64 SSE2 and every target
+///    this project builds for satisfy and legacy x87 would not.
+/// 6. The build forbids **fast-math**. This one genuinely bites: `(a + b) - k` cancels
+///    near either domain end, so a subnormal result is reachable, and flush-to-zero on
+///    one side only would separate the two. It is enforced rather than assumed --
+///    `cmake/PantrCompileOptions.cmake` fails configure on `-ffast-math`,
+///    `-ffinite-math-only` and `/fp:fast`, and `scripts/ci_local.sh` carries a gate row
+///    asserting each refusal.
+/// 7. Knot snapping **selects** a representative rather than averaging one, on both
+///    sides, so the constructor the reflected vector passes through introduces no
+///    further rounding. Both do: `pantr/bspline/knots.hpp`'s `snap_knots` propagates an
+///    existing knot forward, and the oracle's `_snap_knots` says in its own docstring
+///    that the representative is "chosen and not averaged".
 ///
 /// It does **not** say the expression is error-free. `(a + b) - k` cancels near either
 /// domain end, so the reflected value's error against the exact reflection is bounded
@@ -137,9 +168,16 @@ template <Real T>
 
 /// Refuse a permutation that is not one, with the oracle's message.
 ///
-/// The text is `Bspline.permute_directions`' own, character for character, because
-/// `tests/parity/test_bspline_shape.py` compares it. The oracle renders the argument
-/// as a Python list, which is why the brackets and the `", "` separator are here.
+/// The text is `Bspline.permute_directions`' own, character for character, and
+/// `cpp/tests/test_bspline_shape.cpp` is what compares it. The oracle renders the
+/// argument as a Python list, which is why the brackets and the `", "` separator are
+/// here.
+///
+/// The witness is that unit test and **not** the parity suite, which cannot reach this
+/// message: every Layer 1 check runs in the wrapper above the backend branch, so
+/// `tests/parity/test_bspline_shape.py` sees the oracle's own text under both backends
+/// and never this one. Matching it is for a caller with no wrapper in front of it,
+/// which is the same reason this function validates at all.
 ///
 /// \param permutation The candidate permutation.
 /// \param dim The field's number of parametric directions.
