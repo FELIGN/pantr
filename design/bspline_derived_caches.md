@@ -24,7 +24,11 @@ what changed is marked where it stands and the "Epistemic status" block records 
 verdicts. The measurements are **not** re-taken -- they are dated readings of one machine and
 stay attributed to the day they were made. Each re-verified claim now carries **the command that
 re-checks it**, so the next reader re-runs it rather than re-deriving it; a count with no command
-beside it is the shape that went stale here.
+beside it is the shape that went stale here. **That pass covered the counted facts and the
+"Epistemic status" block, and nothing else**: every other bare line-number locator in this note is
+still the `a45e935` reading the block above describes, and several have drifted -- the two
+invalidation sites cited under *Does #386's shape generalise?* land in unrelated `Raises:` blocks
+at `cf958bf`. Re-derive one before relying on it.
 
 ## The decision in one paragraph
 
@@ -68,13 +72,15 @@ the other two are on `SpanwiseElementExtraction`, outside the ticket's scope and
 > tree that has been imported, the compiled `.pyc` files under `__pycache__` do contain the
 > string, so a form that *sums* their matches is wrong: without the filter
 > `grep -rc cached_property src/pantr/bspline/` totals **19**, and with it **13**. The
-> enumerating `-n` form above survives the omission only by luck -- GNU `grep` 3.5 and later
-> send its `Binary file ... matches` notice to *stderr*, so the visible count stays 13 while the
-> three files it declined to enumerate are announced where a pipe into `wc -l` cannot see them.
-> Keep the filter on both forms: it is the only spelling whose answer depends on neither the
-> flags, nor the tool (`ugrep` and `rg` skip the `.pyc` files outright), nor whether the tree
-> has been imported. Checked against GNU `grep` 3.7 and `ugrep` 7.8.4; an earlier draft of this
-> paragraph attached the 19 to the `-n` form, where it does not arise.
+> enumerating `-n` form above survives the omission only by luck -- GNU `grep` 3.5 moved the
+> notice to *stderr* and reworded it to `grep: FILE: binary file matches` (its NEWS for that
+> release says so, and the stated reason is exactly this: so that piping into `wc` no longer adds
+> to the count), so the visible count stays 13 while the three files it declined to enumerate are
+> announced where a pipe cannot see them. Keep the filter on both forms: it is the only spelling
+> whose answer depends on neither the flags, nor the tool, nor whether the tree has been imported.
+> Checked here against GNU `grep` 3.7 (19 unfiltered under `-rc`, 13 filtered), `ugrep` 7.8.4 and
+> `ripgrep` 14.1.1 (both 13 either way, since both skip the `.pyc` files); an earlier draft of
+> this paragraph attached the 19 to the `-n` form, where it does not arise.
 
 But **all seven of `BsplineSpace`'s were O(dim) reductions over its own children**, with `dim`
 at most 3 in every use in the tree: `degrees`, `tolerance`, `num_basis`, `num_total_basis`,
