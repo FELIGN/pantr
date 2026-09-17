@@ -195,10 +195,16 @@ bool same_values(std::span<const T> left, std::span<const T> right) {
 /// comment derives. Run on a non-dyadic, non-uniform knot vector, which is where the
 /// reflection actually rounds.
 ///
+/// The vector is also deliberately **not symmetric about its own domain midpoint**.
+/// A symmetric vector is its own reflection, so this identity holds against a
+/// `reverse` that flipped the net and left the knot vector entirely alone -- which is
+/// a mutation this check is here to catch, and did not while the interior knots sat
+/// at 0.3 and 0.7.
+///
 /// \tparam T The storage format.
 template <class T>
 void check_reverse_does_not_move_the_curve() {
-    const std::vector<T> knots{T(0.1), T(0.1), T(0.1), T(0.3), T(0.7), T(0.9), T(0.9), T(0.9)};
+    const std::vector<T> knots{T(0.1), T(0.1), T(0.1), T(0.3), T(0.4), T(0.9), T(0.9), T(0.9)};
     const std::int64_t degree = 2;
     const std::vector<T> values = ramp<T>(5 * 2);
     const Bspline<T> curve = field_of<T>({direction<T>(knots, degree, false)}, values, 2, false);
@@ -220,7 +226,7 @@ void check_reverse_does_not_move_the_curve() {
         + (static_cast<double>(2 * cut_roundings + 2)
            * static_cast<double>(std::numeric_limits<T>::denorm_min()));
 
-    for (const double u : {0.1, 0.17, 0.3, 0.42, 0.7, 0.83, 0.9}) {
+    for (const double u : {0.1, 0.17, 0.3, 0.35, 0.4, 0.62, 0.83, 0.9}) {
         const std::vector<T> here = slice_point<T>(curve, u);
         const std::vector<T> there = slice_point<T>(flipped, (lo + hi) - u);
         for (std::size_t c = 0; c < here.size(); ++c) {
@@ -260,6 +266,13 @@ void check_reverse_is_an_exact_involution_on_a_dyadic_vector() {
                     "reverse twice over a dyadic vector did not return the knot vector");
     PANTR_CHECK_MSG(!same_values<T>(once.net().values(), surface.net().values()),
                     "reverse left the control net alone, so the involution is vacuous");
+    // The knot half of the same vacuity guard, and it is not redundant with the net
+    // half: a `reverse` that flips the net and never reflects the vector passes the
+    // round trip above, because a no-op is its own inverse. `along` is asymmetric
+    // about its domain midpoint precisely so this can fire.
+    PANTR_CHECK_MSG(!same_values<T>(once.space_ref().space_ref(0).knots(),
+                                    surface.space_ref().space_ref(0).knots()),
+                    "reverse left the knot vector alone, so the involution is vacuous");
 
     PANTR_CHECK_MSG(once.space()->spaces()[1] == surface.space()->spaces()[1],
                     "reverse rebuilt the untouched direction instead of carrying its handle");
@@ -453,13 +466,21 @@ void check_transform_is_exact_on_a_representable_map() {
     PANTR_CHECK_MSG(unchanged.space() == curve.space(),
                     "transform rebuilt the space instead of sharing the field's handle");
 
-    const std::vector<double> scaling{4.0, 0.0, 0.0, 0.25};
+    // Deliberately **not symmetric**. A diagonal matrix is its own transpose, so a
+    // transform reading `A` where it should read `A.T` agrees with its closed form on
+    // every diagonal map -- a mutation that survived this check while the only
+    // matrices here were the identity and a scaling. Every entry is a power of two or
+    // zero and every coefficient is a small integer, so the products and sums below
+    // are exact in both storage formats and the comparison stays bitwise.
+    const std::vector<double> shear{2.0, 0.5, 0.0, 4.0};
     const std::vector<double> shift{-3.0, 8.0};
     const Bspline<T> mapped =
-        transform<T>(curve, as_2x2(scaling), std::span<const double>(shift));
+        transform<T>(curve, as_2x2(shear), std::span<const double>(shift));
     for (std::size_t k = 0; k * 2 < values.size(); ++k) {
-        const T x = static_cast<T>((values[k * 2] * T(4)) + T(-3));
-        const T y = static_cast<T>((values[(k * 2) + 1] * T(0.25)) + T(8));
+        const T u = values[k * 2];
+        const T v = values[(k * 2) + 1];
+        const T x = static_cast<T>((u * T(2)) + (v * T(0.5)) + T(-3));
+        const T y = static_cast<T>((u * T(0)) + (v * T(4)) + T(8));
         PANTR_CHECK_MSG(mapped.net().values()[k * 2] == x
                             && mapped.net().values()[(k * 2) + 1] == y,
                         "transform disagreed with its closed form at coefficient "
