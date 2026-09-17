@@ -989,6 +989,7 @@ this check, and a cross-backend comparison cannot see a fault both backends shar
 Each rank carries at least one **non-symmetric** matrix, because a symmetric one is its
 own transpose and cannot tell `A` from `A` transposed."""
 
+
 class _ExactMap(NamedTuple):
     """One exactly-representable affine map and the field shape to apply it to.
 
