@@ -169,7 +169,7 @@ for immortalised objects; a bound instance is an ordinary heap object, and no CI
 free-threaded today (verified: `.github/workflows/ci.yaml:20,80,131` list `3.11`, `3.13`,
 `3.14`, none of them `t`).
 
-### F5 (important). The nine accessors the ticket names are not the nine that matter, and the real count is about forty
+### F5 (important). The nine accessors the ticket names are not the nine that matter, and the real count is about thirty-five
 
 Verified by reading each site.
 
@@ -178,8 +178,8 @@ object rather than a subobject of anything: `BsplineSpaceRestriction.space` (the
 from a `BsplineSpace(...)` built on the spot -- `_bspline_space_nd.py:390` at `a45e935`, `:905`
 at `cf958bf`), `THBSplineSpaceRestriction.space` (`_thb_spline_space.py:1064`, now the
 `THBSplineSpace(...)` at `:1135` feeding the tuple at `:1165-1167`), and `LocalSpace.space`
-(`_local_space.py:353,478`, now the two `global_space.restrict(window)` calls at `:339` and
-`:486`). All three re-verified at `cf958bf`: still constructed on the spot, still class V. Find
+(`_local_space.py:353,478`, now the two `restrict(window)` calls at `:339`
+(`global_space.restrict(window)`) and `:486` (`thb.restrict(window)`)). All three re-verified at `cf958bf`: still constructed on the spot, still class V. Find
 them with `grep -n 'Restriction(\|\.restrict(' src/pantr/bspline/_bspline_space_nd.py
 src/pantr/bspline/_thb_spline_space.py src/pantr/bspline/_local_space.py`.
 
@@ -292,7 +292,7 @@ Four reasons, in the order they decide it.
    protection from a nanobind policy, and nothing in the type warned it. `shared_ptr<const T>` is
    a guarantee the type carries, so both consumers get the same one.
 2. **The tree already made this exact call once, for the same reason.**
-   `cpp/include/pantr/grid/tags.hpp:20-29` holds each tag behind `std::shared_ptr<const Tag>`
+   `cpp/include/pantr/grid/tags.hpp:21-29` holds each tag behind `std::shared_ptr<const Tag>`
    precisely so a handed-out view outlives a replacement, and says so: *"the port would otherwise
    have introduced a use-after-free the pre-port class could not have."* This note generalises
    that ruling from a tag's arrays to a nested space.
@@ -467,9 +467,13 @@ is discoverable:
   > site" sentence would under-scope the change.
 
   Every other `is` assertion in the suite is constructor
-  identity, which seeding covers. **All of them still exist and none changed shape. Seven of the
-  fifteen locators named in this bullet drifted; the readings below are `cf958bf`'s**, with the
-  `a45e935` one in brackets where it differs: `tests/test_bspline_space.py:89`,
+  identity, which seeding covers. **All of them still exist and none changed shape; the readings
+  below are `cf958bf`'s**, with the `a45e935` one in brackets where it differs -- which is itself
+  the record of which drifted, so there is no separate tally to keep in step. (There was one, and
+  it was wrong: "seven of the fifteen" counted a locator that a later edit moved into the box
+  above, and two reviewers then disagreed about whether it was fifteen or fourteen. A count
+  nobody can reproduce from the list beside it earns its place only by being right, and this one
+  was not.) `tests/test_bspline_space.py:89`,
   `tests/test_bspline.py:22,263` [`:241`], `tests/test_multilevel_extraction.py:109` [`:103`],
   `tests/test_quasi_interpolation.py:333` [`:314`], `tests/test_grid_hierarchical.py:201`
   [`:199`] (`assert g.root is root`, which is #395's), `tests/test_mpi_collocation.py:188,202`,
