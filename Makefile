@@ -1,5 +1,23 @@
 .PHONY: help test doctest coverage clean install ruff-lint ruff-format ruff-format-check type-check import-lint pre-pull-request docs
 
+# Every target below that imports `pantr` runs through the active interpreter rather
+# than through a console script, and the difference is not cosmetic.
+#
+# A console script carries its own interpreter in its shebang. The venvs used here
+# are made with `--system-site-packages`, so pip sees pytest and import-linter
+# already satisfied from the shared environment and installs no console script into
+# the venv; PATH then falls through to the shared environment's, whose interpreter
+# is the one a checkout's editable install has its meta-path finder on. A meta-path
+# finder is consulted before `sys.path`, so `PYTHONPATH` cannot override it.
+#
+# Measured in a worktree: `make doctest` collected `src/pantr` from the worktree
+# while importing `pantr` from another checkout, and reported 140 collection errors;
+# the same run through the active interpreter reported 83 passed. `import-lint` has
+# the identical shape, and has no `python -m` form, so it is invoked by path.
+#
+# `PYTHON ?= python` so a caller can point it elsewhere.
+PYTHON ?= python
+
 help:
 	@echo "Commands:"
 	@echo "  test      : run the test suite."
@@ -17,7 +35,7 @@ help:
 
 # Run the test suite with Numba JIT enabled
 test:
-	pytest -n auto
+	$(PYTHON) -m pytest -n auto
 
 # Run the docstring examples shipped in the package sources. Kept out of `test`
 # because `testpaths = tests` in pytest.ini deliberately excludes src/, and a plain
@@ -41,11 +59,11 @@ test:
 # go through np.allclose or .tolist(), neither of which depends on JIT-vs-interpreter
 # rounding.
 doctest:
-	NUMBA_DISABLE_JIT=1 pytest --doctest-modules src/pantr
+	NUMBA_DISABLE_JIT=1 $(PYTHON) -m pytest --doctest-modules src/pantr
 
 # Generate an XML coverage report with Numba JIT disabled
 coverage:
-	COVERAGE_FILE=/tmp/.coverage NUMBA_DISABLE_JIT=1 pytest -m "not slow" --cov=src/pantr --cov-report=term-missing --cov-report=xml
+	COVERAGE_FILE=/tmp/.coverage NUMBA_DISABLE_JIT=1 $(PYTHON) -m pytest -m "not slow" --cov=src/pantr --cov-report=term-missing --cov-report=xml
 
 # Remove build artifacts
 clean:
@@ -77,7 +95,7 @@ type-check:
 # `pantr` through sys.path, so without it the contract is checked against whatever the
 # editable install points at, which in a git worktree is a different tree entirely.
 import-lint:
-	PYTHONPATH=src lint-imports
+	PYTHONPATH=src $(PYTHON) "$$(command -v lint-imports)"
 
 # Build documentation
 docs:
