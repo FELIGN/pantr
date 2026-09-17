@@ -35,8 +35,12 @@
 /// `evaluate` paths are a second, separate gap: their fused combine kernels in
 /// `_bspline_eval.py` reach the basis recurrence directly and never call
 /// `tabulate_basis` at all, so tabulation's landing did not move them.
-/// `FELIGN/pantr#497` is the open ticket for both, and it owns the correction of
-/// this paragraph as much as this file does.
+/// `FELIGN/pantr#497` is the open ticket for the composition gap, and it owns the
+/// correction of this paragraph as much as this file does. **Its scope over the
+/// univariate gap is not settled**: its Context cites only the six
+/// `_bspline_eval.py` sites that call `tabulate_basis`, every one of them on a
+/// multivariate path, and it nowhere names the fused kernels. Read the second gap
+/// as uncovered until #497's own gate says otherwise.
 ///
 /// The `Backend.CPP` qualifier is load-bearing, not throat-clearing:
 /// `PANTR_BACKEND` defaults to `python`, so on a default run that per-direction

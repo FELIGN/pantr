@@ -42,7 +42,11 @@ applying the extraction operators per element and assembling the result. The
 univariate ``evaluate`` paths are a separate gap, because their fused combine
 kernels in :mod:`pantr.bspline._bspline_eval` reach the basis recurrence directly
 and never call :meth:`~pantr.bspline.BsplineSpace1D.tabulate_basis` at all.
-``FELIGN/pantr#497`` is the open ticket for both.
+``FELIGN/pantr#497`` is the open ticket for the composition gap. **Its scope over
+the univariate one is not settled**: its Context cites only the six
+:mod:`pantr.bspline._bspline_eval` sites that call ``tabulate_basis``, every one of
+them on a multivariate path, and it nowhere names the fused kernels. Read the second
+gap as uncovered until #497's own gate says otherwise.
 
 The backend qualifier is load-bearing: ``PANTR_BACKEND`` defaults to ``python``,
 so on a default run that per-direction tabulation is still the Numba kernel.
