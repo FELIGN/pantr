@@ -40,6 +40,9 @@ oracle regressing.
 
 from __future__ import annotations
 
+import importlib
+import importlib.abc
+import sys
 from typing import TYPE_CHECKING, Final, NamedTuple
 
 import numpy as np
@@ -56,6 +59,10 @@ from tests._parity_harness import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from importlib.machinery import ModuleSpec
+    from types import ModuleType
+
     from numpy import typing as npt
 
 _BACKENDS: Final = (
@@ -535,6 +542,74 @@ def test_a_python_space_is_scanned_by_the_oracle_under_the_cpp_backend(
         assert calls == [], "a Python-backed space reached the binding"
         np.testing.assert_array_equal(flags, cpp_space.get_cardinal_intervals())
         assert calls == ["BsplineSpace1D64"], "the C++ space did not reach the binding"
+
+
+class _NoExtension(importlib.abc.MetaPathFinder):
+    """A finder that refuses to supply the compiled extension, and defers on the rest."""
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: Sequence[str] | None = None,
+        target: ModuleType | None = None,
+    ) -> ModuleSpec | None:
+        """Refuse ``pantr._pantr_cpp``; return None for everything else.
+
+        Args:
+            fullname (str): The module being imported.
+            path (Sequence[str] | None): The parent package's search path. Unused.
+            target (ModuleType | None): The module being reloaded, if any. Unused.
+
+        Returns:
+            ModuleSpec | None: Always None, which defers to the finders behind this one.
+
+        Raises:
+            ModuleNotFoundError: If ``pantr._pantr_cpp`` is what is being imported.
+        """
+        if fullname == "pantr._pantr_cpp":
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+        return None
+
+
+def test_the_oracle_path_does_not_reach_for_the_compiled_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The accessor answers on an installation that has no compiled extension at all.
+
+    The extension is optional -- ``tests/parity/conftest.py`` calls an installation
+    without it "the common local configuration", and :func:`pantr._backend.available_backends`
+    reports :attr:`~pantr._backend.Backend.PYTHON` alone there. So the Python route must
+    not so much as *import* it, and the catalogue's guards have to be ordered that way
+    round.
+
+    Nothing else in this file can catch that. Every other test here runs in a process
+    where the extension is present and importable, so reaching for it on the Python path
+    costs nothing and shows nothing.
+
+    The absence is simulated rather than waited for: the module object and its
+    ``sys.modules`` entry are removed and a finder that refuses to supply it goes in
+    front of the path, all through ``monkeypatch`` so the process is whole again
+    afterwards. The ``pytest.raises`` below is the guard that the simulation took --
+    without it a passing test could be one in which the extension was still reachable.
+    """
+    import pantr  # noqa: PLC0415  (the package object is what has to be emptied)
+
+    knots = [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 4.0]
+    with use_backend(Backend.PYTHON):
+        expected = _oracle(BsplineSpace1D(knots, 2))
+
+    monkeypatch.delitem(sys.modules, "pantr._pantr_cpp", raising=False)
+    monkeypatch.delattr(pantr, "_pantr_cpp", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_NoExtension(), *sys.meta_path])
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("pantr._pantr_cpp")
+
+    with use_backend(Backend.PYTHON):
+        space = BsplineSpace1D(knots, 2)
+        flags = space.get_cardinal_intervals()
+
+    np.testing.assert_array_equal(flags, expected)
 
 
 @pytest.mark.parametrize("dtype", _DTYPES, ids=["float64", "float32"])
