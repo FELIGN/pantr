@@ -43,6 +43,7 @@ set(PANTR_TEST_SOURCES
     test_bspline_refinement.cpp
     test_bspline_structural.cpp
     test_bspline_degree.cpp
+    test_bspline_shape.cpp
     test_thb_space.cpp
     test_bspline_type.cpp)
 
