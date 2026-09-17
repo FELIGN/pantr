@@ -656,6 +656,63 @@ def test_the_length_gate_turns_over_near_the_space_tolerance(
     np.testing.assert_array_equal(outside_flags, _oracle(outside))
 
 
+@pytest.mark.parametrize("dtype", _DTYPES, ids=["float64", "float32"])
+def test_a_span_off_by_exactly_the_tolerance_is_still_the_same_length(
+    cpp_backend: None,
+    dtype: npt.DTypeLike,
+) -> None:
+    """A window difference of exactly ``tol`` does not disqualify an interval.
+
+    The gate is written ``abs(span - reference) > tol`` in C++ against
+    ``abs(...) <= tol`` in the oracle, which are exact negations -- so the **tie**
+    is the one comparison whose two sides are told apart by the boundary operator
+    alone. :func:`test_the_length_gate_turns_over_near_the_space_tolerance`
+    deliberately brackets the threshold within a factor of four instead of sitting on
+    it, because near the last ulp the two backends' arithmetic is a faithfulness
+    question ``cpp/include/pantr/bspline/knots.hpp`` argues at length. That reasoning
+    covers *arithmetic noise* and does not cover a **swapped operator**, which is
+    deterministic; with ``>`` turned into ``>=`` every case in this file, the sweep
+    included, answers exactly as before.
+
+    So the tie is constructed rather than stumbled on, and it is exact rather than
+    approximate. The ends are left alone and one interior breakpoint moves, so the
+    knot scale -- and therefore ``tol`` -- is the same before and after, which the
+    first assertion below checks rather than assumes. With a domain of ``[0, 8]``,
+    ``tol`` is ``8 * eps * 8``, a power of two at both storage formats, and
+    ``3 + tol`` and the spans ``1 ± tol`` are each exactly representable; both
+    differences are exact by Sterbenz, since the operands are within a factor of two
+    of one another. Nothing here is build-dependent.
+
+    The expected flags are read off the vector rather than run: the spans are
+    ``1, 1, 1+t, 1-t, 1, 1, 1, 1`` and the window at degree 2 is the interval's own
+    span with one either side. Intervals 0 and 7 lose to the clamped ends. Interval 2
+    sees ``1-t`` against a reference of ``1+t``, and interval 3 sees ``1+t`` against
+    ``1-t``: a difference of ``2 * tol``, outside the gate on any reading. Intervals
+    1 and 4 each see one neighbour off by exactly ``tol`` and are the two the operator
+    decides -- ``True`` here, and ``False`` if the comparison were ``>=``.
+    """
+
+    def build(delta: float) -> BsplineSpace1D:
+        """A clamped quadratic space over [0, 8] with one interior break moved by ``delta``."""
+        breaks = [0.0, 1.0, 2.0, 3.0 + delta, 4.0, 5.0, 6.0, 7.0, 8.0]
+        knots = [breaks[0]] * 2 + breaks + [breaks[-1]] * 2
+        return BsplineSpace1D(np.asarray(knots, dtype=dtype), 2)
+
+    with use_backend(Backend.CPP):
+        tol = build(0.0).tolerance
+        space = build(tol)
+        flags = space.get_cardinal_intervals()
+
+    assert space.tolerance == tol, "moving an interior break must not move the knot scale"
+
+    spans = np.diff(space.knots)
+    gaps = {abs(float(a - b)) for a in spans for b in spans}
+    assert tol in gaps, "the construction must put a window difference exactly on the threshold"
+
+    assert flags.tolist() == [False, True, False, False, True, True, True, False]
+    np.testing.assert_array_equal(flags, _oracle(space), err_msg=f"exact tie: {_WHY}")
+
+
 def _draw(rng: np.random.Generator) -> _Case:
     """Draw one non-periodic space whose flags are worth comparing.
 
@@ -719,7 +776,8 @@ def test_the_scan_agrees_over_a_sweep_ten_times_the_shipped_one(
     class scan rather than this one.
     """
     rng = np.random.default_rng(491)
-    drawn = 0
+    degrees: set[int] = set()
+    cardinal_seen = 0
     for _ in range(10 * len(_CASES)):
         case = _draw(rng)
         with use_backend(Backend.CPP):
@@ -732,6 +790,13 @@ def test_the_scan_agrees_over_a_sweep_ten_times_the_shipped_one(
                 f"degree {case.degree} at {np.dtype(dtype).name} over knots {case.knots}: {_WHY}"
             ),
         )
-        drawn += 1
+        degrees.add(case.degree)
+        cardinal_seen += int(bool(flags.any()))
 
-    assert drawn == 10 * len(_CASES)
+    # What the docstring above claims the sweep covers, asserted rather than described.
+    # A count of the iterations would say nothing -- the loop's own bound already fixes
+    # it -- whereas both of these are properties of `_draw` and of the answers, and both
+    # would go quiet if the draw narrowed or if every drawn space answered all-False,
+    # which would leave this comparing two functions that both return nothing.
+    assert degrees == set(range(6)), f"the sweep drew only degrees {sorted(degrees)}"
+    assert cardinal_seen > 0, "no drawn space had a cardinal interval; the sweep proves nothing"
