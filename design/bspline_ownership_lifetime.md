@@ -458,8 +458,10 @@ is discoverable:
   > (`tests/parity/test_bspline_degree.py:1464`), and the refinement entry points
   > (`tests/parity/test_bspline_refinement.py:986,1109`). On `HierarchicalGrid.root`: `refine`,
   > `refine_cells`, `coarsen`, `coarsen_cells` and `_copy`
-  > (`tests/parity/test_grid_hierarchical.py:1237`) and `restrict`
-  > (`tests/test_grid_hierarchical.py:2038`). **Do not read the list off this page** -- it is a
+  > (`tests/parity/test_grid_hierarchical.py:1237`). **`restrict` is the deliberate exception and
+  > propagates nothing** -- its sub-grid has a *windowed* root, so sharing would be wrong rather
+  > than merely unnecessary, and the same test asserts `sub.root is not root` beside the five that
+  > do share. **Do not read the list off this page** -- it is a
   > count of a growing suite, which is what went stale here. Regenerate it with
   > `grep -rn --include='*.py' 'assert .*\.space.*\bis\b.*\.space\|assert .*\.root\b.*\bis\b.*root' tests/ | grep -v 'is not'`
   > and read the enclosing test name.
@@ -536,8 +538,12 @@ identity contracts of F6 survive the round trip through the seeding rule rather 
 > recomputes its tolerance from the stored knots rather than carrying it, so a round trip moves
 > it by a bounded relative amount; `design/bspline_pickle_tolerance.md` derives that bound and
 > `tests/parity/test_bspline_space_1d.py` pins it. **Four of the module's types still owe one**:
-> `THBSplineSpace`, `THBSpline`, `MultiLevelExtraction` and `SpanwiseElementExtraction`, which
-> is #397, #399 and #400.
+> `THBSplineSpace`, `THBSpline`, `MultiLevelExtraction` and `SpanwiseElementExtraction`.
+> `FELIGN/pantr#400` is the open ticket for the middle two. The other two were #397 and #399,
+> and **both are closed without the work having landed** -- each says in its own body that it was
+> deliberately coarse and has been decomposed -- so the successors under epic `FELIGN/pantr#374`
+> carry them. Read that epic's open sub-issues rather than a list here: naming a ticket that has
+> since been decomposed is the same failure this pass is removing, one level up.
 
 ## The failure modes, and the test that catches each
 
