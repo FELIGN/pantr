@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, NamedTuple
 import numpy as np
 
 from ._local_space_core import _dof_owner_core, _halo_mask_core
-from ._thb_spline_space import THBSplineSpace, _func_support_1d
+from ._thb_spline_space import THBSplineSpace, _func_support_1d, _supported_functions
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -394,11 +394,11 @@ def _thb_halo(thb: THBSplineSpace, owned_cells: npt.NDArray[np.int64]) -> npt.ND
     owned = {int(c) for c in owned_cells}
     owned_funcs: set[int] = set()
     for c in owned:
-        owned_funcs.update(dof for dof, _, _ in thb._supported_functions(c))
+        owned_funcs.update(dof for dof, _, _ in _supported_functions(thb, c))
     closure = [
         c
         for c in range(thb.grid.num_cells)
-        if any(dof in owned_funcs for dof, _, _ in thb._supported_functions(c))
+        if any(dof in owned_funcs for dof, _, _ in _supported_functions(thb, c))
     ]
     halo = np.array(sorted(set(closure) - owned), dtype=np.int64)
     halo.flags.writeable = False

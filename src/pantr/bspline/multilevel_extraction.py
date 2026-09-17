@@ -107,8 +107,8 @@ def _window_two_scale_blocks(
         np.asarray(coarse.knots, dtype=np.float64),
         np.asarray(fine.knots, dtype=np.float64),
     )
-    fb_coarse = space._support[level][direction][0]
-    fb_fine = space._support[level + 1][direction][0]
+    fb_coarse = space._level_support(level)[direction][0]
+    fb_fine = space._level_support(level + 1)[direction][0]
     factor = space.grid.factor[direction]
     cells = np.arange(fb_fine.shape[0], dtype=np.int64)
     local = np.arange(size, dtype=np.int64)
@@ -144,7 +144,7 @@ def _build_window_tables(space: THBSplineSpace) -> _WindowTables:
     start = 0
     for m in range(num_levels):
         for k in range(dim):
-            part = np.asarray(space._support[m][k][0], dtype=np.int64)
+            part = np.asarray(space._level_support(m)[k][0], dtype=np.int64)
             fb_offset[m, k] = start
             start += part.shape[0]
             fb_parts.append(part)
@@ -179,7 +179,7 @@ def _build_window_tables(space: THBSplineSpace) -> _WindowTables:
         active=np.concatenate([space.active_function_indices(m) for m in range(num_levels)]).astype(
             np.int64
         ),
-        func_offset=np.asarray(space._func_offset, dtype=np.int64).copy(),
+        func_offset=np.asarray(space.level_offsets, dtype=np.int64),
     )
     for array in tables:
         array.flags.writeable = False
@@ -457,7 +457,7 @@ class MultiLevelExtraction:
         """
         rows, _, nonzero = self._windowed_rows(cid)
         kept = rows[nonzero]
-        expected = len(self._space._cell_contributions(cid))
+        expected = int(self._space.contributions(cid)[0].shape[0])
         if kept.shape[0] != expected:
             raise RuntimeError(
                 f"cell {cid}: the extraction kernel flags {kept.shape[0]} non-zero rows but "

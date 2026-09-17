@@ -468,16 +468,26 @@ class TestGridCannotGoStale:
         assert cached.max_active_per_cell() == before  # was already cached
 
     def test_contrib_cache_matches_before_a_later_grid_refine(self) -> None:
+        """A later grid refine does not touch this space's own per-cell memo.
+
+        The memo used to be a wrapper-owned dict that could be inspected directly; it
+        now lives inside whichever implementation is held, and under the C++ backend
+        there is no dict at all. What a memo looks like from outside is two calls
+        handing back arrays that share one buffer (`np.shares_memory`) rather than two
+        independently computed ones, which is true under both backends since each
+        hands out views into one cached table.
+        """
         grid = _grid_1d()
         thb = THBSplineSpace(_root_1d(), grid)
-        before = thb._cell_contributions(0)  # warm the per-cell cache
-        assert 0 in thb._contrib_cache
+        before = thb.contributions(0)  # warm the per-cell memo
 
         new_grid = grid.refine(0, [0], [2])
 
         assert new_grid is not grid
         assert thb.grid is grid
-        assert thb._cell_contributions(0) is before  # cache untouched, same object back
+        after = thb.contributions(0)
+        for b, a in zip(before, after, strict=True):
+            assert np.shares_memory(b, a)  # memo untouched, same buffer back
 
     def test_space_refine_matches_before_a_later_grid_refine(self) -> None:
         grid = _grid_1d()
@@ -602,12 +612,12 @@ class TestTruncation:
 
     def test_some_functions_truncated(self) -> None:
         thb = _refined_2d_corner()
-        n_truncated = len(thb._trunc)
+        n_truncated = thb.num_truncated
         assert 0 < n_truncated < thb.num_total_basis
 
     def test_no_truncation_when_unrefined(self) -> None:
         thb = THBSplineSpace(_root_1d(), _grid_1d(), truncate=True)
-        assert len(thb._trunc) == 0
+        assert thb.num_truncated == 0
         assert thb.num_total_basis == _root_1d().num_total_basis
 
     def test_truncation_identity_outside_refinement(self) -> None:
@@ -651,7 +661,9 @@ class TestTruncation:
         cid = thb.grid.locate([0.45, 0.1])
         assert cid is not None
         active = thb.active_basis(cid)
-        assert any(dof in thb._trunc for dof in active), "no truncated dof on this cell"
+        assert any(thb.truncated(int(dof)) is not None for dof in active), (
+            "no truncated dof on this cell"
+        )
         pts = np.array([[0.45, 0.1]])
         out_basis = np.empty((1, active.shape[0]), dtype=np.float64)
         vals, _ = thb.tabulate_basis(cid, pts, out_basis=out_basis)
@@ -660,14 +672,14 @@ class TestTruncation:
         np.testing.assert_allclose(out_basis, exp)
 
     def test_deepest_level_functions_not_in_trunc(self) -> None:
-        # Active functions at the deepest level have no finer level below;
-        # _compute_truncated_coeffs iterates over level < num_levels-1 only.
+        # Active functions at the deepest level have no finer level below, so
+        # truncation never touches them.
         thb = _refined_1d_three_levels()
         deepest = thb.num_levels - 1
-        offset = int(thb._func_offset[deepest])
+        offset = int(thb.level_offsets[deepest])
         count = int(thb.num_basis_per_level[deepest])
         for i in range(count):
-            assert offset + i not in thb._trunc
+            assert thb.truncated(offset + i) is None
 
     def test_partition_of_unity_with_regularity_c0(self) -> None:
         root = _root_1d()
@@ -695,7 +707,7 @@ class TestTruncation:
         hb_vals = hb.tabulate_basis(cid, mid)[0][0]
         found_truncated = False
         for i, dof in enumerate(thb_active):
-            if dof in thb._trunc:
+            if thb.truncated(int(dof)) is not None:
                 found_truncated = True
                 thb_val = float(thb_vals[i])
                 j = int(np.searchsorted(hb_active, dof))
@@ -930,11 +942,6 @@ class TestDerivatives:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _dof_level(thb: THBSplineSpace, dof: int) -> int:
-    """Return the hierarchy level owning global dof ``dof``."""
-    return int(np.searchsorted(thb._func_offset, dof, side="right")) - 1
-
-
 def _nonzero_level_span(thb: THBSplineSpace) -> int:
     """Return the max number of successive levels of nonzero THB functions on any cell.
 
@@ -952,7 +959,7 @@ def _nonzero_level_span(thb: THBSplineSpace) -> int:
         nonzero = active[np.abs(vals).max(axis=0) > 1e-12]
         if nonzero.size == 0:
             continue
-        levels = [_dof_level(thb, int(d)) for d in nonzero]
+        levels = [thb.dof_level(int(d)) for d in nonzero]
         worst = max(worst, max(levels) - min(levels) + 1)
     return worst
 
@@ -1101,11 +1108,11 @@ class TestCreateThbSpace:
             root, hierarchical_grid(tensor_product_grid(root), 2), regularity=0
         )
         factory = create_thb_space(root, regularity=0)
-        assert factory._regularity == explicit._regularity
+        assert factory.regularity == explicit.regularity
         # Reduced regularity survives refinement (extra knots -> more basis at level 1).
         f1 = factory.refine_region(0, [0], [2], admissible_class=None)
         e1 = explicit.refine_region(0, [0], [2], admissible_class=None)
-        assert f1._regularity == e1._regularity
+        assert f1.regularity == e1.regularity
         assert f1.num_basis_per_level == e1.num_basis_per_level
 
     def test_anisotropic_factor_refines(self) -> None:
@@ -1645,7 +1652,12 @@ class TestProlongationSparse:
 
     @pytest.mark.parametrize("truncate", [True, False])
     def test_equals_dense_1d(self, truncate: bool) -> None:
-        """Bitwise equality, not an approximation: the same solves in the same order."""
+        """Equality, not an approximation: the same solves in the same order.
+
+        Equality of values. ``test_the_stored_entries_are_bitwise_the_dense_ones`` is
+        where the sharper claim lives, and where the one place it does not hold is
+        pinned.
+        """
         coarse = THBSplineSpace(_root_1d(), _grid_1d(), truncate=truncate)
         fine = coarse.refine([0, 1], admissible_class=None)
 
@@ -1678,6 +1690,37 @@ class TestProlongationSparse:
 
         assert np.array_equal(
             coarse.prolongation_to_sparse(fine).toarray(), coarse.prolongation_to(fine)
+        )
+
+    @pytest.mark.parametrize("truncate", [True, False])
+    def test_the_stored_entries_are_bitwise_the_dense_ones(self, truncate: bool) -> None:
+        """What the sparse variant stores is bit for bit what the dense one holds there.
+
+        The stronger half of the claim, and the one worth a test: the two run the same
+        local solves in the same order, so a stored entry is not merely close to the
+        dense matrix's -- it is the same double. Anything that re-derived a column, or
+        reordered a solve, would move a last bit and be caught here while
+        ``np.array_equal`` on the values would not notice.
+
+        The second half is where it stops holding, and it is exactly the sign of a zero.
+        ``toarray()`` densifies by adding into a ``+0.0``-filled buffer, and
+        ``+0.0 + -0.0`` is ``+0.0``, so a column that solved to a negative zero comes
+        back positive. That is asserted as a *value* equality rather than a bitwise one,
+        deliberately: it is scipy's densification convention rather than a property of
+        this code, and pinning the sign would pin somebody else's implementation detail.
+        """
+        coarse = create_thb_space(create_uniform_space([2, 2], [8, 8]), truncate=truncate)
+        fine = coarse.refine_region(0, [0, 0], [4, 4], admissible_class=None)
+
+        dense = np.ascontiguousarray(coarse.prolongation_to(fine))
+        stored = coarse.prolongation_to_sparse(fine).tocoo()
+        at_their_positions = np.ascontiguousarray(dense[stored.row, stored.col])
+        assert np.array_equal(
+            np.ascontiguousarray(stored.data).view(np.uint64),
+            at_their_positions.view(np.uint64),
+        ), "a stored entry is not the double the dense variant holds at that position"
+        assert np.array_equal(
+            np.ascontiguousarray(coarse.prolongation_to_sparse(fine).toarray()), dense
         )
 
     def test_identity_when_no_refinement(self) -> None:
@@ -2271,17 +2314,27 @@ class TestBoxAllTrue:
 
 
 class TestContribCache:
-    """Tests for the lazy per-cell _cell_contributions cache."""
+    """Tests for the per-cell contribution memo, checked through the public surface.
 
-    def test_second_call_returns_same_object(self) -> None:
+    `_cell_contributions` and `_contrib_cache` lived on the wrapper before #494; the
+    memo now lives inside whichever implementation the wrapper holds, and the C++
+    implementation exposes no dict to inspect at all. What a memo looks like from
+    outside is two calls to `contributions` handing back arrays that share the same
+    underlying buffer (`np.shares_memory`), rather than two independently computed
+    ones -- true under both backends, since each hands out views into one cached
+    table instead of building a fresh one per call.
+    """
+
+    def test_a_second_call_reads_the_same_buffer(self) -> None:
         grid = _grid_1d()
         grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid)
         cid = grid.locate([0.1])
         assert cid is not None
-        first = thb._cell_contributions(cid)
-        second = thb._cell_contributions(cid)
-        assert second is first
+        first = thb.contributions(cid)
+        second = thb.contributions(cid)
+        for f, s in zip(first, second, strict=True):
+            assert np.shares_memory(f, s)
 
     def test_different_cells_cached_independently(self) -> None:
         grid = _grid_1d()
@@ -2290,10 +2343,14 @@ class TestContribCache:
         c0 = grid.locate([0.1])
         c1 = grid.locate([0.8])
         assert c0 is not None and c1 is not None
-        r0 = thb._cell_contributions(c0)
-        r1 = thb._cell_contributions(c1)
-        assert thb._cell_contributions(c0) is r0
-        assert thb._cell_contributions(c1) is r1
+        r0 = thb.contributions(c0)
+        r1 = thb.contributions(c1)
+        again0 = thb.contributions(c0)
+        again1 = thb.contributions(c1)
+        for a, b in zip(r0, again0, strict=True):
+            assert np.shares_memory(a, b)
+        for a, b in zip(r1, again1, strict=True):
+            assert np.shares_memory(a, b)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2343,16 +2400,27 @@ class TestMaxActivePerCell:
         assert thb.max_active_per_cell() < hb.max_active_per_cell()
 
     def test_cached_across_calls(self) -> None:
-        """The result is memoized: a second call recomputes nothing."""
+        """The result agrees across calls, drawn from a table that persists between them.
+
+        Before #494 this cleared the wrapper's own `_contrib_cache` and checked that
+        `max_active_per_cell` survived the clear -- proving the outer scalar did not
+        need to consult the (just-emptied) table again. Neither cache is reachable
+        from the wrapper any more, and the C++ implementation holds no dict at all, so
+        that specific mechanism has no public equivalent. What is checked here is a
+        narrower, still-real claim: `max_active_per_cell` visits every cell through
+        `contributions`, so if a second call's `contributions` arrays still share
+        memory with the first, the per-cell table was not rebuilt in between.
+        """
         grid = _grid_1d()
         grid = grid.refine(0, [0], [2])
         thb = THBSplineSpace(_root_1d(), grid)
 
         first = thb.max_active_per_cell()
-        # Recomputing would have to walk every cell and refill this cache.
-        thb._contrib_cache.clear()
+        before = thb.contributions(0)
         assert thb.max_active_per_cell() == first
-        assert thb._contrib_cache == {}
+        after = thb.contributions(0)
+        for b, a in zip(before, after, strict=True):
+            assert np.shares_memory(b, a)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2427,7 +2495,7 @@ def _non_vanishing_supported(thb: THBSplineSpace, hb: THBSplineSpace, cid: int) 
     mid = (0.5 * (np.asarray(lo) + np.asarray(hi))).reshape(1, thb.dim)
     kept: list[int] = []
     for dof in hb.active_basis(cid).tolist():
-        entry = thb._trunc.get(dof)
+        entry = thb.truncated(dof)
         if entry is None:
             kept.append(dof)
             continue
@@ -2891,7 +2959,7 @@ def _refined_2d_space() -> THBSplineSpace:
     grid = grid.refine(0, (1, 1), (3, 3))
     grid = grid.refine(1, (2, 2), (5, 5))
     space = THBSplineSpace(_root_2d(), grid)
-    _ = space.max_active_per_cell()  # warms _contrib_cache and _max_active_per_cell
+    _ = space.max_active_per_cell()  # warms the per-cell contribution memo and this cache
     return space
 
 
