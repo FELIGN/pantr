@@ -64,12 +64,17 @@ the other two are on `SpanwiseElementExtraction`, outside the ticket's scope and
 > being prose in docstrings that describe the memos this note removed. The enumerating form is
 > the one to quote, and the gap between the two is why.
 >
-> **`--include='*.py'` is not decoration.** Without it, GNU `grep` descends into `__pycache__`
-> and matches the compiled `.pyc` files, which takes the second figure from 13 to 19 in a tree
-> that has been imported. Some `grep` front ends (`ugrep`, `rg`) skip ignored files by default
-> and some do not, so a count quoted here without the filter is a count of whichever tool the
-> reader happens to have. This note was very nearly wrong about its own recount for exactly
-> that reason.
+> **`--include='*.py'` is not decoration, and which figure it moves depends on the flags.** In a
+> tree that has been imported, the compiled `.pyc` files under `__pycache__` do contain the
+> string, so a form that *sums* their matches is wrong: without the filter
+> `grep -rc cached_property src/pantr/bspline/` totals **19**, and with it **13**. The
+> enumerating `-n` form above survives the omission only by luck -- GNU `grep` 3.5 and later
+> send its `Binary file ... matches` notice to *stderr*, so the visible count stays 13 while the
+> three files it declined to enumerate are announced where a pipe into `wc -l` cannot see them.
+> Keep the filter on both forms: it is the only spelling whose answer depends on neither the
+> flags, nor the tool (`ugrep` and `rg` skip the `.pyc` files outright), nor whether the tree
+> has been imported. Checked against GNU `grep` 3.7 and `ugrep` 7.8.4; an earlier draft of this
+> paragraph attached the 19 to the `-n` form, where it does not arise.
 
 But **all seven of `BsplineSpace`'s were O(dim) reductions over its own children**, with `dim`
 at most 3 in every use in the tree: `degrees`, `tolerance`, `num_basis`, `num_total_basis`,
