@@ -27,11 +27,13 @@
 /// stronger.
 ///
 /// **`permute_directions` computes nothing at all**, so every check on it is exact.
-/// The load-bearing one is an asymmetric permutation of a field whose three extents,
-/// three degrees and component count all differ: a stride computed over the wrong axis
-/// set, or one left a factor of `num_components` too large, then reads a different
-/// coefficient while the shape still agrees. `pantr/bezier/shape.hpp` records that
-/// exact defect as having shipped once.
+/// The load-bearing one is an asymmetric permutation of a field whose three extents
+/// (4, 5, 2) and component count all differ: a stride computed over the wrong axis set,
+/// or one left a factor of `num_components` too large, then reads a different
+/// coefficient while the shape still agrees. The extents are what carry that, not the
+/// degrees -- `permute_directions` never reads a degree, and two of this fixture's
+/// three are in fact equal. `pantr/bezier/shape.hpp` carries the same fix, and records
+/// why the strides are counted in coefficients rather than in values.
 ///
 /// **`transform` is checked against closed forms it cannot round.** The identity map,
 /// and a power-of-two scaling with an integer translation, are exactly representable

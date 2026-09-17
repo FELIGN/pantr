@@ -989,17 +989,6 @@ this check, and a cross-backend comparison cannot see a fault both backends shar
 Each rank carries at least one **non-symmetric** matrix, because a symmetric one is its
 own transpose and cannot tell `A` from `A` transposed."""
 
-_EXACT_MAPS: Final = (
-    ("permutation", np.array([[0.0, 1.0], [1.0, 0.0]]), np.array([0.0, 0.0])),
-    ("power-of-two", np.array([[4.0, 0.0], [0.0, 0.25]]), np.array([0.0, 0.0])),
-    ("integer-shift", np.array([[1.0, 0.0], [0.0, 1.0]]), np.array([3.0, -7.0])),
-    ("shear", np.array([[2.0, 0.5], [0.0, 4.0]]), np.array([-3.0, 8.0])),
-)
-"""Maps whose every entry is a power of two, zero or a small integer, so the closed form
-below is exact in both storage formats. The shear is non-symmetric on purpose: a
-diagonal matrix is its own transpose and cannot tell ``A`` from ``A.T``."""
-
-
 class _ExactMap(NamedTuple):
     """One exactly-representable affine map and the field shape to apply it to.
 
