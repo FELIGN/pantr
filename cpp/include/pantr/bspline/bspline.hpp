@@ -21,13 +21,28 @@
 /// same line those two headers draw. Knot insertion and uniform subdivision have
 /// landed that way, in `pantr/bspline/refinement.hpp`.
 ///
-/// **Two of them cannot be ported yet, and the reason is a declared boundary
-/// rather than an omission.** `pantr.bspline.Bspline.evaluate`,
-/// `.evaluate_derivatives` and `.to_beziers` reach
-/// `BsplineSpace1D.tabulate_basis` or `.tabulate_basis_derivatives`, and
-/// `space_1d.hpp` states that basis tabulation is a separate port over free
-/// functions which no ticket in this milestone covers. So those operations wait on
-/// that port, not on this one.
+/// **Three of them are not ported yet, and what they wait on is the field-level
+/// composition rather than the univariate tabulation.**
+/// `pantr.bspline.Bspline.evaluate`, `.evaluate_derivatives` and `.to_beziers`
+/// used to wait on basis tabulation. That port has landed --
+/// `pantr/bspline/tabulate.hpp`, bound in `bindings/bspline_basis.cpp` and
+/// dispatched from `src/pantr/bspline/_basis_backend.py` -- so the multivariate
+/// paths already run their per-direction tabulation in C++ and stop at the step
+/// after it: combining the per-direction tables with the control net, the rational
+/// quotient, and, for `to_beziers`, applying the extraction operators per element
+/// and assembling the result. None of that has a header here. The univariate
+/// `evaluate` paths are a second, separate gap: their fused combine kernels in
+/// `_bspline_eval.py` reach the basis recurrence directly and never call
+/// `tabulate_basis` at all, so tabulation's landing did not move them.
+/// `FELIGN/pantr#497` is the open ticket for both, and it owns the correction of
+/// this paragraph as much as this file does.
+///
+/// Two earlier readings of this paragraph were wrong and are worth naming so they
+/// are not reintroduced: it said "two" while listing three operations, and it
+/// attributed to `space_1d.hpp` a claim that no ticket covered tabulation.
+/// `space_1d.hpp` says only that tabulation is a separate port over free
+/// functions; it makes no claim about ticket coverage, and grepping that file for
+/// `milestone` or `ticket` returns nothing.
 ///
 /// ## The space is shared, not copied, and the identity contract is why
 ///
