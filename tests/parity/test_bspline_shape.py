@@ -154,8 +154,18 @@ one that leaves the knots alone."""
 _LINEAR = _Vector("linear", 1, (0.0, 0.0, 0.25, 0.5, 1.0, 1.0), False)
 """A degree-1 vector, so a direction whose reversal moves few coefficients."""
 
-_PERIODIC = _Vector("periodic", 1, (-0.25, 0.0, 0.25, 0.5, 0.75, 1.0, 1.25), True)
-"""A periodic direction, the only input for which `reverse` rolls as well as flips."""
+_PERIODIC = _Vector("periodic", 1, (-0.25, 0.0, 0.125, 0.5, 0.75, 1.0, 1.125), True)
+"""A periodic direction, the only input for which `reverse` rolls as well as flips.
+
+**Deliberately not uniform.** A uniform periodic vector over a domain like ``[0, 1]`` is
+symmetric about its own domain midpoint, so ``(a + b) - knots[::-1]`` reproduces it
+exactly and a backend that skipped the reflection entirely would agree with one that
+performed it. This vector's interior spans are ``(0.125, 0.375, 0.25, 0.25)``, which
+keeps the cyclic ghost structure a periodic space needs while making the reflection
+move four of the seven knots. Every entry stays dyadic, so the reflection is exact in
+both storage formats and the bitwise claim is still a claim about transcription rather
+than about rounding.
+"""
 
 _LARGE = _Vector("large", 2, (1e5, 1e5, 1e5, 1.00003e5, 1.0001e5, 1.0001e5, 1.0001e5), False)
 """A domain far from the origin, where `(a + b) - k` cancels hardest and an absolute
@@ -800,8 +810,8 @@ def test_reverse_agrees_across_the_backends(case: _Case, dtype: npt.DTypeLike) -
             *_shared_fields(dim),
         )
         assert_object_parity(
-            cpp,
-            py,
+            py=py,
+            cpp=cpp,
             fields=fields,
             context=f"reverse({direction}) of {case.label} at {np.dtype(dtype).name}",
         )
@@ -824,8 +834,8 @@ def test_permute_directions_agrees_across_the_backends(case: _Case, dtype: npt.D
     permutation = [*range(1, dim), 0]
     py, cpp = _both(case, dtype, _permuting(permutation))
     assert_object_parity(
-        cpp,
-        py,
+        py=py,
+        cpp=cpp,
         fields=(
             Field("control_points", bitwise_parity(why=_REARRANGEMENT_WHY)),
             *_knot_fields(dim, _PERMUTED_KNOTS_WHY),
@@ -876,8 +886,8 @@ def test_transform_agrees_across_the_backends(case: _Case, dtype: npt.DTypeLike)
             ),
         )
     assert_object_parity(
-        cpp,
-        py,
+        py=py,
+        cpp=cpp,
         fields=(*_knot_fields(dim, _PERMUTED_KNOTS_WHY), *_shared_fields(dim)),
         context=f"transform of {case.label} at {np.dtype(dtype).name}",
     )

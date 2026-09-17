@@ -295,11 +295,17 @@ void check_reverse_does_not_move_the_curve() {
 /// here, so this is a bitwise check and not a bounded one. It is also where the
 /// untouched directions' handles are checked to have been carried through.
 ///
+/// **Both directions are exercised, and the extents differ** (5 against 3). Reversing
+/// only direction 0 would leave the `outer`/`along`/`inner` decomposition untested for
+/// any axis but the first, so a `reverse` that ignored its `direction` argument and
+/// always took axis 0 would pass. Both vectors are asymmetric about their own domain
+/// midpoints, which is what lets the knot vacuity guards below fire at all.
+///
 /// \tparam T The storage format.
 template <class T>
 void check_reverse_is_an_exact_involution_on_a_dyadic_vector() {
     const std::vector<T> along{T(0), T(0), T(0), T(0.25), T(0.5), T(1), T(1), T(1)};
-    const std::vector<T> across{T(0), T(0), T(0.5), T(1), T(1)};
+    const std::vector<T> across{T(0), T(0), T(0.25), T(1), T(1)};
     const Bspline<T> surface =
         field_of<T>({direction<T>(along, 2, false), direction<T>(across, 1, false)},
                     ramp<T>(5 * 3 * 2), 2, false);
@@ -326,6 +332,30 @@ void check_reverse_is_an_exact_involution_on_a_dyadic_vector() {
                     "reverse rebuilt the untouched direction instead of carrying its handle");
     PANTR_CHECK_MSG(once.space()->spaces()[0] != surface.space()->spaces()[0],
                     "reverse carried the reversed direction's handle through unchanged");
+
+    // The same statement about direction 1. This is the only place any `reverse` here
+    // is asked for an axis other than the first, so it is what stands between the
+    // suite and a `reverse` that ignores its `direction` argument.
+    const Bspline<T> once_across = reverse<T>(surface, 1);
+    const Bspline<T> twice_across = reverse<T>(once_across, 1);
+
+    PANTR_CHECK_MSG(same_values<T>(twice_across.net().values(), surface.net().values()),
+                    "reverse twice over direction 1 did not return the control net");
+    PANTR_CHECK_MSG(same_values<T>(twice_across.space_ref().space_ref(1).knots(),
+                                   surface.space_ref().space_ref(1).knots()),
+                    "reverse twice over direction 1 did not return the knot vector");
+    PANTR_CHECK_MSG(!same_values<T>(once_across.net().values(), surface.net().values()),
+                    "reverse over direction 1 left the control net alone, so it is vacuous");
+    PANTR_CHECK_MSG(!same_values<T>(once_across.space_ref().space_ref(1).knots(),
+                                    surface.space_ref().space_ref(1).knots()),
+                    "reverse over direction 1 left the knot vector alone, so it is vacuous");
+    // Direction 0 must come back untouched, which is the half that fails loudly if
+    // `reverse` reached for axis 0 regardless of what it was asked for.
+    PANTR_CHECK_MSG(same_values<T>(once_across.space_ref().space_ref(0).knots(),
+                                   surface.space_ref().space_ref(0).knots()),
+                    "reverse over direction 1 altered direction 0's knot vector");
+    PANTR_CHECK_MSG(once_across.space()->spaces()[0] == surface.space()->spaces()[0],
+                    "reverse over direction 1 rebuilt direction 0 instead of carrying it");
 }
 
 /// `reverse` flips a periodic direction with its cyclic shift.
@@ -335,10 +365,17 @@ void check_reverse_is_an_exact_involution_on_a_dyadic_vector() {
 /// net a plain flip and displaces the map by whole control points, far outside the
 /// bound.
 ///
+/// **The vector is deliberately not uniform.** A uniform periodic vector over `[0, 1]`
+/// is symmetric about its own domain midpoint, so `(a + b) - knots[::-1]` reproduces it
+/// exactly and this check would hold against a `reverse` that never reflected the knots
+/// at all. The interior spans here are `(0.125, 0.375, 0.25, 0.25)`, which keeps the
+/// cyclic ghost structure a periodic space needs while moving four of the seven knots.
+/// All entries stay dyadic, so the reflection is exact in both storage formats.
+///
 /// \tparam T The storage format.
 template <class T>
 void check_reverse_handles_a_periodic_direction() {
-    const std::vector<T> knots{T(-0.25), T(0), T(0.25), T(0.5), T(0.75), T(1), T(1.25)};
+    const std::vector<T> knots{T(-0.25), T(0), T(0.125), T(0.5), T(0.75), T(1), T(1.125)};
     const std::int64_t degree = 1;
     const auto space = direction<T>(knots, degree, true);
     const auto stored = static_cast<std::size_t>(space->num_basis());
