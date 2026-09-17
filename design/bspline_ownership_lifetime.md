@@ -24,9 +24,11 @@ behind it. Every claim in the two verified blocks below was re-checked claim by 
 than re-asserted, and the "Epistemic status" block records the per-claim verdicts. **Nearly
 every Python line number in this note has drifted** -- the files moved by up to about 1900 lines
 -- so each locator below is now given with **the command that finds it again**, rather than
-being trusted to stay put. Where a locator alone appears with no command, treat it as a reading
-of `cf958bf` and re-derive it. The measurements are not re-taken; they stay attributed to the
-day they were made.
+being trusted to stay put. A locator with no command beside it is **not** a `cf958bf` reading:
+this pass re-verified the two blocks below and the findings they cover, and nothing else, so
+every other bare locator here is still the `a45e935` or `d7b8654` reading the block above
+describes. Several of those have drifted; re-derive one before relying on it. The measurements
+are not re-taken; they stay attributed to the day they were made.
 
 ## The decision in one paragraph
 
