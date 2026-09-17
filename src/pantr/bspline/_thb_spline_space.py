@@ -1960,9 +1960,9 @@ class THBSplineSpace:
 
     **This class is a wrapper.** The value -- the level spaces, the Kraft selection, the
     truncation coefficients, the per-cell contribution table -- is owned by an
-    implementation chosen by :func:`_impl_class`, which is the C++ type
-    (``cpp/include/pantr/bspline/thb_space.hpp``) or the oracle
-    :class:`_THBSplineSpacePython`.  Basis tabulation, :meth:`restrict` and the three
+    implementation chosen per process and per dtype (``_impl_class``), which is the C++
+    type (``cpp/include/pantr/bspline/thb_space.hpp``) or the pure-Python parity oracle
+    (``_THBSplineSpacePython``).  Basis tabulation, :meth:`restrict` and the three
     prolongation operators have no C++ counterpart yet and are computed here, against
     the forwarded accessors alone so that one body serves both backends; the module
     docstring carries why that rather than a second always-Python space.
@@ -1971,7 +1971,8 @@ class THBSplineSpace:
     means there is no ``__dict__`` to attach anything to, and ``__setattr__`` refuses
     even a rebinding of the slots.  The wrapper fills them through
     ``object.__setattr__``, which is the pattern ``design/bspline_derived_caches.md``
-    asks for and :mod:`pantr.bspline._bspline_space_nd` already ships.
+    asks for and the tensor-product space (``pantr.bspline._bspline_space_nd``) already
+    ships.
 
     Note:
         A function is active on a cell when its tensor-product support covers the cell
@@ -1987,7 +1988,7 @@ class THBSplineSpace:
         :cite:t:`dangella2018multilevel`.
 
     Attributes:
-        _impl: The implementation this wrapper holds; see :func:`_impl_class`.  Its
+        _impl: The implementation this wrapper holds, chosen by ``_impl_class``.  Its
             type is the private ``_Impl`` alias, a union of three unrelated nominal
             types with no documented form to name here.
         _root_space (BsplineSpace): The root wrapper this space was built from, so that
@@ -2001,9 +2002,9 @@ class THBSplineSpace:
             place a dict memo is right here, because the key is genuinely data.
         _active_memo (dict[int, npt.NDArray[np.int64]]): The per-level active-function
             index arrays as the implementation owns them, read-only.
-        _support_memo (dict[int, tuple[_Support1D, ...]]): Per-level, per-direction
-            function-to-cell support, derived from the level spaces for the operations
-            that have no C++ counterpart.
+        _support_memo (dict[int, tuple]): Per-level, per-direction function-to-cell
+            support -- one ``_Support1D`` triple per direction -- derived from the level
+            spaces for the operations that have no C++ counterpart.
         _level_offsets_memo (npt.NDArray[np.int64] | None): The implementation's own
             level-offset array, read-only; ``None`` until first requested.
     """
