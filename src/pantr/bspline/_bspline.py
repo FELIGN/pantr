@@ -29,13 +29,19 @@ backends do not meet are recorded -- a periodic direction, and the order of one
 refusal. Every other operation is still Python over numba kernels and numpy, and is
 unchanged.
 
-Two of those operations cannot follow in a later cut of this front, and that is a
-declared boundary rather than an omission. :meth:`Bspline.evaluate`,
-:meth:`Bspline.evaluate_derivatives` and :meth:`Bspline.to_beziers` reach
-:meth:`~pantr.bspline.BsplineSpace1D.tabulate_basis` or
-``tabulate_basis_derivatives``, and ``cpp/include/pantr/bspline/space_1d.hpp``
-records that basis tabulation is a separate port over free functions which no
-ticket in this milestone covers.
+Three of those operations have not followed yet, and what they wait on is the
+field-level composition rather than the univariate tabulation.
+:meth:`Bspline.evaluate`, :meth:`Bspline.evaluate_derivatives` and
+:meth:`Bspline.to_beziers` used to wait on basis tabulation. That port has landed
+-- ``cpp/include/pantr/bspline/tabulate.hpp``, reached through
+:mod:`pantr.bspline._basis_backend` -- so the multivariate paths already tabulate
+per direction in C++ and stop at the step after it: combining the per-direction
+tables with the control net, the rational quotient, and, for ``to_beziers``,
+applying the extraction operators per element and assembling the result. The
+univariate ``evaluate`` paths are a separate gap, because their fused combine
+kernels in :mod:`pantr.bspline._bspline_eval` reach the basis recurrence directly
+and never call :meth:`~pantr.bspline.BsplineSpace1D.tabulate_basis` at all.
+``FELIGN/pantr#497`` is the open ticket for both.
 
 **The three ``in_place=True`` methods survive, and the C++ value has no mutator.**
 ``design/bspline_derived_caches.md`` calls :class:`Bspline` the type where
