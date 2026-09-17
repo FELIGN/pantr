@@ -175,6 +175,8 @@ CASES: Final = (
     _Case("surface", (_UNIT, _LINEAR), 2, False),
     _Case("rational-surface", (_OFFSET, _LINEAR), 3, True),
     _Case("mixed-volume", (_UNIT, _LINEAR, _OFFSET), 3, False),
+    _Case("scalar-curve", (_OFFSET,), 1, False),
+    _Case("scalar-surface", (_UNIT, _LINEAR), 1, False),
 )
 """The shipped comparison set. `mixed-volume`'s three directions have different basis
 counts and different degrees, which is what makes a transposed stride visible."""
@@ -238,6 +240,10 @@ def _both(case: _Case, dtype: npt.DTypeLike, act: _Act) -> tuple[Any, Any]:
 _AFFINE_2D: Final = AffineTransform(np.array([[0.3, -1.7], [2.9, 0.11]]), np.array([5.5, -0.25]))
 """A general, non-symmetric, non-dyadic map, so the product actually rounds."""
 
+_AFFINE_1D: Final = AffineTransform(np.array([[-0.7]]), np.array([2.25]))
+"""The rank-1 twin, for a scalar-valued field. Scalar B-splines are the common case in
+this library and `_affine_for` could not reach one before."""
+
 _AFFINE_3D: Final = AffineTransform(
     np.array([[0.3, -1.7, 0.02], [2.9, 0.11, -4.0], [1.25, 0.9, 0.31]]),
     np.array([5.5, -0.25, 11.0]),
@@ -249,12 +255,12 @@ def _affine_for(rank: int) -> AffineTransform:
     """The general map of the right rank.
 
     Args:
-        rank (int): The field's geometric rank, 2 or 3.
+        rank (int): The field's geometric rank, 1, 2 or 3.
 
     Returns:
         ~pantr.transform.AffineTransform: The map.
     """
-    return _AFFINE_2D if rank == 2 else _AFFINE_3D
+    return {1: _AFFINE_1D, 2: _AFFINE_2D}.get(rank, _AFFINE_3D)
 
 
 # The three operations as factories rather than as lambdas written at each call site.
@@ -366,6 +372,33 @@ _TRANSFORM_WHY: Final = (
     "and no contraction gate is needed. This is tests/parity/test_bezier_shape.py's "
     "derivation over the same helper and the same expression"
 )
+
+
+def _permutations_of(dim: int) -> tuple[list[int], ...]:
+    """The permutations a test should try on a field of ``dim`` directions.
+
+    The cycle alone is not enough. On two directions it *is* a transposition and is its
+    own inverse, so it cannot tell a permutation from its inverse; on three it has no
+    fixed point at all, so nothing ever exercises "one direction stays put while two
+    move" -- which is the arrangement a catalogue that reused the prior wrapper list
+    positionally would get wrong in the least visible way. The identity is included for
+    the same reason in reverse: it must be a complete no-op and nothing else tests that.
+
+    Args:
+        dim (int): The number of parametric directions.
+
+    Returns:
+        tuple[list[int], ...]: The identity, the forward cycle, and -- from three
+        directions up -- a transposition that fixes the last direction.
+    """
+    identity = list(range(dim))
+    if dim == 1:
+        return (identity,)
+    cycle = [*range(1, dim), 0]
+    if dim == 2:
+        return (identity, cycle)
+    transposition = [1, 0, *range(2, dim)]
+    return (identity, cycle, transposition)
 
 
 def _transform_roundings(rank: int) -> Roundings:
@@ -885,26 +918,64 @@ def test_the_rearrangements_reuse_every_untouched_direction_wrapper(
         case (_Case): The field to build.
     """
     dim = len(case.vectors)
-    permutation = [*range(1, dim), 0]
     for backend in (Backend.PYTHON, Backend.CPP):
         with use_backend(backend):
             field = _build(case, np.float64)
-            reversed_field = field.reverse(0)
-            for d in range(1, dim):
-                assert reversed_field.space.spaces[d] is field.space.spaces[d], (
-                    f"reverse rebuilt untouched direction {d} under {backend.name}"
-                )
-            permuted = field.permute_directions(permutation)
-            for k, source in enumerate(permutation):
-                assert permuted.space.spaces[k] is field.space.spaces[source], (
-                    f"permute_directions gave new direction {k} the wrapper of the "
-                    f"wrong source direction under {backend.name}"
-                )
+            # Every direction, not just direction 0: a `reverse` that rebuilt the
+            # *wrong* direction's space would carry direction 0's handle through
+            # correctly and fail only on a later axis.
+            for reversed_axis in range(dim):
+                result = field.reverse(reversed_axis)
+                for d in range(dim):
+                    if d == reversed_axis:
+                        continue
+                    assert result.space.spaces[d] is field.space.spaces[d], (
+                        f"reverse({reversed_axis}) rebuilt untouched direction {d} "
+                        f"under {backend.name}"
+                    )
+            for permutation in _permutations_of(dim):
+                permuted = field.permute_directions(permutation)
+                for k, source in enumerate(permutation):
+                    assert permuted.space.spaces[k] is field.space.spaces[source], (
+                        f"permute_directions({permutation}) gave new direction {k} the "
+                        f"wrapper of the wrong source direction under {backend.name}"
+                    )
 
 
 # ---------------------------------------------------------------------------
 # AC4 -- the independent check
 # ---------------------------------------------------------------------------
+
+_MAPS_BY_RANK: Final = {
+    1: (
+        ("negate", np.array([[-1.0]]), np.array([0.0])),
+        ("scale-shift", np.array([[0.5]]), np.array([6.0])),
+    ),
+    2: (
+        ("permutation", np.array([[0.0, 1.0], [1.0, 0.0]]), np.array([0.0, 0.0])),
+        ("power-of-two", np.array([[4.0, 0.0], [0.0, 0.25]]), np.array([0.0, 0.0])),
+        ("integer-shift", np.array([[1.0, 0.0], [0.0, 1.0]]), np.array([3.0, -7.0])),
+        ("shear", np.array([[2.0, 0.5], [0.0, 4.0]]), np.array([-3.0, 8.0])),
+    ),
+    3: (
+        (
+            "cyclic-permutation",
+            np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]),
+            np.array([0.0, 0.0, 0.0]),
+        ),
+        (
+            "lower-triangular",
+            np.array([[2.0, 0.0, 0.0], [0.5, 4.0, 0.0], [-1.0, 0.25, 8.0]]),
+            np.array([3.0, -7.0, 16.0]),
+        ),
+    ),
+}
+"""Exactly-representable maps per geometric rank. Rank 3 was absent entirely until a
+test audit found it: a loop bound wrong only at `n = 3` would have been invisible to
+this check, and a cross-backend comparison cannot see a fault both backends share.
+
+Each rank carries at least one **non-symmetric** matrix, because a symmetric one is its
+own transpose and cannot tell `A` from `A` transposed."""
 
 _EXACT_MAPS: Final = (
     ("permutation", np.array([[0.0, 1.0], [1.0, 0.0]]), np.array([0.0, 0.0])),
@@ -917,13 +988,47 @@ below is exact in both storage formats. The shear is non-symmetric on purpose: a
 diagonal matrix is its own transpose and cannot tell ``A`` from ``A.T``."""
 
 
-@pytest.mark.parametrize("label,matrix,offset", _EXACT_MAPS, ids=[m[0] for m in _EXACT_MAPS])
+class _ExactMap(NamedTuple):
+    """One exactly-representable affine map and the field shape to apply it to.
+
+    A record rather than a five-tuple, which is this file's own convention for
+    :class:`_Vector` and :class:`_Case` and what keeps the test's signature readable.
+
+    Attributes:
+        rank (int): The field's geometric rank.
+        label (str): What to call it in a test id.
+        matrix (npt.NDArray[np.float64]): The ``(rank, rank)`` linear part.
+        offset (npt.NDArray[np.float64]): The translation.
+        rational (bool): Whether to store a homogeneous weight column.
+    """
+
+    rank: int
+    label: str
+    matrix: npt.NDArray[np.float64]
+    offset: npt.NDArray[np.float64]
+    rational: bool
+
+
+_EXACT_CASES: Final = tuple(
+    _ExactMap(rank, label, matrix, offset, rational)
+    for rank, maps in _MAPS_BY_RANK.items()
+    for label, matrix, offset in maps
+    for rational in (False, True)
+)
+"""Every exact map, at every rank, non-rational and rational. The rational arm was
+absent until a test audit found it: the weight-scaled translation `w b` is arithmetic no
+non-rational case reaches, and it was checked only by the cross-backend comparison,
+which cannot see a fault both backends share."""
+
+
+@pytest.mark.parametrize(
+    "exact",
+    _EXACT_CASES,
+    ids=[f"r{c.rank}-{c.label}{'-w' if c.rational else ''}" for c in _EXACT_CASES],
+)
 @pytest.mark.parametrize("dtype", DTYPES, ids=["float64", "float32"])
 def test_transform_matches_its_closed_form_on_an_exact_map(
-    label: str,
-    matrix: npt.NDArray[np.float64],
-    offset: npt.NDArray[np.float64],
-    dtype: npt.DTypeLike,
+    exact: _ExactMap, dtype: npt.DTypeLike
 ) -> None:
     """An exactly-representable map has a closed form, asserted against it.
 
@@ -933,23 +1038,33 @@ def test_transform_matches_its_closed_form_on_an_exact_map(
     of two, zero or a small integer, so ``A x + b`` commits no rounding at all on a net
     of small integers and the admissible deviation is exactly zero rather than a budget.
 
+    For a rational field the closed form is the homogeneous one,
+    ``w (A x + b) = A (w x) + w b``, with the weight column copied through. The weights
+    are powers of two so the scaled translation stays exact too.
+
     Args:
-        label (str): The map's name, for the failure message.
-        matrix (npt.NDArray[np.float64]): The linear part.
-        offset (npt.NDArray[np.float64]): The translation.
+        exact (_ExactMap): The map and the field shape to apply it to.
         dtype (npt.DTypeLike): The storage format.
     """
+    rank, matrix, offset, rational = exact.rank, exact.matrix, exact.offset, exact.rational
     # Small integers, so every product with a power of two and every sum stays exact.
     count = len(_UNIT.knots) - _UNIT.degree - 1
-    net = np.arange(1.0, 1.0 + (count * 2)).reshape(-1, 2).astype(dtype)
+    components = rank + (1 if rational else 0)
+    net = np.arange(1.0, 1.0 + (count * components)).reshape(-1, components).astype(dtype)
+    if rational:
+        # Powers of two, so `w b` and the weighted coordinates stay exact.
+        net[:, rank] = np.asarray([2.0, 0.5, 4.0, 1.0][:count], dtype=dtype)
     affine = AffineTransform(matrix, offset)
 
     expected = np.empty_like(net, dtype=np.float64)
     for k in range(net.shape[0]):
-        for i in range(2):
-            expected[k, i] = sum(float(net[k, j]) * float(matrix[i, j]) for j in range(2)) + float(
-                offset[i]
+        weight = float(net[k, rank]) if rational else 1.0
+        for i in range(rank):
+            expected[k, i] = sum(float(net[k, j]) * float(matrix[i, j]) for j in range(rank)) + (
+                weight * float(offset[i])
             )
+        if rational:
+            expected[k, rank] = weight
 
     for backend in (Backend.PYTHON, Backend.CPP):
         # The space is built inside the block: it holds the active backend's own
@@ -958,7 +1073,7 @@ def test_transform_matches_its_closed_form_on_an_exact_map(
             space = BsplineSpace(
                 [BsplineSpace1D(np.asarray(_UNIT.knots, dtype=dtype), _UNIT.degree)]
             )
-            result = Bspline(space, net).transform(affine)
+            result = Bspline(space, net, is_rational=rational).transform(affine)
             assert_accuracy(
                 np.asarray(result.control_points, dtype=np.float64),
                 expected,
@@ -972,7 +1087,10 @@ def test_transform_matches_its_closed_form_on_an_exact_map(
                         "admissible deviation is exactly zero rather than a budget"
                     ),
                 ),
-                context=f"{label} map on {np.dtype(dtype).name} under {backend.name}",
+                context=(
+                    f"rank-{rank} {exact.label} map, rational={rational}, on "
+                    f"{np.dtype(dtype).name} under {backend.name}"
+                ),
             )
 
 
@@ -1013,7 +1131,10 @@ def _sweep_cases() -> tuple[_Case, ...]:
     vectors = _sweep_vectors()
     cases: list[_Case] = []
     for vector in vectors:
-        for rank, rational in ((2, False), (3, False), (2, True)):
+        # Rank 1 is in the sweep as well as in the shipped set: a scalar field is the
+        # common case in this library and the transform's inner product degenerates to
+        # a single term there, which is its own arm.
+        for rank, rational in ((1, False), (2, False), (3, False), (2, True)):
             cases.append(
                 _Case(f"{vector.label}-r{rank}{'w' if rational else ''}", (vector,), rank, rational)
             )

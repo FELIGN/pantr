@@ -105,6 +105,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, TypeAlias
 
 from .._backend import Backend, active_backend, available_backends
+from .._transform_control_points import _check_affine_rank, _geometric_rank
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -295,9 +296,15 @@ def transform_field(bspline: Bspline, affine: AffineTransform) -> Bspline:
     rather than in :meth:`pantr.bspline.Bspline.transform`, so unlike the other two
     methods' checks it is not already behind the caller. Reaching it by running the
     oracle's helper on the Python path only would put the refusal behind the backend,
-    which is precisely what every other entry point in these catalogues avoids -- so
-    the check is made here, from the same expression the helper uses, and the C++ path
-    is entered with the rank already agreed.
+    which is precisely what every other entry point in these catalogues avoids -- so it
+    is made here, and the C++ path is entered with the rank already agreed.
+
+    It is the **same** check rather than a second spelling of it.
+    :func:`pantr._transform_control_points._check_affine_rank` and
+    :func:`~pantr._transform_control_points._geometric_rank` were split out of that
+    helper so that the message and the rank expression live in one place; the oracle
+    path then runs the check twice, which is harmless and is the price of it being one
+    check rather than two that must be kept in step.
 
     Args:
         bspline (~pantr.bspline.Bspline): The field to transform.
@@ -312,14 +319,10 @@ def transform_field(bspline: Bspline, affine: AffineTransform) -> Bspline:
     """
     from ._bspline import Bspline as BsplineCls  # noqa: PLC0415  (cycle)
 
-    rank = bspline.control_points.shape[-1]
-    if bspline.is_rational:
-        rank -= 1
-    if affine.matrix.shape != (rank, rank):
-        raise ValueError(
-            f"Transform dimension ({affine.matrix.shape[0]}) does not match the "
-            f"geometric rank ({rank}) of the control points."
-        )
+    _check_affine_rank(
+        affine.matrix,
+        _geometric_rank(bspline.control_points.shape[-1], bspline.is_rational),
+    )
 
     if _the_cpp_backend_can_take_it():
         return _cpp_transform(bspline, affine)

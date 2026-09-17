@@ -21,13 +21,21 @@ port and each lives on the wrapper. That is the same line ``space_nd.hpp`` draws
 and the mixed dispatch it produces is the temporary seam this front introduces; a
 cleanup ticket removes it once the whole front lands.
 
-**The two refinements have followed the state across.**
-:meth:`Bspline.insert_knots` and :meth:`Bspline.subdivide` dispatch to
+**Ten operations have followed the state across**, each through its own catalogue.
+:meth:`Bspline.insert_knots` and :meth:`Bspline.subdivide` reach
 ``cpp/include/pantr/bspline/refinement.hpp`` through
 :mod:`pantr.bspline._refinement_backend`, which is also where the two places the
 backends do not meet are recorded -- a periodic direction, and the order of one
-refusal. Every other operation is still Python over numba kernels and numpy, and is
-unchanged.
+refusal. :meth:`Bspline.to_open_bspline`, :meth:`Bspline.split` and
+:meth:`Bspline.slice` reach ``structural.hpp`` through
+:mod:`pantr.bspline._structural_backend`; :meth:`Bspline.derivative` and
+:meth:`Bspline.elevate_degree` reach ``degree.hpp`` through
+:mod:`pantr.bspline._degree_backend`; and :meth:`Bspline.reverse`,
+:meth:`Bspline.permute_directions` and :meth:`Bspline.transform` reach ``shape.hpp``
+through :mod:`pantr.bspline._shape_backend` -- **in their value-returning form only**,
+since ``in_place=True`` stays on :meth:`_mutate` and therefore on the oracle's arrays
+under both backends. Every other operation is still Python over numba kernels and
+numpy, and is unchanged.
 
 Two of those operations cannot follow in a later cut of this front, and that is a
 declared boundary rather than an omission. :meth:`Bspline.evaluate`,
@@ -1636,6 +1644,9 @@ class Bspline:
 
         Raises:
             ValueError: If ``direction`` is out of range ``[0, dim)``.
+            TypeError: If this field was built under the other backend. New with the
+                C++ dispatch: the operation crosses the boundary as a *field*, and
+                ``_cpp_handle`` refuses a foreign one rather than converting it.
 
         Example:
             >>> import numpy as np
@@ -1736,6 +1747,9 @@ class Bspline:
         Raises:
             ValueError: If ``permutation`` is not a valid permutation of
                 ``range(dim)``.
+            TypeError: If this field was built under the other backend. New with the
+                C++ dispatch: the operation crosses the boundary as a *field*, and
+                ``_cpp_handle`` refuses a foreign one rather than converting it.
 
         Example:
             >>> import numpy as np
@@ -1822,6 +1836,9 @@ class Bspline:
         Raises:
             ValueError: If the transform dimension does not match the
                 geometric rank of the B-spline.
+            TypeError: If this field was built under the other backend. New with the
+                C++ dispatch: the operation crosses the boundary as a *field*, and
+                ``_cpp_handle`` refuses a foreign one rather than converting it.
 
         Example:
             >>> import numpy as np
