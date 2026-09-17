@@ -55,11 +55,13 @@ declared boundary ``cpp/include/pantr/bspline/space_1d.hpp`` draws around
 ``get_cardinal_intervals``.
 
 This paragraph used to say the conversions were something "no ticket in this milestone
-covers", which was false, and it drew a parallel to the cardinal extraction builder
-having no C++ half -- also now false, since ``FELIGN/pantr#491`` ported the
-cardinal-interval scan. Both are the same failure: a comment asserting the state of the
-ticket graph, which goes stale the day somebody files or lands something, with nothing
-to notice. Cite the issue instead.
+covers", which was false: ``FELIGN/pantr#500`` covers them. It also drew a parallel to
+the cardinal extraction builder having no C++ half. That one is still true -- the builder
+is unported and ``FELIGN/pantr#492`` is its open ticket -- but it no longer says what it
+used to, because ``FELIGN/pantr#491`` has since ported the cardinal-interval *scan* the
+builder was waiting on. Both are the same hazard: a comment that asserts the state of the
+ticket graph goes stale the day somebody files or lands something, and nothing announces
+it. Cite the issue instead.
 
 A periodic direction that receives **no** knots is not affected: C++ carries its space
 handle into the result untouched, exactly as the oracle carries its wrapper.
