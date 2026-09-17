@@ -195,8 +195,8 @@ bool same_values(std::span<const T> left, std::span<const T> right) {
 ///
 /// This replaces an earlier `magnitude / (hi - lo)`, which read as derived and was a
 /// heuristic: a curve's local sensitivity is set by its local span, and a vector whose
-/// narrowest span is far below the domain width has a slope the domain-average
-/// quotient understates -- by a factor of eight on this file's own knot vectors.
+/// narrowest span is well below the domain width has a slope the domain-average
+/// quotient understates. The knot vectors in this file are already such vectors.
 ///
 /// \tparam T The storage format.
 /// \param knots The knot vector.

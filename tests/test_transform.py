@@ -623,9 +623,15 @@ class TestBsplineTransform:
         ctrl = [[0.0, 0.0], [1.0, 1.0]]
         s = _make_bspline_1d(knots, 1, ctrl)
         t = AffineTransform.translation([5.0, 5.0])
+        receiver = id(s)
         result = s.transform(t, in_place=True)
         assert result is None
         npt.assert_allclose(s.control_points[0], [5.0, 5.0])
+        # The receiver's own identity, which holds under both backends and is what
+        # `_mutate` would break if it rebuilt the wrapper rather than reseating it.
+        # These tests run under whichever backend the process selects, so this is the
+        # C++ assertion too.
+        assert id(s) == receiver
 
     @_PYTHON_BACKEND_ONLY
     def test_inplace_no_extra_alloc(self) -> None:
