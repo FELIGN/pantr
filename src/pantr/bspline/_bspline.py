@@ -67,6 +67,7 @@ from ._bspline_space_nd import _impl_class as _space_impl_class
 from ._bspline_to_beziers import _to_beziers_impl
 from ._degree_backend import derivative_of_field, elevate_field_degree
 from ._refinement_backend import insert_knots_into_field, subdivide_field
+from ._shape_backend import permute_field_directions, reverse_field, transform_field
 from ._structural_backend import slice_field, split_field, to_open_field
 
 if TYPE_CHECKING:
@@ -509,6 +510,45 @@ class Bspline:
         """
         self = object.__new__(cls)
         self._take(impl, _BsplineSpace._wrap_over(impl.space, prior))
+        return self
+
+    @classmethod
+    def _wrap_over_the_same_space(cls, impl: _Impl, space: BsplineSpace) -> Bspline:
+        """Wrap an implementation an operation produced without touching the space.
+
+        :meth:`_wrap_over` cannot serve this case. It builds a *new*
+        :class:`~pantr.bspline.BsplineSpace` wrapper and reuses only the univariate
+        wrappers inside it, so ``result.space is field.space`` is false even when every
+        direction survived and the implementation holds the very same space object.
+        ``tests/test_transform.py`` asserts that identity for
+        :meth:`transform` -- it is the second of the two identity assertions
+        ``design/bspline_ownership_lifetime.md``'s **F6** singles out as stronger than
+        "the same object twice" -- and the oracle satisfies it by handing back
+        ``self.space``. This is how the C++ path satisfies it.
+
+        The precondition is enforced rather than documented, the way
+        :meth:`_wrap_over`'s length check is: a caller that reached for this after an
+        operation that *did* reseat the space would hand back a wrapper describing the
+        space the field started from, while every value comparison agreed.
+
+        Args:
+            impl (_Impl): The implementation to adopt, with no re-validation.
+            space (~pantr.bspline.BsplineSpace): The wrapper in front of ``impl``'s
+                space, which must be the wrapper for that very implementation object.
+
+        Returns:
+            Bspline: A wrapper around ``impl``, presenting ``space`` itself.
+
+        Raises:
+            ValueError: If ``space`` is not the wrapper for ``impl``'s own space.
+        """
+        if space._impl is not impl.space:
+            raise ValueError(
+                "_wrap_over_the_same_space needs the wrapper for the implementation's own "
+                "space; this operation reseated the space, so it wants _wrap_over instead."
+            )
+        self = object.__new__(cls)
+        self._take(impl, space)
         return self
 
     def _take(self, impl: _Impl, space: BsplineSpace) -> None:
@@ -1614,8 +1654,7 @@ class Bspline:
         if in_place:
             self._mutate(lambda cp: self._reversed(direction, cp, write_into=True))
             return None
-        new_cp, new_space = self._reversed(direction, self.control_points, write_into=False)
-        return Bspline(new_space, new_cp, is_rational=self.is_rational)
+        return reverse_field(self, direction)
 
     def _reversed(
         self, direction: int, control_points: _ControlPoints, *, write_into: bool
@@ -1718,8 +1757,7 @@ class Bspline:
         if in_place:
             self._mutate(lambda cp: self._permuted(perm, cp))
             return None
-        new_cp, new_space = self._permuted(perm, self.control_points)
-        return Bspline(new_space, new_cp, is_rational=self.is_rational)
+        return permute_field_directions(self, perm)
 
     def _permuted(
         self, permutation: list[int], control_points: _ControlPoints
@@ -1798,8 +1836,7 @@ class Bspline:
         if in_place:
             self._mutate(lambda cp: self._transformed(affine, cp, write_into=True))
             return None
-        new_cp, new_space = self._transformed(affine, self.control_points, write_into=False)
-        return Bspline(new_space, new_cp, is_rational=self.is_rational)
+        return transform_field(self, affine)
 
     def _transformed(
         self, affine: AffineTransform, control_points: _ControlPoints, *, write_into: bool
