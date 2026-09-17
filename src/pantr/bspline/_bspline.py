@@ -29,7 +29,7 @@ backends do not meet are recorded -- a periodic direction, and the order of one
 refusal. Every other operation is still Python over numba kernels and numpy, and is
 unchanged.
 
-Three of those operations have not followed yet, and what they wait on is the
+Three operations have not followed yet, and what they wait on is the
 field-level composition rather than the univariate tabulation.
 :meth:`Bspline.evaluate`, :meth:`Bspline.evaluate_derivatives` and
 :meth:`Bspline.to_beziers` used to wait on basis tabulation. That port has landed
