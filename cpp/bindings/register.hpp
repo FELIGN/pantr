@@ -172,6 +172,19 @@ void register_bspline_degree(nanobind::module_& m);
 /// function today.
 void register_bspline_knots(nanobind::module_& m);
 
+/// Register the shape operations on a `pantr.bspline.Bspline`.
+///
+/// Its own entry point rather than three more functions inside
+/// `register_bspline_structural`, for the reason that one is separate from
+/// `register_bspline_refinement`: reversing, permuting and mapping a field are a
+/// separate port with separate parity claims, and this one's decisions -- why the
+/// control points of all three are claimed bitwise while the transform's are not,
+/// why the affine map crosses as a matrix and an offset rather than as an
+/// `AffineTransform`, why the space handles are moved rather than rebuilt -- argue
+/// from somewhere else entirely. It is also the only one of the four whose
+/// operations have an `in_place=` form on the Python side, served entirely there.
+void register_bspline_shape(nanobind::module_& m);
+
 /// Register `pantr.bspline`'s Bézier extraction operator builder and its mask.
 ///
 /// Separate from `register_bspline_extraction` because the two are separate ports

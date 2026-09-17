@@ -210,3 +210,48 @@ def slice_bspline_point(
     oracle's own numpy division lives. Overloaded on the field's class in C++, so no
     cast is performed on ``out``.
     """
+
+def reverse_bspline(
+    bspline: Bspline32 | Bspline64,
+    direction: int,
+) -> Bspline32 | Bspline64:
+    """Reverse the orientation of one parametric direction.
+
+    The control points are read back to front along ``direction`` and that direction's
+    knot vector is reflected about its own domain midpoint, so the geometry is unchanged
+    and only the parametrization runs the other way. A periodic direction takes a cyclic
+    shift by its ghost count on top of the flip. Every other direction's space handle is
+    carried into the result, which is what keeps
+    ``reversed.space.spaces[d] is field.space.spaces[d]`` true for them. Raises
+    ``ValueError`` for a direction out of range, with the oracle's own text.
+    """
+
+def permute_bspline_directions(
+    bspline: Bspline32 | Bspline64,
+    permutation: Sequence[int],
+) -> Bspline32 | Bspline64:
+    """Reorder the parametric directions, new direction ``k`` being old ``permutation[k]``.
+
+    Nothing is computed: the space handles are reordered and the net's axes transposed,
+    so **every** direction comes back as the object that went in. Raises ``ValueError``
+    when the argument is not a permutation of ``range(dim)``, with the oracle's own text.
+    """
+
+def transform_bspline(
+    bspline: Bspline32 | Bspline64,
+    matrix: npt.NDArray[np.float64],
+    offset: npt.NDArray[np.float64],
+) -> Bspline32 | Bspline64:
+    """Apply the affine map ``x -> A x + b`` to the geometric coordinates.
+
+    The map crosses as a matrix and an offset rather than as an ``AffineTransform``, so
+    no affine implementation is ever converted between backends; both are ``float64``
+    whatever the field stores, because that is what an ``AffineTransform`` holds, and
+    ``cpp/include/pantr/bspline/shape.hpp`` casts them to the storage format **before**
+    multiplying. For a rational field the weight column is copied and the translation is
+    scaled by each point's weight, which is ``w (A x + b) = A (w x) + w b``. The space is
+    untouched and its handle is passed through, which is what keeps
+    ``field.transform(t).space is field.space`` true on this backend. Raises
+    ``ValueError`` when ``matrix`` is not ``(rank, rank)``, with the oracle's own text,
+    or when ``offset`` is not ``rank`` long.
+    """
