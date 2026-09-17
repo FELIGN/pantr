@@ -103,10 +103,16 @@ class TestBsplineReverse:
         """in_place=True modifies original and returns None."""
         b = _make_bspline_2d_surface()
         original_cp = b.control_points.copy()
+        receiver = id(b)
         result = b.reverse(direction=0, in_place=True)
         assert result is None
         expected = np.flip(original_cp, axis=0)
         np.testing.assert_array_equal(b.control_points, expected)
+        # The receiver's own identity, which holds under both backends and is what
+        # `_mutate` would break if it rebuilt the wrapper rather than reseating it.
+        # These tests run under whichever backend the process selects, so this is the
+        # C++ assertion too.
+        assert id(b) == receiver
 
     def test_reverse_double_is_identity(self) -> None:
         """Reversing the same direction twice yields the original."""
@@ -207,10 +213,16 @@ class TestBsplinePermuteDirections:
         """in_place=True modifies original and returns None."""
         b = _make_bspline_2d_surface()
         original_cp = b.control_points.copy()
+        receiver = id(b)
         result = b.permute_directions([1, 0], in_place=True)
         assert result is None
         expected = np.transpose(original_cp, (1, 0, 2))
         np.testing.assert_array_equal(b.control_points, expected)
+        # The receiver's own identity, which holds under both backends and is what
+        # `_mutate` would break if it rebuilt the wrapper rather than reseating it.
+        # These tests run under whichever backend the process selects, so this is the
+        # C++ assertion too.
+        assert id(b) == receiver
 
     def test_permute_inverse_is_identity(self) -> None:
         """Applying permutation then its inverse recovers the original."""

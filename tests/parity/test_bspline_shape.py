@@ -41,9 +41,11 @@ So both backends commit the *same* error, which makes the parity claim exact whi
 accuracy claim is not. Asserting a bound here instead would assert something weaker than
 what holds and would never be approached, which is the vacuity
 ``design/backend_parity.md`` Rule 3 and AC5's second guard both exist to refuse.
-Measured before the claim was written: 168 of 168 reflected knot bit patterns identical,
-over six knot vectors spanning ``1e5``, negative domains, a periodic direction and both
-storage formats.
+The claim is not left to a measurement taken once and written down here, which nothing
+would re-run. :func:`test_the_claims_hold_over_a_ten_times_sweep` asserts
+``reverse_knot_diffs == 0`` over the whole sweep on every run, and its message says
+plainly that a failure there refutes the argument above rather than asking for a looser
+bound.
 
 Derived bound
 -------------
