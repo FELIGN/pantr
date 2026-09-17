@@ -990,7 +990,18 @@ docs_checks() {
     # system is the thing under suspicion here.
     local docs_pantr docs_root editable_at installed_here
     docs_root="$(cd "$ROOT" && pwd -P)"
-    editable_at="$(pip show pantr 2>/dev/null | sed -n 's/^Editable project location: //p')"
+    # `python -m pip`, not bare `pip`: `pip` is a console script too, and resolving it
+    # through PATH is the same fragility this function exists to defend against -- in a
+    # venv built `--without-pip` it falls through to another environment's, and then
+    # the answer is about that environment. A review of the first version of this guard
+    # caught exactly that, which is the second time the console-script shape has bitten
+    # inside this one function.
+    #
+    # `pip show`'s output is a declared mail-header format and is stable enough for one
+    # field; the sturdier form is `direct_url.json` through `importlib.metadata` (PEP
+    # 610), which is machine-readable rather than merely parseable, and is worth moving
+    # to if this ever needs more than the one field.
+    editable_at="$(python -m pip show pantr 2>/dev/null | sed -n 's/^Editable project location: //p')"
     installed_here=0
     if [[ -n "$editable_at" && "$(cd "$editable_at" 2>/dev/null && pwd -P)" == "$docs_root" ]]; then
         installed_here=1

@@ -18,6 +18,42 @@
 # `PYTHON ?= python` so a caller can point it elsewhere.
 PYTHON ?= python
 
+
+# Which `pantr` a target imports is decided by the active interpreter's meta-path
+# finders, not by the working directory. An editable install anywhere puts a finder
+# on `sys.meta_path`, which is consulted BEFORE `sys.path`, so a checkout's finder
+# answers for every interpreter that carries it -- and `PYTHONPATH` cannot override
+# it. Running `make` from this directory is therefore not enough to make a target
+# describe this directory.
+#
+# Using the active interpreter rather than a console script's (below) is necessary
+# and NOT sufficient: it fixes the case where PATH selects a foreign interpreter,
+# and does nothing where the active interpreter is itself carrying another
+# checkout's finder -- which is exactly what `conda run -n pantr make doctest`
+# does in a worktree.
+#
+# So the targets that import `pantr` assert it instead of assuming it. A loud
+# failure here costs a command; the alternative is `make test` reporting green over
+# another checkout, which is what happened before this guard existed.
+.PHONY: check-tree
+check-tree:
+	@root="$$(cd "$(CURDIR)" && pwd -P)"; \
+	got="$$($(PYTHON) -c 'import pantr; print(pantr.__file__)' 2>/dev/null)"; \
+	if [ -z "$$got" ]; then \
+		echo "make: pantr does not import under $$($(PYTHON) -c 'import sys; print(sys.executable)')" >&2; \
+		echo "      install this tree first:  pip install -e '.[dev]'" >&2; \
+		exit 1; \
+	fi; \
+	case "$$(cd "$$(dirname "$$got")" && pwd -P)/" in \
+		"$$root"/*) ;; \
+		*) echo "make: this would describe another checkout, not this one." >&2; \
+		   echo "      here:     $$root" >&2; \
+		   echo "      imports:  $$got" >&2; \
+		   echo "      cause:    the active interpreter carries another checkout's editable install." >&2; \
+		   echo "      fix:      activate this tree's own venv, or PYTHON=/path/to/its/python make ..." >&2; \
+		   exit 1 ;; \
+	esac
+
 help:
 	@echo "Commands:"
 	@echo "  test      : run the test suite."
@@ -34,7 +70,7 @@ help:
 	@echo "  pre-pull-request: run lint, format, format check, type check, import lint, tests, coverage, and docs."
 
 # Run the test suite with Numba JIT enabled
-test:
+test: check-tree
 	$(PYTHON) -m pytest -n auto
 
 # Run the docstring examples shipped in the package sources. Kept out of `test`
@@ -58,11 +94,11 @@ test:
 # This target checks that the documentation matches the code, and the values it asserts
 # go through np.allclose or .tolist(), neither of which depends on JIT-vs-interpreter
 # rounding.
-doctest:
+doctest: check-tree
 	NUMBA_DISABLE_JIT=1 $(PYTHON) -m pytest --doctest-modules src/pantr
 
 # Generate an XML coverage report with Numba JIT disabled
-coverage:
+coverage: check-tree
 	COVERAGE_FILE=/tmp/.coverage NUMBA_DISABLE_JIT=1 $(PYTHON) -m pytest -m "not slow" --cov=src/pantr --cov-report=term-missing --cov-report=xml
 
 # Remove build artifacts
@@ -94,12 +130,12 @@ type-check:
 # PYTHONPATH=src pins the analysis to this checkout's source: import-linter resolves
 # `pantr` through sys.path, so without it the contract is checked against whatever the
 # editable install points at, which in a git worktree is a different tree entirely.
-import-lint:
+import-lint: check-tree
 	PYTHONPATH=src $(PYTHON) "$$(command -v lint-imports)"
 
 # Build documentation
-docs:
-	$(MAKE) -C docs html SPHINXOPTS="$(SPHINXOPTS)"
+docs: check-tree
+	$(MAKE) -C docs html SPHINXBUILD="$(PYTHON) -m sphinx" SPHINXOPTS="$(SPHINXOPTS)"
 
 # Aggregate target to run all checks before creating a pull request
 pre-pull-request: ruff-lint ruff-format ruff-format-check type-check import-lint test doctest coverage docs
