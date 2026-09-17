@@ -153,15 +153,20 @@ since ``Bspline`` itself stays a Python wrapper under either backend.**
 ``insert_knots`` and ``subdivide`` reach ``cpp/include/pantr/bspline/refinement.hpp``
 through ``pantr.bspline._refinement_backend``; ``slice``, ``split`` and ``to_open``
 reach ``cpp/include/pantr/bspline/structural.hpp`` through
-``pantr.bspline._structural_backend``; and ``derivative`` and ``elevate_degree``
+``pantr.bspline._structural_backend``; ``derivative`` and ``elevate_degree``
 reach ``cpp/include/pantr/bspline/degree.hpp`` through
-``pantr.bspline._degree_backend``. Each catalogue records its own boundary rather
+``pantr.bspline._degree_backend``; and ``reverse``, ``permute_directions`` and
+``transform`` reach ``cpp/include/pantr/bspline/shape.hpp`` through
+``pantr.bspline._shape_backend``. Each catalogue records its own boundary rather
 than this paragraph restating them: a periodic direction keeps ``insert_knots``,
 ``subdivide`` and ``elevate_degree`` on the oracle, a rational field or a
 ``keep_degree=True`` request keep ``derivative`` on it, and an unclamped direction
 keeps ``elevate_degree`` on it too -- the last one not because the port is missing
 but because the oracle's own answer there is a defect ``degree.hpp`` declines to
-reproduce in undefined-behaviour form.
+reproduce in undefined-behaviour form. The three shape operations have no such
+boundary and take every field either backend takes, but they do have a **scope**:
+only the value-returning form dispatches, and ``in_place=True`` stays on
+``Bspline._mutate``, and therefore on the oracle's arrays, under both backends.
 
 **This list was wrong for two releases and that is worth a sentence.** It said three
 modules and named neither half of ``bezier`` while both were merged and dispatching.
