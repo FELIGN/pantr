@@ -846,7 +846,19 @@ between mechanisms:**
   wrapper pattern, `_adopt`, the memo slots, the raising `__setattr__`, the `view_of` owner
   argument, and the four `rv_policy` sites. That worktree was not entered.
 - **Verified by execution in the `pantr` env, and re-run at `cf958bf`:**
-  - *Held.* `b.space` changes identity across `reverse(direction=0, in_place=True)`.
+  - *Held.* `b.space` changes identity across `reverse(direction=0, in_place=True)`. Re-run with:
+
+    ```python
+    import numpy as np
+    from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D
+
+    one_d = BsplineSpace1D(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]), 2)
+    field = Bspline(BsplineSpace((one_d, one_d)), np.zeros((3, 3, 2)))
+    before = field.space
+    field.reverse(direction=0, in_place=True)
+    print(before is field.space)  # False -- the reseat hands out a new wrapper
+    ```
+
   - *Changed, because the port landed.* `b.control_points is b._control_points` and "the array is
     writable" were read off a tree where `Bspline` itself held the array. At `cf958bf` the
     wrapper's `__slots__` are `("_derived", "_impl", "_space")` and `control_points` delegates to
