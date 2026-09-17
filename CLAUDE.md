@@ -102,6 +102,15 @@ The local suite passing is necessary but not sufficient. Known traps:
   the branch — seen as 21 phantom failures against code that was already fixed. Use
   `PYTHONPATH="$(pwd)/src"`. Plain `pytest` is unaffected, since `pytest.ini`'s
   `pythonpath = src` resolves against the rootdir.
+- **`make docs` is incremental, and a docstring RST error walks straight through it.** It reuses
+  `docs/_build`, and Sphinx does not re-emit a warning for a page it decides is up to date, so a
+  malformed cross-reference added to a docstring goes unreported — including through
+  `make pre-pull-request`, which ends in `docs`. `scripts/ci_local.sh docs` is **not** exposed: it
+  removes `docs/_build` before building, and says why in a comment above the removal. The symptom
+  to recognize is `ERROR: Unknown target name: "np.bool"`, from a `numpy` dtype written as
+  `np.bool_` in an `Attributes:` entry, where RST reads the trailing underscore before `]` as a
+  reference; wrap such a type in double backticks. After a docstring change, trust
+  `scripts/ci_local.sh docs`, or remove `docs/_build` yourself before `make docs`.
 - **CI is the finish line, not the push.** After creating a PR, watch it (`gh pr checks <n> --watch`)
   and do not report the work as done until every required check passes. Avoid pushing twice in quick
   succession: `ci.yaml` sets `cancel-in-progress: true`, so a second push cancels the first run's

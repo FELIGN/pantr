@@ -29,6 +29,8 @@ Covers:
 
 from __future__ import annotations
 
+import copy
+import pickle
 import sys
 from typing import Any, get_args
 
@@ -36,6 +38,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pantr._backend import Backend, use_backend
 from pantr._numba_compat import nb_jit
 from pantr.basis import LagrangeVariant
 from pantr.bspline import (
@@ -61,10 +64,13 @@ from pantr.bspline.spanwise_element_extraction import (
     Target,
     _bezier_structural_identity_mask,
     _coerce_target,
+    _impl_class,
     _lagrange_structural_identity_mask,
+    _SpanwiseElementExtractionPython,
     normalize_cell_indices,
     operand_shape,
 )
+from tests._parity_harness import demand_cpp_backend
 
 RNG = np.random.default_rng(20260421)
 
@@ -82,6 +88,17 @@ Independent of ``_TARGET_BY_NAME`` so that a wrong entry there is refutable.
 def _space_2d() -> BsplineSpace:
     """Build a small 2D open-knot space with a mix of cardinal / non-cardinal intervals."""
     sp1 = BsplineSpace1D([0, 0, 0, 1, 2, 3, 4, 5, 6, 6, 6], 2)
+    return BsplineSpace([sp1, sp1])
+
+
+def _space_2d_float32() -> BsplineSpace:
+    """Build the 2D space of :func:`_space_2d` at ``float32`` storage.
+
+    The wrapper picks its implementation class per dtype, so the dispatch test
+    needs a space of each width; nothing else here depends on the storage format.
+    """
+    knots = np.array([0, 0, 0, 1, 2, 3, 4, 5, 6, 6, 6], dtype=np.float32)
+    sp1 = BsplineSpace1D(knots, 2)
     return BsplineSpace([sp1, sp1])
 
 
@@ -1917,3 +1934,347 @@ class TestNumbaWarmup:
         assert calls.index("barrier") < calls.index("dispatch"), (
             f"the barrier must precede the kernel lookup; got {calls[:3]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# The wrapper: that it dispatches, that it stays immutable, and that the
+# storage it hands out is the implementation's rather than a rebuild of it.
+#
+# These run under both backends -- the file is not backend-gated and
+# `scripts/ci_local.sh` runs the whole suite once per backend -- except the
+# writer/reader pickle sweep, which needs the compiled extension by
+# construction and asks for it through the parity harness rather than a bare
+# `skipif`, for the reason `demand_cpp_backend` states.
+# ---------------------------------------------------------------------------
+
+
+def test_the_wrapper_holds_the_implementation_the_backend_selects() -> None:
+    """``_impl`` is the class ``_impl_class`` picks, not whatever was convenient.
+
+    What this catches: a wrapper that kept computing the compaction itself and
+    carried the handle along beside it. Every value assertion in this file would
+    still pass, and the C++ half would be dead code nothing exercised.
+    """
+    for space, dtype in ((_space_2d(), np.float64), (_space_2d_float32(), np.float32)):
+        ext = SpanwiseElementExtraction(space, "bezier")
+        assert ext.dtype == dtype
+        assert isinstance(ext._impl, _impl_class(np.dtype(dtype)))
+
+
+def test_every_array_the_wrapper_exposes_is_the_implementations_own() -> None:
+    """The four array properties view ``_impl``'s storage rather than a rebuild.
+
+    This is the assertion that fails if the dispatch is removed. Values alone
+    cannot see the difference -- a wrapper that recomputed the compaction in
+    Python would agree with the implementation on every entry -- so the check is
+    on the memory, which only a genuine view can share.
+    """
+    ext = SpanwiseElementExtraction(_space_2d(), "cardinal")
+    impl = ext._impl
+    for k in range(ext.dim):
+        assert np.shares_memory(ext.compact_ops_1d[k], impl.compact_ops_1d[k])
+        assert np.shares_memory(ext.idx_maps_1d[k], impl.idx_maps_1d[k])
+        assert np.shares_memory(ext.is_identity_mask_1d[k], impl.is_identity_mask_1d[k])
+        assert np.shares_memory(ext.ops_1d[k], impl.ops_1d[k])
+
+
+def test_ops_1d_is_a_read_only_view_and_never_a_copy() -> None:
+    """``ops_1d`` hands back a view of the implementation's memo, twice over.
+
+    Two reads must share memory: the implementation fills the dense block once
+    and every read views it. A property that rebuilt per access would satisfy
+    every value assertion here and make the natural spelling of a sweep over
+    elements quadratic in nothing.
+    """
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    first, second = ext.ops_1d, ext.ops_1d
+    for k in range(ext.dim):
+        assert not first[k].flags.writeable
+        assert np.shares_memory(first[k], second[k])
+        with pytest.raises(ValueError):
+            first[k][0, 0, 0] = 0.0
+
+
+def test_the_struct_view_still_shares_the_extractions_own_arrays() -> None:
+    """``make_struct_view`` bundles views, which is what ``@njit`` unboxing needs.
+
+    ``ExtractionStructView`` stays a Python ``NamedTuple`` and the arrays it
+    bundles stay the extraction's own storage, so a downstream Numba kernel reads
+    the same memory rather than a copy of it. The ``@njit`` tests above are what
+    prove the unboxing; this is what proves it is not paid for with a copy.
+    """
+    ext = SpanwiseElementExtraction(_space_2d(), "lagrange")
+    view = make_struct_view(ext)
+    assert isinstance(view, tuple)
+    for k in range(ext.dim):
+        assert np.shares_memory(view.compact_ops_1d[k], ext.compact_ops_1d[k])
+        assert np.shares_memory(view.idx_maps_1d[k], ext.idx_maps_1d[k])
+        assert np.shares_memory(view.is_identity_mask_1d[k], ext.is_identity_mask_1d[k])
+
+
+def test_an_extraction_is_immutable_and_has_no_instance_dictionary() -> None:
+    """``__slots__`` and a raising ``__setattr__`` are what enforce it.
+
+    The wrapper holds a handle the implementation owns storage behind, so an
+    attribute a caller attached would be a second truth about a value with
+    nothing to keep it in step.
+    """
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    assert not hasattr(ext, "__dict__")
+    with pytest.raises(AttributeError, match="immutable"):
+        ext.anything = 1
+    with pytest.raises(AttributeError, match="immutable"):
+        ext._impl = None  # type: ignore[assignment]
+    with pytest.raises(AttributeError, match="immutable"):
+        del ext._impl
+
+
+def test_the_space_is_the_object_it_was_built_from() -> None:
+    """``extraction.space is space`` holds, which is an identity and not an equality.
+
+    ``design/bspline_ownership_lifetime.md`` F6: no C++ object can supply the
+    constructor argument's own Python object, and only the wrapper can, by
+    keeping what it was built from. A wrapper that re-wrapped the handle would
+    agree on every value and fail this.
+    """
+    space = _space_2d()
+    ext = SpanwiseElementExtraction(space, "bezier")
+    assert ext.space is space
+    assert ext.space.spaces[0] is space.spaces[0]
+
+
+def test_an_extraction_survives_a_round_trip_within_one_backend() -> None:
+    """``__reduce__`` rebuilds from the constructor's arguments, not the handle.
+
+    The C++ handle is not picklable, so a reduction that reached it would fail at
+    ``dumps`` time. ``copy.deepcopy`` goes through ``__reduce_ex__`` by the same
+    route and is swept here with it.
+    """
+    space = _space_2d()
+    for target in (ExtractionTarget.BEZIER, ExtractionTarget.LAGRANGE, ExtractionTarget.CARDINAL):
+        original = SpanwiseElementExtraction(
+            space, target, lagrange_variant=LagrangeVariant.CHEBYSHEV_2ND
+        )
+        for rebuilt, how in (
+            (pickle.loads(pickle.dumps(original)), "pickle"),
+            (copy.deepcopy(original), "deepcopy"),
+        ):
+            assert rebuilt.target is target, how
+            assert rebuilt.lagrange_variant is LagrangeVariant.CHEBYSHEV_2ND, how
+            assert rebuilt.num_intervals == original.num_intervals, how
+            assert rebuilt.num_identity_elements == original.num_identity_elements, how
+            for k in range(original.dim):
+                np.testing.assert_array_equal(
+                    np.asarray(rebuilt.ops_1d[k]), np.asarray(original.ops_1d[k]), err_msg=how
+                )
+
+
+def test_a_pickle_crosses_every_writer_reader_backend_pair() -> None:
+    """A pickle written under one backend loads under the other, both ways.
+
+    What this catches: a ``__reduce__`` that reaches the implementation rather
+    than the constructor's arguments. The C++ handle is not picklable at all, and
+    a payload that carried one would make ``PANTR_BACKEND`` a data-format switch --
+    a pickle written on one machine unreadable on another. It follows
+    ``tests/parity/test_bspline_type.py``'s sweep over
+    ``writer, reader in {PYTHON, CPP}^2``.
+
+    The space is part of the payload and is checked as such: it goes out as its
+    *wrapper*, so its own ``__reduce__`` runs and the knot vectors survive rather
+    than the handle being smuggled through.
+    """
+    demand_cpp_backend()
+    for writer in (Backend.PYTHON, Backend.CPP):
+        with use_backend(writer):
+            original = SpanwiseElementExtraction(
+                _space_2d(), ExtractionTarget.LAGRANGE, lagrange_variant=LagrangeVariant.EQUISPACES
+            )
+            payload = pickle.dumps(original)
+        for reader in (Backend.PYTHON, Backend.CPP):
+            where = f"{writer.name} -> {reader.name}"
+            with use_backend(reader):
+                loaded = pickle.loads(payload)
+                cloned = copy.deepcopy(original)
+            for rebuilt, how in ((loaded, "pickle"), (cloned, "deepcopy")):
+                assert rebuilt.target is ExtractionTarget.LAGRANGE, f"{where} {how}"
+                assert rebuilt.lagrange_variant is LagrangeVariant.EQUISPACES, f"{where} {how}"
+                assert rebuilt.num_intervals == original.num_intervals, f"{where} {how}"
+                assert rebuilt.is_identity == original.is_identity, f"{where} {how}"
+                for k in range(original.dim):
+                    np.testing.assert_array_equal(
+                        np.asarray(rebuilt.ops_1d[k]),
+                        np.asarray(original.ops_1d[k]),
+                        err_msg=f"{where} {how}",
+                    )
+                np.testing.assert_array_equal(
+                    np.asarray(rebuilt.space.spaces[0].knots),
+                    np.asarray(original.space.spaces[0].knots),
+                    err_msg=f"{where} {how}",
+                )
+
+
+def test_sharing_a_space_survives_one_pickle() -> None:
+    """``pickle`` memoises, so a pair dumped together restores sharing.
+
+    Dumping ``(ext, ext.space)`` restores a pair that still satisfies
+    ``ext.space is space``. Two independent ``dumps`` calls do not, which is true
+    of every other type in this front and is not a defect here.
+    """
+    ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+    rebuilt, space = pickle.loads(pickle.dumps((ext, ext.space)))
+    assert rebuilt.space is space
+
+
+def test_the_unknown_target_message_is_byte_identical() -> None:
+    """``_coerce_target``'s message is the one the suite's ``match=`` regexes read.
+
+    Asserted as the whole string rather than as a substring, because it is a
+    public contract a caller may be matching on and the port must not have
+    reworded it. The ``valid`` list is built from ``_TARGET_BY_NAME``'s insertion
+    order, so the assertion names that order too.
+    """
+    valid = ", ".join(repr(name) for name in _TARGET_BY_NAME)
+    for bad in ("spline", 0, None, ("bezier",)):
+        with pytest.raises(ValueError) as excinfo:
+            _coerce_target(bad)  # type: ignore[arg-type]
+        assert str(excinfo.value) == (
+            f"Unknown target {bad!r}; expected an ExtractionTarget or one of {valid}"
+        )
+
+
+def test_the_oracle_refuses_a_degenerate_operator_like_the_cpp_type() -> None:
+    """A zero-row or zero-column operator is refused, with the C++ type's own message.
+
+    Found by a review probe, which built the oracle directly with such a block and
+    got an object back where the C++ type raises. The two implementations are
+    compared against each other, so one accepting what the other rejects is a
+    divergence no comparison of values could see, and the parity suite can reach it
+    because it constructs both implementations directly.
+
+    The refusal itself is the binding's: an empty block's ``data()`` may be null and
+    nanobind reads a null pointer as "no array" rather than as an empty one, which is
+    the case ``cpp/bindings/bspline_spanwise_extraction.cpp`` argues cannot arise.
+    ``tests/parity/test_spanwise_binding_contract.py`` asserts the C++ half.
+    """
+    space = BsplineSpace([BsplineSpace1D([0, 0, 1, 2, 2], 1)])
+    assert space.num_intervals == (2,)
+    mask = np.array([False, False])
+    for shape in ((2, 0, 3), (2, 3, 0)):
+        ops = np.zeros(shape, dtype=np.float64)
+        with pytest.raises(ValueError) as excinfo:
+            _SpanwiseElementExtractionPython(space._impl, 0, "equispaces", [ops], [mask])
+        assert str(excinfo.value) == "direction 0 has operators with no rows or no columns"
+
+
+def test_the_oracle_refuses_every_shape_the_cpp_type_refuses() -> None:
+    """The oracle carries each of the C++ constructor's shape refusals, message for message.
+
+    ``tests/parity/test_spanwise_binding_contract.py`` asserts the C++ half of each of
+    these against the binding. Asserting the same strings here is what says the two
+    implementations refuse the *same* inputs -- a parity oracle that accepted what the
+    implementation rejects would be no oracle at all, and the parity suite constructs
+    both directly, so it can reach them.
+    """
+    space = BsplineSpace([BsplineSpace1D([0, 0, 1, 2, 2], 1)])
+    ops = np.zeros((2, 2, 2), dtype=np.float64)
+
+    # First, because the binding refuses this pair in `bundles` before the C++
+    # constructor runs, so a mismatched pair that is also the wrong count must name
+    # the mismatch on both sides rather than the count on one and the mismatch on
+    # the other.
+    with pytest.raises(ValueError) as excinfo:
+        _SpanwiseElementExtractionPython(space._impl, 0, "equispaces", [ops], [])
+    assert str(excinfo.value) == (
+        "got 1 operator blocks and 0 identity masks; there must be one of each per direction"
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        _SpanwiseElementExtractionPython(space._impl, 0, "equispaces", [], [])
+    assert str(excinfo.value) == (
+        "expected one operator bundle per direction; got 0 for a space of dimension 1"
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        _SpanwiseElementExtractionPython(
+            space._impl,
+            0,
+            "equispaces",
+            [np.zeros((3, 2, 2), dtype=np.float64)],
+            [np.array([False, False, False])],
+        )
+    assert str(excinfo.value) == "direction 0 has 3 operators for 2 elements"
+
+    with pytest.raises(ValueError) as excinfo:
+        _SpanwiseElementExtractionPython(
+            space._impl, 0, "equispaces", [ops], [np.array([False, False, False])]
+        )
+    assert str(excinfo.value) == "direction 0 has an identity mask of length 3 for 2 elements"
+
+
+def test_a_space_from_another_backend_is_refused_in_both_directions() -> None:
+    """A space built under one backend cannot be extracted under the other.
+
+    Found in self-review: the check was inside the C++ branch, so the *quiet*
+    direction went unguarded. Handing a Python oracle to a C++ class raises a nanobind
+    ``TypeError`` naming C++ types -- loud, if unreadable -- but handing a C++ handle
+    to the Python oracle **succeeded**, yielding an extraction whose reductions ran in
+    Python over C++ values, which no parity claim covers and nothing announced.
+    ``design/cross_backend_types.md`` forbids exactly that shape, and
+    ``tests/parity/test_bspline_structural.py`` pins the same refusal for a sibling.
+    """
+    demand_cpp_backend()
+    with use_backend(Backend.CPP):
+        cpp_space = BsplineSpace([BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)])
+    with use_backend(Backend.PYTHON):
+        py_space = BsplineSpace([BsplineSpace1D([0, 0, 0, 1, 2, 3, 3, 3], 2)])
+
+    with use_backend(Backend.PYTHON), pytest.raises(ValueError, match="active backend"):
+        SpanwiseElementExtraction(cpp_space, "bezier")
+    with use_backend(Backend.CPP), pytest.raises(ValueError, match="active backend"):
+        SpanwiseElementExtraction(py_space, "bezier")
+
+
+def test_a_dimensionless_space_still_builds_an_extraction() -> None:
+    """``BsplineSpace([])`` is legal, so an extraction over it must be too.
+
+    Found in self-review: picking the implementation class needs a dtype, and the
+    obvious spelling ``space.dtype`` raises :class:`IndexError` on a space with no
+    directions -- so reading it to choose a class turned a constructor that used to
+    succeed into one that raises. ``_stored_dtype`` is the helper
+    :mod:`pantr.bspline._bspline_space_nd` already keeps for exactly this case.
+
+    The empty products are the oracle's own: one element on the grid, one
+    fully-identity element, and every one of no directions is all-identity.
+    """
+    ext = SpanwiseElementExtraction(BsplineSpace([]), "bezier")
+    assert ext.dim == 0
+    assert ext.num_total_intervals == 1
+    assert ext.num_identity_elements == 1
+    assert ext.is_identity
+    assert ext.ops_1d == ()
+    assert ext.compact_ops_1d == ()
+    rebuilt = pickle.loads(pickle.dumps(ext))
+    assert rebuilt.dim == 0
+    assert rebuilt.num_identity_elements == 1
+
+
+def test_the_target_enum_and_its_cpp_twin_cannot_drift_apart() -> None:
+    """``ExtractionTarget``'s members are exactly the three the C++ enum admits.
+
+    ``pantr::bspline::ExtractionTarget`` mirrors this enum value for value and
+    ``is_extraction_target`` hard-codes the range ``[bezier, cardinal]``, which the
+    binding checks before casting. A fourth member added here and not there would be
+    refused at the seam with a message about an integer, which names neither side --
+    so the agreement is asserted rather than left to a reader of two files.
+
+    Name and value are pinned **as pairs**. Asserting the value *set* and the name
+    *list* separately passes a swap that keeps both -- ``BEZIER = 1`` with
+    ``LAGRANGE = 0`` leaves the set ``{0, 1, 2}`` intact and leaves definition order,
+    which is what :class:`~enum.Enum` iterates in, unchanged -- while the integer
+    crossing the binding would then name the wrong basis on the C++ side.
+    """
+    assert [(member.name, member.value) for member in ExtractionTarget] == [
+        ("BEZIER", 0),
+        ("LAGRANGE", 1),
+        ("CARDINAL", 2),
+    ]
