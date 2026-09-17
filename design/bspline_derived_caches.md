@@ -666,8 +666,11 @@ main decision is reversed.
   - *Changed in the locator only.* `backend_keyed_cache`'s recorded measurement has moved from
     `_backend.py:525-555` to the function's own docstring at `_backend.py:589` onward.
     `grep -n 'def backend_keyed_cache' src/pantr/_backend.py` and
-    `grep -n 'Measured on' src/pantr/_backend.py`, which finds the two measured failures the
-    decorator records.
+    `grep -n 'Measured on\|Measured, with' src/pantr/_backend.py`, which finds **both** measured
+    failures the decorator records. The alternation is needed because the two are worded
+    differently -- "Measured on ``_cached_lagrange_to_bernstein_matrix``" and "Measured, with one
+    thread inside a block" -- so a bare `Measured on` finds only the first. An earlier draft of
+    this line used the bare form and claimed it found two.
   - *Held.* No domain class in `bspline` or `grid` defines `__eq__` or `__hash__`.
     `grep -rn 'def __eq__\|def __hash__' src/pantr/bspline/ src/pantr/grid/`, which returns
     nothing.
@@ -681,7 +684,24 @@ main decision is reversed.
     `grep -n 'python-version: \[' .github/workflows/ci.yaml`
 - **Verified by execution in the `pantr` env, and re-run at `cf958bf`:** that
   `functools.cached_property` on a `__slots__` class raises
-  `TypeError: No '__dict__' attribute ... to cache` -- **held**. That `BsplineSpace.domain` hands
+  `TypeError: No '__dict__' attribute ... to cache` -- **held**. Re-run with:
+
+  ```python
+  import functools
+
+  class C:
+      __slots__ = ("x",)
+
+      @functools.cached_property
+      def p(self) -> int:
+          return 1
+
+  C().p  # TypeError: No '__dict__' attribute on 'C' instance to cache 'p' property.
+  ```
+
+  It is a fact about CPython rather than about this tree, so it does not drift with the port --
+  but it is the premise the whole "`cached_property` does not survive" decision rests on, which
+  is why it is worth being able to re-run rather than to recall. That `BsplineSpace.domain` hands
   out a writable array **and a write through it persists in the cache** -- **changed, and the
   hazard is gone**: the array is still writable, but `domain` is a plain `@property` since #396
   removed the memo, so it builds a fresh array per read and a write through one is simply

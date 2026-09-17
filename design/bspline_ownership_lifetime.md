@@ -32,8 +32,9 @@ day they were made.
 
 **Classify the accessor, not the type.** Every accessor that returns a domain object falls into
 one of three classes, and the class settles the C++ storage, the `rv_policy`, the wrapper's memo
-and the test: **V**, the accessor *constructs* its result (about 31 of the roughly 40 accessors
-in `pantr.bspline`) -- return by value, no policy, no lifetime relationship; **H**, the accessor
+and the test: **V**, the accessor *constructs* its result (27 of the 35 accessors in
+`pantr.bspline`, re-counted at `cf958bf`; it was "about 31 of the roughly 40" against the addends
+F5 has since corrected) -- return by value, no policy, no lifetime relationship; **H**, the accessor
 hands out a subobject the owner *holds* (eight sites, plus `HierarchicalGrid.root`) -- the owner
 stores **`std::shared_ptr<const T>`** and returns a copy of it, so the *value* is shared and the
 owner's death is irrelevant; **A**, the accessor hands out the owner's numeric storage -- a
@@ -225,13 +226,21 @@ memoise-then-hold (`if self._root is None: object.__setattr__(self, "_root", _ad
 which is this note's own wrapper pattern already partly landed on the grid side rather than a
 drift away from class H.
 
-**And roughly thirty-one more accessors return a domain object by construction**, which is the
+**And twenty-seven more accessors return a domain object by construction**, which is the
 number that matters for effort: 17 on `Bspline`, 3 on `BsplineSpace1D`, **4** on
-`THBSplineSpace`, 2 on `THBSpline`, 1 on `BsplineSpace`, plus the seven module-level factories
-(`create_uniform_space`, `create_thb_space`, `create_from_bezier`, `fit_bspline`,
-`interpolate_bspline`, `l2_project_bspline`, `quasi_interpolate_bspline`). They are all class
-**V** and none of them needs a decision. **Restate #393's "at least nine accessors qualify" as
-"eight hold, about thirty construct, and the classification is the deliverable."**
+`THBSplineSpace`, 2 on `THBSpline`, 1 on `BsplineSpace` -- **thirty-four** counting the seven
+module-level factories (`create_uniform_space`, `create_thb_space`, `create_from_bezier`,
+`fit_bspline`, `interpolate_bspline`, `l2_project_bspline`, `quasi_interpolate_bspline`). They
+are all class **V** and none of them needs a decision. **Restate #393's "at least nine accessors
+qualify" as "eight hold, twenty-seven construct on the five classes and thirty-four with the
+factories, and the classification is the deliverable."**
+
+> The figure was "roughly thirty-one" here, against addends of 17 + 3 + **6** + 2 + 1 and an
+> uncounted "plus the module-level factories". Two corrections landed on the addends without
+> anyone re-adding them: `THBSplineSpace` is 4 rather than 6 (below), and the factories are seven
+> and are now named. 17 + 3 + 4 + 2 + 1 = **27**, and 27 + 7 = **34**; neither is "thirty-one".
+> A headline that is not re-derived when its own inputs are corrected is the same defect this
+> note is being audited for, one level up.
 
 > **The `THBSplineSpace` figure was 6 here and is wrong, and it was wrong when it was written
 > rather than having drifted.** The class has `restrict`, `refine`, `refine_region` and
@@ -450,7 +459,7 @@ is discoverable:
   > (`tests/parity/test_grid_hierarchical.py:1237`) and `restrict`
   > (`tests/test_grid_hierarchical.py:2038`). **Do not read the list off this page** -- it is a
   > count of a growing suite, which is what went stale here. Regenerate it with
-  > `grep -rn 'assert .*\.space.*\bis\b.*\.space\|assert .*\.root\b.*\bis\b.*root' tests/ | grep -v 'is not'`
+  > `grep -rn --include='*.py' 'assert .*\.space.*\bis\b.*\.space\|assert .*\.root\b.*\bis\b.*root' tests/ | grep -v 'is not'`
   > and read the enclosing test name.
   >
   > The decision does not move: propagation is still the rule, and the seeding rule below still
@@ -472,7 +481,13 @@ is discoverable:
 
   **Regenerate the whole list rather than trusting these numbers**, which is what made them wrong
   in the first place:
-  `grep -rn 'assert .* is .*\(space\|root\)' tests/ | grep -v 'is not'`.
+  `grep -rn --include='*.py' 'assert .* is ' tests/ | grep -v 'is not' | grep -E 'space|root'`.
+  Checked to return every locator named in this bullet. **Do not tighten it to require `space` or
+  `root` on the right of the `is`** -- an earlier draft of this line did exactly that and silently
+  dropped `assert mle.space is thb` and `assert spline.space is thb`, two of the very sites it was
+  written to regenerate, because the object on the right is named `thb`. A regeneration command
+  that quietly omits members of the list it regenerates is worse than the stale list, since
+  nothing announces the omission. `--include='*.py'` keeps GNU `grep` out of `__pycache__`.
 
 There is no reference cycle to worry about under class H: the child holds no Python reference to
 the owner, so the owner's wrapper -> child wrapper -> child handle chain is acyclic and plain
@@ -496,11 +511,18 @@ identity contracts of F6 survive the round trip through the seeding rule rather 
 
 > **That grep no longer returns nothing, and this is the note's own rule having been adopted.**
 > Re-run it -- the same command, unchanged -- and at `cf958bf` it finds **three** `__reduce__`
-> definitions and still **no** `__getstate__` or `__setstate__` anywhere in `src/pantr/`:
-> `_bspline.py:626` (`Bspline`), `_bspline_space_1d.py:712` (`BsplineSpace1D`) and
-> `_bspline_space_nd.py:500` (`BsplineSpace`). Use
+> definitions and still **no** `__getstate__` or `__setstate__` anywhere in `src/pantr/`, on
+> `Bspline`, `BsplineSpace1D` (`_bspline_space_1d.py:712`) and `BsplineSpace`
+> (`_bspline_space_nd.py:500`). Use
 > `grep -rn 'def __reduce__' src/pantr/bspline/` for the definitions alone; the original form
 > also matches two docstring mentions.
+>
+> **`Bspline.__reduce__` is deliberately given without a line number**, because the commit that
+> wrote this box also corrected `_bspline.py`'s module docstring, which lengthened it: the def is
+> at `:616` at `cf958bf` and at `:626` once that correction lands. A locator into a file the same
+> change edits has two right answers and no way for the reader to tell which they hold, so the
+> command is the only form that is right in both. A first draft of this box picked one of the two
+> and was wrong for anyone reading the other tree.
 >
 > All three do what this section specifies: they return the constructor's arguments, hand the
 > nested space out as its **wrapper** rather than its `_impl`, and cite the memoising-pickle
@@ -790,8 +812,9 @@ between mechanisms:**
   - *Held.* `ExtractionStructView` has no `space` field. Seven fields, re-read one by one:
     `grep -n 'class ExtractionStructView' src/pantr/bspline/spanwise_element_extraction.py`.
   - *Changed.* "No `__reduce__`, `__getstate__` or `__setstate__` anywhere in
-    `src/pantr/bspline/`" is **false now**: three `__reduce__` definitions exist, at
-    `_bspline.py:626`, `_bspline_space_1d.py:712` and `_bspline_space_nd.py:500`, each following
+    `src/pantr/bspline/`" is **false now**: three `__reduce__` definitions exist -- on `Bspline`
+    in `_bspline.py` (given without a line, for the reason the F6-area box states), and at
+    `_bspline_space_1d.py:712` and `_bspline_space_nd.py:500` -- each following
     this note's rule. Still no `__getstate__` or `__setstate__` anywhere in `src/pantr/`.
     `grep -rn 'def __reduce__\|def __getstate__\|def __setstate__' src/pantr/bspline/`
   - *Held.* No domain class in `bspline` or `grid` defines `__eq__` or `__hash__`.
@@ -833,8 +856,9 @@ between mechanisms:**
     ```
 
     which prints `PYTHON True` and `CPP False`. `grep -n '__slots__' src/pantr/bspline/_bspline.py`
-    shows the two slot sets -- the wrapper's and the oracle twin's -- that the old claim
-    conflated.
+    lists four hits, of which the two that matter are the ones the old claim conflated: the
+    oracle twin's (`_control_points`, `_is_rational`, `_space`) and the wrapper's (`_derived`,
+    `_impl`, `_space`). The other two are `_Derived`'s own slots and a docstring mention.
 - **Measured, 2026-08-31:** the three-row reseat table in reason 3, with a destructor counter
   in the nested type, so the middle row's use-after-free is a count and not an inference.
 - **Asserted, not measured:** that a raw-reference version of a class-H accessor is a
