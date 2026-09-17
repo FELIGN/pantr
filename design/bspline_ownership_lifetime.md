@@ -521,12 +521,12 @@ identity contracts of F6 survive the round trip through the seeding rule rather 
 > `grep -rn 'def __reduce__' src/pantr/bspline/` for the definitions alone; the original form
 > also matches two docstring mentions.
 >
-> **`Bspline.__reduce__` is deliberately given without a line number**, because the commit that
-> wrote this box also corrected `_bspline.py`'s module docstring, which lengthened it: the def is
-> at `:616` at `cf958bf` and at `:626` once that correction lands. A locator into a file the same
-> change edits has two right answers and no way for the reader to tell which they hold, so the
-> command is the only form that is right in both. A first draft of this box picked one of the two
-> and was wrong for anyone reading the other tree.
+> **`Bspline.__reduce__` is deliberately given without a line number**, because every commit that
+> corrects `_bspline.py`'s module docstring lengthens it and moves the def down. It was at `:616`
+> at `cf958bf`, and it has moved again since this box was written. A locator into a file the same
+> change edits has one right answer per revision, with nothing to tell the reader which revision
+> they are holding, so the command is the only form that is right in all of them. Two drafts of
+> this box each pinned the then-current number, and each was wrong by the next commit.
 >
 > All three do what this section specifies: they return the constructor's arguments, hand the
 > nested space out as its **wrapper** rather than its `_impl`, and cite the memoising-pickle
