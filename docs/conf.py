@@ -234,9 +234,10 @@ nitpick_ignore = [
     # the API reference as every sibling catalogue is. `BsplineSpace1D`'s class and
     # method docstrings name `_knots_backend` with `:mod:` because the module is
     # where the dispatch decision lives and a reader chasing it needs the name; the
-    # sibling catalogues are named the same way, but only from module docstrings,
-    # which autodoc does not render, so this is the first such reference Sphinx
-    # actually resolves. Ignoring it keeps the name in the prose without claiming an
+    # sibling catalogues are named the same way, but only from their own module
+    # docstrings, and no `automodule::` directive targets those modules, so Sphinx
+    # never visits them. These two are the first such references it actually
+    # resolves. Ignoring it keeps the name in the prose without claiming an
     # inventory entry that is not wanted.
     ("py:mod", "pantr.bspline._knots_backend"),
     # Private structural protocol; not in __all__ and not cross-referenceable

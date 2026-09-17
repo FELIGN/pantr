@@ -969,32 +969,52 @@ docs_checks() {
     # it can fail a clean branch and pass a broken one. It passed a broken one.
     #
     # `docs/Makefile` now defaults `SPHINXBUILD` to `python -m sphinx`, so the
-    # interpreter is whatever is active rather than whatever shebang is first on
-    # PATH. This asserts the consequence rather than the mechanism, because the
-    # consequence is what matters and it outlives any particular cause.
-    local docs_pantr
+    # interpreter is whatever is active. What follows asserts the consequence rather
+    # than the mechanism, because the consequence is what matters and it outlives any
+    # particular cause.
+    #
+    # Note this supersedes an `importlib.util.find_spec('pantr') is None` test that
+    # used to stand here as the "not installed" probe. **That probe cannot fail on
+    # this machine**: the main checkout's meta-path finder answers `find_spec` from
+    # any interpreter that has it, so a venv with nothing installed in it still
+    # reports `pantr` as present -- and reports the wrong tree. Asking *where* it
+    # resolves is the question that survives; asking *whether* it resolves is not.
+    #
+    # The two outcomes are graded differently on purpose, and the difference is
+    # whether this tree is installed at all. Nothing installed here is a missing
+    # precondition, and the surrounding convention is that those SKIP. Installed here
+    # and still resolving elsewhere is the silent-wrong-answer case the whole
+    # mechanism above describes, and that FAILs.
+    # `installed_here` is what separates a missing precondition from a result, and it
+    # is asked of pip rather than of the import system precisely because the import
+    # system is the thing under suspicion here.
+    local docs_pantr docs_root editable_at installed_here
+    docs_root="$(cd "$ROOT" && pwd -P)"
+    editable_at="$(pip show pantr 2>/dev/null | sed -n 's/^Editable project location: //p')"
+    installed_here=0
+    if [[ -n "$editable_at" && "$(cd "$editable_at" 2>/dev/null && pwd -P)" == "$docs_root" ]]; then
+        installed_here=1
+    fi
+
     docs_pantr="$(python -c 'import pantr; print(pantr.__file__)' 2>/dev/null || true)"
-    if [[ "$docs_pantr" != "$ROOT/"* ]]; then
-        record FAIL "docs build" \
-            "the docs build would import ${docs_pantr:-no pantr at all}, not this tree's; its result would describe another checkout"
+
+    if [[ -z "$docs_pantr" ]]; then
+        if (( installed_here )); then
+            record FAIL "docs build" "pantr is installed from this tree and does not import; the docs cannot be built"
+        else
+            record SKIP "docs build" "pantr is not installed; run: pip install -e . inside $VENV"
+        fi
         return 0
     fi
 
-    # `all` runs this after `python_checks`, which installs the package. Asked for on
-    # its own against a fresh venv it would otherwise fail for a reason that is not the
-    # docs, so separate the two: a venv with nothing installed in it is a missing
-    # precondition and skips, while a package that is installed and still will not
-    # import is a result. Grading the second as SKIP would let `ci_local.sh docs`
-    # finish green over an `ImportError` in `src/pantr/__init__.py` and hand back a
-    # remedy that does not fix it -- `python_checks` already grades the same shape of
-    # question as FAIL, "everything below is meaningless", for the same reason.
-    if ! python -c "import importlib.util, sys
-sys.exit(0 if importlib.util.find_spec('pantr') is not None else 1)" >/dev/null 2>&1; then
-        record SKIP "docs build" "pantr is not installed; run: pip install -e ."
-        return 0
-    fi
-    if ! python -c "import pantr" >/dev/null 2>&1; then
-        record FAIL "docs build" "pantr is installed but does not import; the docs cannot be built"
+    if [[ "$(cd "$(dirname "$docs_pantr")" && pwd -P)" != "$docs_root/"* ]]; then
+        if (( installed_here )); then
+            record FAIL "docs build" \
+                "pantr is installed from this tree yet imports from $docs_pantr; the build is running under another interpreter, so its result would describe another checkout"
+        else
+            record SKIP "docs build" \
+                "pantr imports from $docs_pantr, not this tree; run: pip install -e . inside $VENV"
+        fi
         return 0
     fi
 
