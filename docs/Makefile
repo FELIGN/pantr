@@ -1,7 +1,12 @@
 # Minimal makefile for Sphinx documentation
 
 SPHINXOPTS ?=
-SPHINXBUILD ?= sphinx-build
+# `python -m sphinx` rather than the `sphinx-build` console script, deliberately: a
+# console script carries its own interpreter in its shebang, so on a machine where
+# the venv has no such script PATH silently selects another environment's Python --
+# and with an editable install in play that decides which `pantr` the build imports.
+# `python -m` uses whatever interpreter is active, which is the one the caller chose.
+SPHINXBUILD ?= python -m sphinx
 SOURCEDIR = .
 BUILDDIR = _build
 

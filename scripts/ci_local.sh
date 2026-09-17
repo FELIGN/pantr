@@ -957,6 +957,29 @@ docs_checks() {
     # shellcheck disable=SC1091
     source "$VENV/bin/activate"
 
+    # The docs build must import THIS tree's `pantr`, and until 2026-09-17 it did not.
+    #
+    # The venv is made with `--system-site-packages`, so pip sees Sphinx already
+    # satisfied from the shared conda environment and installs no `sphinx-build`
+    # console script into the venv. PATH then falls through to conda's -- and a
+    # console script carries its own interpreter in its shebang, which is the one the
+    # MAIN CHECKOUT's editable install has a `ScikitBuildRedirectingFinder` on. So
+    # `python` resolved to this worktree while `sphinx-build` resolved to the main
+    # checkout, and this row documented a tree nobody asked about, in both directions:
+    # it can fail a clean branch and pass a broken one. It passed a broken one.
+    #
+    # `docs/Makefile` now defaults `SPHINXBUILD` to `python -m sphinx`, so the
+    # interpreter is whatever is active rather than whatever shebang is first on
+    # PATH. This asserts the consequence rather than the mechanism, because the
+    # consequence is what matters and it outlives any particular cause.
+    local docs_pantr
+    docs_pantr="$(python -c 'import pantr; print(pantr.__file__)' 2>/dev/null || true)"
+    if [[ "$docs_pantr" != "$ROOT/"* ]]; then
+        record FAIL "docs build" \
+            "the docs build would import ${docs_pantr:-no pantr at all}, not this tree's; its result would describe another checkout"
+        return 0
+    fi
+
     # `all` runs this after `python_checks`, which installs the package. Asked for on
     # its own against a fresh venv it would otherwise fail for a reason that is not the
     # docs, so separate the two: a venv with nothing installed in it is a missing
