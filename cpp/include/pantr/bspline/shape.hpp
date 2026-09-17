@@ -26,11 +26,18 @@
 /// subtraction are correctly rounded, and there is **no multiplication for a fused
 /// multiply-add to absorb** -- so no `-ffp-contract` setting and no target ISA can
 /// separate the two results. That argument is why the parity suite claims this vector
-/// bitwise rather than within a rounding budget; it does **not** say the expression is
-/// error-free. `(a + b) - k` cancels near either domain end, so the reflected value's
-/// error against the exact reflection is bounded relative to `|a| + |b|` and not
-/// relative to the possibly-tiny result. Both backends make the same error, which is
-/// what makes the *parity* claim exact while the *accuracy* claim is not.
+/// bitwise rather than within a rounding budget, and it carries two hypotheses beyond
+/// the absence of a multiplication, stated here rather than left implicit: both sides
+/// round under the **same IEEE-754 rounding mode** -- nothing here calls `fesetround`
+/// and neither does the oracle -- and neither evaluates in **excess precision**, which
+/// x86-64 SSE2 and every target this project builds for satisfy and legacy x87 would
+/// not.
+///
+/// It does **not** say the expression is error-free. `(a + b) - k` cancels near either
+/// domain end, so the reflected value's error against the exact reflection is bounded
+/// relative to `|a| + |b|` and not relative to the possibly-tiny result. Both backends
+/// make the same error, which is what makes the *parity* claim exact while the
+/// *accuracy* claim is not.
 ///
 /// A knot vector reflected this way is still non-decreasing and still clamped, so the
 /// space it builds needs no repair; snapping stays on, which is the oracle's
@@ -78,6 +85,7 @@
 /// validate and throw `std::invalid_argument` in a release build as much as a debug
 /// one. A caller with no Python cannot be protected by `cpp/bindings/`.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -106,15 +114,19 @@ namespace detail {
 /// back to front. See the file comment for why that order is what makes the result
 /// bitwise reproducible, and for what it does *not* claim about accuracy.
 ///
+/// The domain arrives as a pair rather than being re-derived from `degree` here.
+/// `BsplineSpace1D::domain()` already computes `{knots[degree], knots[n - degree - 1]}`
+/// and the only caller holds the space, so deriving the two indices a second time
+/// would give an off-by-one two places to hide.
+///
 /// \tparam T The scalar type the knots are stored in.
 /// \param knots The knot vector, non-decreasing.
-/// \param degree The polynomial degree, which is what picks the domain ends out.
+/// \param domain The vector's own domain ends, `{a, b}`.
 /// \return The reflected vector, non-decreasing and of the same length.
 template <Real T>
-[[nodiscard]] std::vector<T> reflected_knots(std::span<const T> knots, std::int64_t degree) {
-    const std::size_t first = static_cast<std::size_t>(degree);
-    const std::size_t last = knots.size() - first - 1;
-    const T sum = static_cast<T>(knots[first] + knots[last]);
+[[nodiscard]] std::vector<T> reflected_knots(std::span<const T> knots,
+                                             const std::array<T, 2>& domain) {
+    const T sum = static_cast<T>(domain[0] + domain[1]);
 
     std::vector<T> reflected(knots.size());
     for (std::size_t i = 0; i < knots.size(); ++i) {
@@ -183,7 +195,7 @@ template <Real T>
     std::vector<std::shared_ptr<const BsplineSpace1D<T>>> directions(space.spaces().begin(),
                                                                     space.spaces().end());
     const std::vector<T> reflected =
-        detail::reflected_knots<T>(reversed_direction.knots(), reversed_direction.degree());
+        detail::reflected_knots<T>(reversed_direction.knots(), reversed_direction.domain());
     directions[axis] = std::make_shared<const BsplineSpace1D<T>>(
         std::span<const T>(reflected), reversed_direction.degree(),
         reversed_direction.periodic(), KnotSnapping::merge_near_duplicates);

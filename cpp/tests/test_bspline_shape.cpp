@@ -185,6 +185,53 @@ bool same_values(std::span<const T> left, std::span<const T> right) {
     return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin());
 }
 
+/// A bound on `|S'(u)|` over the whole domain, from the de Boor derivative formula.
+///
+/// `S'(u) = p * sum_i (P_{i+1} - P_i) / (t_{i+p+1} - t_{i+1}) * N_{i,p-1}(u)`, and the
+/// degree-`(p-1)` basis is a partition of unity, so
+/// `|S'| <= p * max_i |P_{i+1} - P_i| / min_i (t_{i+p+1} - t_{i+1})`. The denominator
+/// is replaced by the **smallest positive single knot span**, which is no larger than
+/// any `p`-span, so the quotient is an over-estimate and the bound stays an upper one.
+///
+/// This replaces an earlier `magnitude / (hi - lo)`, which read as derived and was a
+/// heuristic: a curve's local sensitivity is set by its local span, and a vector whose
+/// narrowest span is far below the domain width has a slope the domain-average
+/// quotient understates -- by a factor of eight on this file's own knot vectors.
+///
+/// \tparam T The storage format.
+/// \param knots The knot vector.
+/// \param degree The degree `p`.
+/// \param values The control net, components interleaved.
+/// \param components How many components each coefficient has.
+/// \return The Lipschitz constant, or 0 at degree 0, where the curve is piecewise
+///         constant and a parametric displacement moves the value by at most the
+///         coefficient range rather than through a slope.
+template <class T>
+double lipschitz_bound(const std::vector<T>& knots, std::int64_t degree,
+                       const std::vector<T>& values, std::size_t components) {
+    if (degree == 0) {
+        return 0.0;
+    }
+    double widest_step = 0.0;
+    const std::size_t coefficients = values.size() / components;
+    for (std::size_t i = 0; i + 1 < coefficients; ++i) {
+        for (std::size_t c = 0; c < components; ++c) {
+            widest_step = std::max(widest_step,
+                                   std::abs(static_cast<double>(values[((i + 1) * components) + c])
+                                            - static_cast<double>(values[(i * components) + c])));
+        }
+    }
+    double narrowest_span = std::numeric_limits<double>::infinity();
+    for (std::size_t i = 0; i + 1 < knots.size(); ++i) {
+        const double span =
+            static_cast<double>(knots[i + 1]) - static_cast<double>(knots[i]);
+        if (span > 0.0) {
+            narrowest_span = std::min(narrowest_span, span);
+        }
+    }
+    return static_cast<double>(degree) * widest_step / narrowest_span;
+}
+
 // ---------------------------------------------------------------------------
 // reverse
 // ---------------------------------------------------------------------------
@@ -216,9 +263,10 @@ void check_reverse_does_not_move_the_curve() {
     const double magnitude =
         static_cast<double>(*std::max_element(values.begin(), values.end()));
     // A parametric displacement of the reflected knot reaches the sampled point
-    // through the curve's slope, bounded by the coordinate range over the domain
-    // width; the two corner cuts contribute directly.
-    const double slope = magnitude / (hi - lo);
+    // through the curve's own slope, which `lipschitz_bound` derives from the de Boor
+    // derivative formula rather than from the domain width; the two corner cuts
+    // contribute directly.
+    const double slope = lipschitz_bound<T>(knots, degree, values, 2);
     const std::int64_t cut_roundings = 5 * degree;
     const double bound =
         (gamma_of<T>(2 * cut_roundings) * magnitude)
@@ -304,9 +352,9 @@ void check_reverse_handles_a_periodic_direction() {
     const double magnitude =
         static_cast<double>(*std::max_element(values.begin(), values.end()));
     const std::int64_t cut_roundings = 5 * degree;
+    const double slope = lipschitz_bound<T>(knots, degree, values, 2);
     const double bound = (gamma_of<T>(2 * cut_roundings) * magnitude)
-                         + (gamma_of<T>(2) * (std::abs(lo) + std::abs(hi))
-                            * (magnitude / (hi - lo)))
+                         + (gamma_of<T>(2) * (std::abs(lo) + std::abs(hi)) * slope)
                          + (static_cast<double>(2 * cut_roundings + 2)
                             * static_cast<double>(std::numeric_limits<T>::denorm_min()));
 
@@ -339,21 +387,16 @@ void check_reverse_handles_a_periodic_direction() {
 /// \tparam T The storage format.
 template <class T>
 void check_permute_directions_reads_the_named_coefficient() {
-    const std::vector<T> a{T(0), T(0), T(0), T(0.5), T(1), T(1), T(1)};  // 4 basis, degree 2
-    const std::vector<T> b{T(0), T(0), T(0.25), T(0.5), T(1), T(1)};     // 4 basis, degree 1
-    const std::vector<T> c{T(0), T(0), T(1), T(1)};                      // 2 basis, degree 1
+    // Distinct extents are what makes a transposed stride visible, so the middle
+    // direction carries five basis functions against the first's four and the last's
+    // two, and the three degrees differ too.
+    const std::vector<T> a{T(0), T(0), T(0), T(0.5), T(1), T(1), T(1)};        // 4, p=2
+    const std::vector<T> b_wide{T(0), T(0), T(0.25), T(0.5), T(0.75), T(1), T(1)};  // 5, p=1
+    const std::vector<T> c{T(0), T(0), T(1), T(1)};                           // 2, p=1
     const std::size_t components = 3;
     const std::size_t na = 4;
-    const std::size_t nb = 4;
-    const std::size_t nc = 2;
-
-    // Distinct extents are what makes a transposed stride visible, so `b`'s basis
-    // count is raised to five by an extra interior knot rather than left equal to
-    // `a`'s.
-    const std::vector<T> b_wide{T(0), T(0), T(0.25), T(0.5), T(0.75), T(1), T(1)};
     const std::size_t nb_wide = 5;
-    static_cast<void>(b);
-    static_cast<void>(nb);
+    const std::size_t nc = 2;
 
     const std::vector<T> values = ramp<T>(na * nb_wide * nc * components);
     const Bspline<T> volume =
