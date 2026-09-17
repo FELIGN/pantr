@@ -497,7 +497,7 @@ identity contracts of F6 survive the round trip through the seeding rule rather 
 > **That grep no longer returns nothing, and this is the note's own rule having been adopted.**
 > Re-run it -- the same command, unchanged -- and at `cf958bf` it finds **three** `__reduce__`
 > definitions and still **no** `__getstate__` or `__setstate__` anywhere in `src/pantr/`:
-> `_bspline.py:616` (`Bspline`), `_bspline_space_1d.py:712` (`BsplineSpace1D`) and
+> `_bspline.py:626` (`Bspline`), `_bspline_space_1d.py:712` (`BsplineSpace1D`) and
 > `_bspline_space_nd.py:500` (`BsplineSpace`). Use
 > `grep -rn 'def __reduce__' src/pantr/bspline/` for the definitions alone; the original form
 > also matches two docstring mentions.
@@ -791,7 +791,7 @@ between mechanisms:**
     `grep -n 'class ExtractionStructView' src/pantr/bspline/spanwise_element_extraction.py`.
   - *Changed.* "No `__reduce__`, `__getstate__` or `__setstate__` anywhere in
     `src/pantr/bspline/`" is **false now**: three `__reduce__` definitions exist, at
-    `_bspline.py:616`, `_bspline_space_1d.py:712` and `_bspline_space_nd.py:500`, each following
+    `_bspline.py:626`, `_bspline_space_1d.py:712` and `_bspline_space_nd.py:500`, each following
     this note's rule. Still no `__getstate__` or `__setstate__` anywhere in `src/pantr/`.
     `grep -rn 'def __reduce__\|def __getstate__\|def __setstate__' src/pantr/bspline/`
   - *Held.* No domain class in `bspline` or `grid` defines `__eq__` or `__hash__`.

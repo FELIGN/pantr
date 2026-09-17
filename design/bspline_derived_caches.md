@@ -58,10 +58,18 @@ the other two are on `SpanwiseElementExtraction`, outside the ticket's scope and
 > finding's own decision having landed, not drift.** `BsplineSpace`'s seven became plain
 > `@property` when #396 landed; `BsplineSpace1D`'s seven and `SpanwiseElementExtraction`'s two
 > are unchanged. Re-check by **enumerating the sites**, not by counting matches:
-> `grep -rn '@functools\.cached_property' src/pantr/bspline/`.
-> A cold reader's `grep -rc cached_property src/pantr/bspline/` answers **13** instead, because
-> four matches are prose in docstrings describing the memos this note removed. The enumerating
-> form is the one to quote, and the difference between the two is why.
+> `grep -rn --include='*.py' '@functools\.cached_property' src/pantr/bspline/`, which lists 9.
+> Dropping the decorator from the pattern --
+> `grep -rn --include='*.py' cached_property src/pantr/bspline/` -- lists **13**, the extra four
+> being prose in docstrings that describe the memos this note removed. The enumerating form is
+> the one to quote, and the gap between the two is why.
+>
+> **`--include='*.py'` is not decoration.** Without it, GNU `grep` descends into `__pycache__`
+> and matches the compiled `.pyc` files, which takes the second figure from 13 to 19 in a tree
+> that has been imported. Some `grep` front ends (`ugrep`, `rg`) skip ignored files by default
+> and some do not, so a count quoted here without the filter is a count of whichever tool the
+> reader happens to have. This note was very nearly wrong about its own recount for exactly
+> that reason.
 
 But **all seven of `BsplineSpace`'s were O(dim) reductions over its own children**, with `dim`
 at most 3 in every use in the tree: `degrees`, `tolerance`, `num_basis`, `num_total_basis`,
@@ -92,7 +100,10 @@ files did not exist at `a45e935`). Recount with, in this order,
 `grep -rn gil_scoped_release cpp/bindings/` to enumerate the sites and
 `grep -rc gil_scoped_release cpp/bindings/*.cpp | grep -v ':0$'` to split them per file.
 **Read the enumeration, not the total**: the direction of travel is the finding, and any figure
-written here is a reading of one commit that the next port invalidates.
+written here is a reading of one commit that the next port invalidates. It already has --
+#491 landed `cpp/bindings/bspline_knots.cpp` with one more release site, so the same recount
+answers **33 across eight** one commit later. That is the third time this figure has moved, and
+it is why the commands above matter more than the numbers beside them.
 `src/pantr/_backend.py` states the intent in the same breath as the hazard --
 `grep -n 'scoped per thread' src/pantr/_backend.py` -- : *"use_backend
 is scoped per thread precisely so callers may thread, and the extension releases the GIL to invite
@@ -637,7 +648,7 @@ main decision is reversed.
   - *Changed.* The `cached_property` sites and their split: **16, as 7 + 7 + 2, at `a45e935`;
     9, as 7 + 0 + 2, at `cf958bf`** -- `BsplineSpace`'s seven went when #396 landed, which is
     F1's decision working rather than drift.
-    `grep -rn '@functools\.cached_property' src/pantr/bspline/`
+    `grep -rn --include='*.py' '@functools\.cached_property' src/pantr/bspline/`
   - *Changed.* The `lru_cache` at `_bspline_space_1d.py:40` with its key construction at `:320`:
     **gone**, deleted by #396 as this note's decision required, and replaced by a per-space memo
     in two slots with nothing to key on. `grep -rn lru_cache src/pantr/bspline/` returns nothing;
