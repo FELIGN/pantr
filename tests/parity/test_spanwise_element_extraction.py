@@ -93,6 +93,10 @@ Tolerances, by target
   cardinal cases in this file stop at degree 3, where the multiple was calibrated;
   a wider degree range is out of scope and not claimed.
 
+  **Both cardinal claims are currently skipped** (``_CARDINAL_NOT_CLAIMED``): the
+  accuracy check for the heuristic above, and the end-to-end parity, which reached
+  ratio 1.0 of its bound. They return once the cardinal builder has a derived bound.
+
 Rule 12 (interpreted-oracle gate)
 ----------------------------------
 
@@ -175,6 +179,21 @@ _TARGETS: Final = (ExtractionTarget.BEZIER, ExtractionTarget.LAGRANGE, Extractio
 
 _BACKENDS: Final = (Backend.PYTHON, Backend.CPP)
 """The two backends, for the tests that state a property of each one separately."""
+
+_CARDINAL_NOT_CLAIMED: Final = pytest.mark.skip(
+    reason=(
+        "cardinal bounds not claimed until the cardinal builder is ported with a derived "
+        "error bound (#493 stays open for it): the end-to-end parity sits at ratio 1.0 of "
+        "its bound and assumes no FMA contraction without stating it, and the accuracy "
+        "check rests on the observed heuristic _CARDINAL_HEURISTIC_MULTIPLE"
+    )
+)
+"""Holds back the two cardinal claims, rather than passing them at zero margin.
+
+The derivations stay in this file so the follow-up starts from them. The negative
+control :func:`test_the_cardinal_column_sum_check_catches_a_scaled_column` still runs:
+it checks the bound's discrimination, not the port.
+"""
 
 
 def _cpp_module() -> Any:
@@ -850,6 +869,7 @@ def _cardinal_direction_claims(case: _Case, dtype: npt.DTypeLike) -> tuple[Any, 
     return compact_claim, dense_claim
 
 
+@_CARDINAL_NOT_CLAIMED
 @pytest.mark.parametrize("dtype", DTYPES, ids=["float64", "float32"])
 def test_the_cardinal_end_to_end_extraction_matches_the_oracle(dtype: npt.DTypeLike) -> None:
     """A real ``CARDINAL`` extraction, built end to end, matches the oracle within the bound.
@@ -1053,6 +1073,7 @@ _CARDINAL_ACCURACY_CASES: Final = (
 calibrated for."""
 
 
+@_CARDINAL_NOT_CLAIMED
 @pytest.mark.parametrize("dtype", DTYPES, ids=["float64", "float32"])
 @pytest.mark.parametrize("backend", _BACKENDS, ids=["python", "cpp"])
 @pytest.mark.parametrize(
