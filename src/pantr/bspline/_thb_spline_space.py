@@ -2531,9 +2531,10 @@ class THBSplineSpace:
             both backends.
 
         Raises:
+            TypeError: If ``cid`` is not an integer.
             IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
         """
-        return np.array(self._impl.active_basis(cid))
+        return np.array(self._impl.active_basis(operator.index(cid)))
 
     def contributions(
         self, cid: int
@@ -2555,9 +2556,10 @@ class THBSplineSpace:
             :meth:`active_basis` is the copying form of its first column.
 
         Raises:
+            TypeError: If ``cid`` is not an integer.
             IndexError: If ``cid`` is out of range ``[0, grid.num_cells)``.
         """
-        dofs, levels, multis = self._impl.contributions(cid)
+        dofs, levels, multis = self._impl.contributions(operator.index(cid))
         return (
             np.asarray(dofs, dtype=np.int64),
             np.asarray(levels, dtype=np.int64),
@@ -2610,9 +2612,10 @@ class THBSplineSpace:
             int: The level whose dof range (per :attr:`level_offsets`) contains ``dof``.
 
         Raises:
+            TypeError: If ``dof`` is not an integer.
             IndexError: If ``dof`` is out of range ``[0, num_total_basis)``.
         """
-        return int(self._impl.dof_level(dof))
+        return int(self._impl.dof_level(operator.index(dof)))
 
     def truncated(self, dof: int) -> tuple[int, tuple[int, ...], npt.NDArray[np.float64]] | None:
         """Return the stored representation of a truncated function, or ``None``.
@@ -2635,9 +2638,10 @@ class THBSplineSpace:
             oracle's own frozen array on the other.
 
         Raises:
+            TypeError: If ``dof`` is not an integer.
             IndexError: If ``dof`` is out of range ``[0, num_total_basis)``.
         """
-        entry = self._impl.truncated(dof)
+        entry = self._impl.truncated(operator.index(dof))
         if entry is None:
             return None
         rep_level, box_lo, coeffs = entry

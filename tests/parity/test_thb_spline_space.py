@@ -1929,3 +1929,49 @@ def test_an_out_of_range_cell_id_is_refused_the_oracles_way(cpp_backend: None) -
         assert str(expected.value) == expected_message, (
             f"{name}'s wording moved under both backends at once: {expected.value}"
         )
+
+
+def test_a_wrongly_typed_id_is_refused_the_same_way_by_both_backends(cpp_backend: None) -> None:
+    """A float id raises ``TypeError`` under both backends, not silently under one.
+
+    The wrapper's four id-taking accessors used to diverge: the oracle indexed with
+    whatever it was handed and answered, while the binding refused a non-integer with
+    nanobind's own ``TypeError``. Two backends disagreeing about what is *valid* is worse
+    than disagreeing about a digit, because the Python one answers and the caller never
+    learns the id was wrong -- and it was accepted by accident rather than by design, no
+    entry point having ever documented it.
+
+    ``level_space`` already coerced with ``operator.index`` and is included here as the
+    control: it is the sibling the other four were brought into line with, so a version of
+    this test that passes for it and fails for them is reading the fix rather than the
+    fixture.
+
+    Args:
+        cpp_backend (None): Requires the compiled extension.
+    """
+    case = _reference_case()
+    py = _python_space(case)
+    cpp = _cpp_space(case)
+
+    # One id-taking accessor per argument kind, plus `level_space` as the control.
+    for name in ("active_basis", "contributions", "dof_level", "truncated", "level_space"):
+        with _the_oracle(), pytest.raises(TypeError) as expected:
+            getattr(py, name)(1.5)
+        with use_backend(Backend.CPP), pytest.raises(TypeError) as actual:
+            getattr(cpp, name)(1.5)
+        assert type(actual.value) is type(expected.value), (
+            f"{name} refuses a float id with a different exception type under the two "
+            f"backends: python {type(expected.value).__name__}, "
+            f"cpp {type(actual.value).__name__}"
+        )
+
+    # A whole float and an integer-valued numpy scalar are still refused and still
+    # accepted respectively: `operator.index` rejects `2.0` -- it does not round or
+    # truncate -- while `np.int64` satisfies `__index__` and must keep working, since the
+    # ids these accessors take come out of numpy arrays everywhere in this package.
+    with _the_oracle(), pytest.raises(TypeError):
+        py.dof_level(2.0)
+    with _the_oracle():
+        assert py.dof_level(np.int64(0)) == py.dof_level(0)
+    with use_backend(Backend.CPP):
+        assert cpp.dof_level(np.int64(0)) == cpp.dof_level(0)
