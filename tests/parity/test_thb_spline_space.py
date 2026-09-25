@@ -1969,9 +1969,14 @@ def test_a_wrongly_typed_id_is_refused_the_same_way_by_both_backends(cpp_backend
     # accepted respectively: `operator.index` rejects `2.0` -- it does not round or
     # truncate -- while `np.int64` satisfies `__index__` and must keep working, since the
     # ids these accessors take come out of numpy arrays everywhere in this package.
+    # The `type: ignore[arg-type]`s are the point rather than an annoyance: the signature
+    # says `int`, these calls deliberately break it, and the file's own idiom for a test
+    # that checks a runtime refusal is to silence the static one at the site.  The loop
+    # above needs none because `getattr` already erases the argument type, which is worth
+    # knowing -- it means the loop does not get this protection and these three do.
     with _the_oracle(), pytest.raises(TypeError):
-        py.dof_level(2.0)
+        py.dof_level(2.0)  # type: ignore[arg-type]
     with _the_oracle():
-        assert py.dof_level(np.int64(0)) == py.dof_level(0)
+        assert py.dof_level(np.int64(0)) == py.dof_level(0)  # type: ignore[arg-type]
     with use_backend(Backend.CPP):
-        assert cpp.dof_level(np.int64(0)) == cpp.dof_level(0)
+        assert cpp.dof_level(np.int64(0)) == cpp.dof_level(0)  # type: ignore[arg-type]

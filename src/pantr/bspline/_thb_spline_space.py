@@ -2510,6 +2510,7 @@ class THBSplineSpace:
             array.
 
         Raises:
+            TypeError: If ``level`` is not an integer.
             ValueError: If ``level`` is out of range.
         """
         return np.array(self._active_at(level))
