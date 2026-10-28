@@ -18,6 +18,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis
+from .._numba_compat import wait_for_jit_warmup
 from ._bezier_core import _slice_bezier_1d_core
 
 if TYPE_CHECKING:
@@ -53,6 +54,10 @@ def _slice_bezier(
         Inputs are assumed to be correct (no validation performed).
         For general use, call :meth:`~pantr.bezier.Bezier.slice` instead.
     """
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
+
     from . import Bezier as BezierCls  # noqa: PLC0415
 
     ctrl = bezier.control_points

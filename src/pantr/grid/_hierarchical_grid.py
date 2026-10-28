@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Self
 
 import numpy as np
 
+from .._numba_compat import wait_for_jit_warmup
 from ._grid import Grid, GridRestriction
 from ._grid_utils import _as_float64, _mask_nonfinite_locate
 from ._hier_core import (
@@ -787,6 +788,8 @@ class HierarchicalGrid(Grid):
         """
         pts = self._normalize_points(points)
         out = np.empty(pts.shape[0], dtype=np.int64)
+        # ``parallel=True``; see the note in TensorProductGrid.locate_many.
+        wait_for_jit_warmup()
         _hier_locate_points_core(
             pts,
             self._root_knots_flat,
@@ -1700,6 +1703,8 @@ class HierarchicalGrid(Grid):
         nd = self.ndim
         cell_lo = np.empty((n, nd), dtype=np.float64)
         cell_hi = np.empty((n, nd), dtype=np.float64)
+        # ``parallel=True``; see the note in TensorProductGrid.locate_many.
+        wait_for_jit_warmup()
         _hier_collect_cell_bounds_core(
             self._root_knots_flat,
             self._root_knot_starts,
