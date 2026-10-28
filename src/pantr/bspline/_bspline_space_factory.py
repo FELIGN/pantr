@@ -36,7 +36,7 @@ def create_uniform_open_knots(
     ensuring the B-spline interpolates the first and last control points.
 
     Args:
-        num_intervals (int): Number of intervals in the domain. Must be non-negative.
+        num_intervals (int): Number of intervals in the domain. Must be at least 1.
         degree (int): B-spline degree. Must be non-negative.
         continuity (Optional[int]): Continuity level at interior knots.
             Must be between -1 and degree-1. Defaults to degree-1 (maximum continuity).
@@ -49,7 +49,8 @@ def create_uniform_open_knots(
         npt.NDArray[np.floating]: Open knot vector with uniform spacing.
 
     Raises:
-        ValueError: If any parameter is invalid.
+        ValueError: If any parameter is invalid, in particular if ``num_intervals``
+            is less than 1.
 
     Example:
         >>> import numpy as np
@@ -106,7 +107,7 @@ def create_uniform_periodic_knots(
     periodicity of the B-spline basis functions.
 
     Args:
-        num_intervals (int): Number of intervals in the domain. Must be non-negative.
+        num_intervals (int): Number of intervals in the domain. Must be at least 1.
         degree (int): B-spline degree. Must be non-negative.
         continuity (Optional[int]): Continuity level at interior knots.
             Must be between -1 and degree-1. Defaults to degree-1 (maximum continuity).
@@ -119,7 +120,8 @@ def create_uniform_periodic_knots(
         npt.NDArray[np.floating]: Periodic knot vector with uniform spacing.
 
     Raises:
-        ValueError: If any parameter is invalid.
+        ValueError: If any parameter is invalid, in particular if ``num_intervals``
+            is less than 1.
 
     Example:
         >>> import numpy as np
@@ -214,6 +216,10 @@ def create_cardinal_knots(
         >>> np.allclose(create_cardinal_knots(2, 2), [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0])
         True
     """
+    # Checked here and not left to `_validate_knot_input`, which enforces the same rule
+    # for the other two factories: this one derives its domain from the count, so a zero
+    # would reach the validator as `domain=(0, 0)` and come back as "domain[0] must be
+    # less than domain[1]", naming a parameter the caller never passed.
     if num_intervals < 1:
         raise ValueError("num_intervals must be at least 1")
 
