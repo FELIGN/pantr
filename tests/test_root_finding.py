@@ -679,7 +679,11 @@ class TestSignTestUnderflow(unittest.TestCase):
                 bez = Bezier(np.array([[a], [0.0], [-a]], dtype=dtype))
                 roots = find_roots(bez, tol=1e-40)
                 self.assertEqual(len(roots), 1)
-                self.assertAlmostEqual(roots[0], 0.5, places=10)
+                # The root is exactly 0.5; the finder resolves it to the working
+                # precision. `eps` is two ulps of 0.5 at this dtype: slack for the
+                # termination step, admitted rather than derived. A fixed number of
+                # decimal places would hold float32 to a float64 bar.
+                self.assertLessEqual(abs(roots[0] - 0.5), float(np.finfo(dtype).eps))
 
     def test_sign_tests_are_scale_invariant_over_decades(self) -> None:
         """Both faces stay correct across the decades spanning the frontier.
@@ -699,7 +703,8 @@ class TestSignTestUnderflow(unittest.TestCase):
                 crossing = Bezier(np.array([[a], [0.0], [-a]], dtype=np.float32))
                 roots = find_roots(crossing, tol=1e-40)
                 self.assertEqual(len(roots), 1)
-                self.assertAlmostEqual(roots[0], 0.5, places=10)
+                # Same bound as in `test_root_not_lost_at_frontier`.
+                self.assertLessEqual(abs(roots[0] - 0.5), float(np.finfo(np.float32).eps))
 
 
 class TestBoundaryEpsScaleInvariance(unittest.TestCase):
