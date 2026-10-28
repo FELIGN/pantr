@@ -702,6 +702,40 @@ class TestSignTestUnderflow(unittest.TestCase):
                 self.assertAlmostEqual(roots[0], 0.5, places=10)
 
 
+class TestBoundaryEpsScaleInvariance(unittest.TestCase):
+    """An absolute floor inside a scale-relative tolerance (FELIGN/pantr#352).
+
+    ``_find_roots_at_level`` and ``_yuksel_roots`` grade "is this coefficient
+    zero?" against ``max(scale * eps * 8, 1e-30)``. The first term is relative
+    to the problem's own coefficient range and correct; the second is an
+    absolute floor, and below it every coefficient reads as zero however well
+    separated the coefficients are from each other.
+
+    Scaling a root-finding problem by a positive constant does not move its
+    roots, so this is an invariance being broken rather than a precision limit
+    being reached. The sweep straddles the literal: ``1e-29`` is correct today
+    and ``1e-30`` is not.
+    """
+
+    def test_single_root_is_scale_invariant(self) -> None:
+        """``a(1 - 2t)`` has its only root at ``t = 0.5`` for every ``a != 0``."""
+        for exponent in range(-25, -36, -1):
+            a = 10.0**exponent
+            with self.subTest(a=f"1e{exponent}"):
+                bez = Bezier(np.array([[a], [0.0], [-a]], dtype=np.float64))
+                roots = find_roots(bez, tol=1e-40)
+                self.assertEqual(len(roots), 1)
+                self.assertAlmostEqual(roots[0], 0.5, places=12)
+
+    def test_no_root_is_scale_invariant(self) -> None:
+        """A strictly positive Bezier reports no root at every scale."""
+        for exponent in range(-25, -36, -1):
+            a = 10.0**exponent
+            with self.subTest(a=f"1e{exponent}"):
+                bez = Bezier(np.array([[a], [0.5 * a], [2.0 * a]], dtype=np.float64))
+                self.assertEqual(len(find_roots(bez, tol=1e-40)), 0)
+
+
 class TestSignPredicateEquivalence(unittest.TestCase):
     """The sign predicates are exactly the product forms they replace.
 
