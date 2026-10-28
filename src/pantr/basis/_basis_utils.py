@@ -8,6 +8,8 @@ helpers) of PaNTr:
   dimensions and the number of basis functions.
 - Output array validation: check shape, dtype, and writability of pre-allocated
   ``out`` arrays before calling Layer 3 kernels.
+- Output array reshaping: hand a kernel the shape it expects, and say whether the
+  caller's array still has to be written from the result.
 """
 
 from typing import Any
@@ -168,3 +170,52 @@ def _allocate_or_validate_out(
         return np.empty(expected_shape, dtype=expected_dtype)
     _validate_out_array(out, expected_shape, expected_dtype)
     return out
+
+
+def _reshaped_out(
+    out: npt.NDArray[Any],
+    shape: tuple[int, ...],
+) -> tuple[npt.NDArray[Any], bool]:
+    """Reshape a caller's ``out`` for a kernel, and say whether to copy back.
+
+    Layer 2 normalises an ``out`` array's shape before handing it to a kernel that
+    writes into it. ``reshape`` returns a *view* whenever the strides allow one, and
+    a **copy** otherwise -- and a kernel writing into a copy leaves the caller's
+    array untouched, so the result is silently discarded and the caller reads back
+    whatever it allocated: a ``float64`` tabulation with an ``order="F"`` ``out`` and
+    multi-dimensional points used to return the caller's array untouched, because the
+    kernel had filled a copy of it.
+
+    **The test is whether the reshape shared memory, not whether the array was
+    C-contiguous**, and the difference is not academic: a strided slice such as
+    ``big[..., ::2]`` is *not* C-contiguous and *does* reshape to a view, because
+    merging the leading axes is expressible in strides. Refusing or copying it would
+    slow down a case that works correctly today.
+
+    Args:
+        out (npt.NDArray[Any]): The caller's output array, already validated.
+        shape (tuple[int, ...]): The shape the kernel expects to write into.
+
+    Returns:
+        tuple[npt.NDArray[Any], bool]: The array to hand the kernel, and whether the
+        caller's ``out`` still has to be written from it once the kernel returns.
+
+    Raises:
+        ValueError: If ``shape`` holds a different number of elements than ``out``.
+            Call sites validate the shape first, so this cannot be reached from them.
+
+    Example:
+        >>> import numpy as np
+        >>> out = np.zeros((2, 2, 3), order="F")
+        >>> buf, copy_back = _reshaped_out(out, (4, 3))
+        >>> copy_back
+        True
+        >>> buf[:] = 1.0
+        >>> bool(out.any())
+        False
+        >>> out[...] = buf.reshape(out.shape)
+        >>> bool(out.all())
+        True
+    """
+    buffer = out.reshape(shape)
+    return buffer, not np.shares_memory(buffer, out)
