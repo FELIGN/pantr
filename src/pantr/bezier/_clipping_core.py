@@ -29,7 +29,9 @@ from pantr.bezier._root_finding_core import (
     _count_sign_changes,
     _de_casteljau_eval_and_deriv_scalar,
     _de_casteljau_eval_scalar,
+    _have_opposite_signs,
     _newton_polish_scalar,
+    _spans_zero,
     _subdivide_scalar,
 )
 
@@ -131,12 +133,12 @@ def _clip_roots_core(  # noqa: PLR0912, PLR0915
                         m = 0.5 * (a + b)
                         fm = _de_casteljau_eval_scalar(root_coeff, m)
                         if abs(fm) < abs(fa):
-                            if fa * fm <= 0.0:
+                            if _spans_zero(fa, fm):
                                 b = m
                             else:
                                 a = m
                                 fa = fm
-                        elif fa * fm <= 0.0:
+                        elif _spans_zero(fa, fm):
                             b = m
                         else:
                             a = m
@@ -182,7 +184,11 @@ def _clip_roots_core(  # noqa: PLR0912, PLR0915
 
         # ---- Step 5: near-zero polynomial (flat within noise) -----------
         if c_max - c_min <= geom_tol:
-            if abs(c_min) <= local_zero_tol or abs(c_max) <= local_zero_tol or c_min * c_max < 0.0:
+            if (
+                abs(c_min) <= local_zero_tol
+                or abs(c_max) <= local_zero_tol
+                or _have_opposite_signs(c_min, c_max)
+            ):
                 mid = 0.5 * (lo + hi)
                 f_mid = _de_casteljau_eval_scalar(root_coeff, mid)
                 if abs(f_mid) <= zero_tol and n_roots < max_roots:

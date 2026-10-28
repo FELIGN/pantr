@@ -30,7 +30,10 @@ from pantr.bezier._root_finding_core import (
     _count_sign_changes,
     _de_casteljau_eval_and_deriv_scalar,
     _de_casteljau_eval_scalar,
+    _have_opposite_signs,
+    _have_same_sign,
     _newton_polish_scalar,
+    _spans_zero,
     _subdivide_scalar,
 )
 from pantr.bezier._yuksel_core import (
@@ -637,6 +640,146 @@ class TestValidateCoeffArray(unittest.TestCase):
         arr = np.array([1.0, -1.0], dtype=np.float32)
         result = _validate_coeff_array(arr, ndim=1, name="coeff")
         self.assertEqual(result.dtype, np.float32)
+
+
+class TestSignTestUnderflow(unittest.TestCase):
+    """A sign test written as a product must not underflow (FELIGN/pantr#351).
+
+    Six sites in the root-finding kernels ask "do these two values share a sign?"
+    by multiplying and comparing the product against zero. At ``float32`` the
+    product of two operands of magnitude ``a`` is ``a**2``, which falls under
+    that format's minimum subnormal (about ``1e-45``) once ``a`` drops below
+    roughly ``1e-23`` -- while both operands remain perfectly representable.
+    The test then answers as though one operand were zero.
+
+    The cases below sit at that frontier rather than comfortably past it:
+    ``1e-22`` squares to ``1e-44`` and survives, ``1e-23`` squares to ``1e-46``
+    and does not. Each has a ``float64`` control, where the same product is
+    nowhere near underflow.
+    """
+
+    #: Largest coefficient magnitude whose float32 square still underflows.
+    FRONTIER = 1e-23
+
+    def test_monotone_root_not_invented_at_frontier(self) -> None:
+        """No root is reported for a strictly positive Bezier at the frontier."""
+        for dtype in (np.float32, np.float64):
+            with self.subTest(dtype=np.dtype(dtype).name):
+                a = self.FRONTIER
+                # B(t) > 0 on [0, 1]: every control value is positive, so the
+                # convex-hull property forbids a root.
+                bez = Bezier(np.array([[a], [0.5 * a], [2.0 * a]], dtype=dtype))
+                self.assertTrue(math.isnan(find_monotone_root(bez)))
+
+    def test_root_not_lost_at_frontier(self) -> None:
+        """The single root of ``a(1 - 2t)`` survives at the frontier."""
+        for dtype in (np.float32, np.float64):
+            with self.subTest(dtype=np.dtype(dtype).name):
+                a = self.FRONTIER
+                bez = Bezier(np.array([[a], [0.0], [-a]], dtype=dtype))
+                roots = find_roots(bez, tol=1e-40)
+                self.assertEqual(len(roots), 1)
+                self.assertAlmostEqual(roots[0], 0.5, places=10)
+
+    def test_sign_tests_are_scale_invariant_over_decades(self) -> None:
+        """Both faces stay correct across the decades spanning the frontier.
+
+        Scaling a root-finding problem by a positive constant moves no root, so
+        every decade here must give the same answer. The sweep runs from two
+        decades above the frontier to six below, at ``float32``, which is the
+        width that distinguishes a fix of the *test* from one that merely moves
+        the underflow threshold.
+        """
+        for exponent in range(-21, -30, -1):
+            a = 10.0**exponent
+            with self.subTest(a=f"1e{exponent}"):
+                positive = Bezier(np.array([[a], [0.5 * a], [2.0 * a]], dtype=np.float32))
+                self.assertTrue(math.isnan(find_monotone_root(positive)))
+
+                crossing = Bezier(np.array([[a], [0.0], [-a]], dtype=np.float32))
+                roots = find_roots(crossing, tol=1e-40)
+                self.assertEqual(len(roots), 1)
+                self.assertAlmostEqual(roots[0], 0.5, places=10)
+
+
+class TestSignPredicateEquivalence(unittest.TestCase):
+    """The sign predicates are exactly the product forms they replace.
+
+    The three predicates in :mod:`pantr.bezier._root_finding_core` exist to
+    remove a product from a sign test, and substituting them is only sound if
+    they agree with the product everywhere the product is right. That is a claim
+    about IEEE 754 semantics, so it is checked exhaustively over a matrix of
+    special values rather than argued in a comment.
+
+    Every pair drawn from ``VALUES`` has a well-defined product that neither
+    underflows nor overflows, ``inf * 0.0 = nan`` included, so agreement here
+    must be total. Where the product *is* wrong -- the underflow regime -- the
+    predicates are supposed to differ from it, and that is asserted separately.
+    """
+
+    #: Signs, both zeros, both infinities and a NaN. All 81 pairs have an exact product.
+    VALUES = (-np.inf, -3.0, -1.0, -0.0, 0.0, 1.0, 3.0, np.inf, np.nan)
+
+    def test_same_sign_matches_product_gt_zero(self) -> None:
+        """``_have_same_sign`` equals ``a * b > 0.0`` on every special-value pair."""
+        for a in self.VALUES:
+            for b in self.VALUES:
+                with self.subTest(a=a, b=b):
+                    self.assertEqual(_have_same_sign(a, b), a * b > 0.0)
+
+    def test_opposite_signs_matches_product_lt_zero(self) -> None:
+        """``_have_opposite_signs`` equals ``a * b < 0.0`` on every special-value pair."""
+        for a in self.VALUES:
+            for b in self.VALUES:
+                with self.subTest(a=a, b=b):
+                    self.assertEqual(_have_opposite_signs(a, b), a * b < 0.0)
+
+    def test_spans_zero_matches_product_le_zero(self) -> None:
+        """``_spans_zero`` equals ``a * b <= 0.0`` on every special-value pair.
+
+        This is the predicate whose naive form is *not* equivalent: without its
+        finiteness guards it would report a spanned bracket for ``(0.0, inf)``,
+        where the product is NaN and the product form reports none.
+        """
+        for a in self.VALUES:
+            for b in self.VALUES:
+                with self.subTest(a=a, b=b):
+                    self.assertEqual(_spans_zero(a, b), a * b <= 0.0)
+
+    def test_zero_paired_with_infinity_is_not_spanned(self) -> None:
+        """``(0, inf)`` is not a spanned bracket, because ``0 * inf`` is NaN.
+
+        Called out on its own because it is the single pair that separates the
+        exact predicate from the naive one, and a regression here would be
+        invisible in the matrix above.
+        """
+        for zero in (0.0, -0.0):
+            for infinity in (np.inf, -np.inf):
+                with self.subTest(zero=zero, infinity=infinity):
+                    self.assertFalse(_spans_zero(zero, infinity))
+                    self.assertFalse(_spans_zero(infinity, zero))
+
+    def test_predicates_survive_the_underflow_the_product_does_not(self) -> None:
+        """The predicates are right in the regime where the product flushes to zero.
+
+        Two operands of magnitude ``1e-200`` are ordinary ``float64`` values,
+        but their product is ``1e-400`` and underflows to zero. The product form
+        then answers as though an operand vanished; the predicates do not. This
+        is the same mechanism as the ``float32`` defect, reached at ``float64``
+        so that no dtype conversion is involved.
+        """
+        tiny = 1e-200
+        # Same sign, and the product cannot see it.
+        self.assertEqual(tiny * tiny, 0.0)
+        self.assertTrue(_have_same_sign(tiny, tiny))
+        self.assertFalse(tiny * tiny > 0.0)
+        # Opposite signs, likewise.
+        self.assertEqual(tiny * -tiny, 0.0)
+        self.assertTrue(_have_opposite_signs(tiny, -tiny))
+        self.assertFalse(tiny * -tiny < 0.0)
+        # And the bracket test reports a span that is not there.
+        self.assertFalse(_spans_zero(tiny, tiny))
+        self.assertTrue(tiny * tiny <= 0.0)
 
 
 if __name__ == "__main__":
