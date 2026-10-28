@@ -87,7 +87,8 @@ class SpanwiseElementExtraction:
 
     With the current 1D builders all per-direction operators are square of
     size ``(degree_k + 1, degree_k + 1)``. The class also supports non-square
-    per-direction operators, so new 1D builders can plug in without changes.
+    per-direction operators, so new 1D builders can plug in without changes,
+    provided such an operator is not flagged as the identity.
 
     The per-direction data is exposed as two complementary representations:
 
