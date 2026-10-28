@@ -68,6 +68,27 @@ def test_query_disjoint_empty() -> None:
     assert bvh.query_aabb(AABB([10.0, 10.0], [11.0, 11.0])).shape == (0,)
 
 
+def test_a_reversed_query_interval_matches_a_cell_that_contains_it() -> None:
+    """An empty query box matches a cell whose interval contains its reversed one.
+
+    ``BVH.query_aabb`` is a separating-axis test with no emptiness branch, so it is
+    **not** :meth:`pantr.geometry.AABB.overlaps`, which reports that an empty box
+    overlaps nothing. The divergence is between the predicate and the box, and
+    reconciling them has to move both at once.
+
+    Pinned so that a later reconciliation has to change a test that says why, and
+    with the box's own answer asserted beside it so the disagreement is on the
+    record rather than implied.
+    """
+    cell = AABB([0.0], [10.0])
+    query = AABB([5.0], [3.0])
+    assert query.is_empty()
+    assert cell.overlaps(query) is False
+
+    tree = BVH.from_cell_bounds(np.array([[0.0]]), np.array([[10.0]]))
+    assert tree.query_aabb(query).tolist() == [0]
+
+
 def test_single_cell_tree() -> None:
     """A one-cell BVH has a single leaf node and answers queries."""
     bvh = BVH.from_cell_bounds(np.array([[0.0, 0.0]]), np.array([[1.0, 1.0]]))

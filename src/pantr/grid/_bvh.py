@@ -25,12 +25,20 @@ reproducible.
 Queries
 -------
 
-:meth:`BVH.query_aabb` returns the ids of cells whose AABB overlaps the query
-box. A touching-face pair counts as overlapping (inclusive comparison) to match
-:meth:`pantr.geometry.AABB.overlaps`. Queries run in two passes: a count-only
-descent sizes the output, then an emit descent writes the cell ids. Both passes
-visit the same nodes in the same order, so the result is a fresh, compact
-``int64`` array with no Python-side list growth.
+:meth:`BVH.query_aabb` returns the ids of cells whose AABB is not separated from
+the query box. Queries run in two passes: a count-only descent sizes the output,
+then an emit descent writes the cell ids. Both passes visit the same nodes in the
+same order, so the result is a fresh, compact ``int64`` array with no Python-side
+list growth.
+
+**The overlap test is a separating-axis test and nothing else**, and it is not
+:meth:`pantr.geometry.AABB.overlaps`. It compares inclusively, so a query box
+sharing a face with a cell is reported; but it has no emptiness branch, so a
+*reversed* query interval is reported against any cell whose own interval contains
+it, where the box reports nothing. One cell ``[0, 10]`` in one dimension, queried
+with ``lo = 5, hi = 3``, returns cell ``0`` here. This docstring used to claim
+agreement with the box, and the claim is withdrawn rather than the behavior
+changed, because reconciling the two predicates has to move both at once.
 """
 
 from __future__ import annotations
@@ -354,7 +362,10 @@ class BVH:
         return cls(node_lo, node_hi, node_left, node_right, node_cell, n_cells=n_cells)
 
     def query_aabb(self, aabb: AABB) -> npt.NDArray[np.int64]:
-        """Return the ids of every leaf cell whose AABB overlaps ``aabb``.
+        """Return the ids of every leaf cell whose AABB is not separated from ``aabb``.
+
+        This is a separating-axis test, not :meth:`pantr.geometry.AABB.overlaps`; see
+        the module docstring for how they differ on an empty query box.
 
         Args:
             aabb (AABB): Query box; must match :attr:`ndim`.
