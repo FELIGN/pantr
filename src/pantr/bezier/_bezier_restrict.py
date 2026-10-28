@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
+from .._numba_compat import wait_for_jit_warmup
 from ._bezier_core import _restrict_bezier_1d_core
 
 if TYPE_CHECKING:
@@ -45,6 +46,10 @@ def _restrict_bezier(
         ValueError: If every direction is ``None`` or matches the full
             ``[0, 1]`` domain.
     """
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
+
     from . import Bezier as BezierCls  # noqa: PLC0415
 
     ctrl = bezier.control_points

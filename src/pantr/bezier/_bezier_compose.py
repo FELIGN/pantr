@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from .._numba_compat import wait_for_jit_warmup
 from ..bspline._bspline_degree_core import _check_bincoeff_envelope
 from ._bezier_core import _scalar_bernstein_product_1d_core
 from ._bezier_product import _bernstein_product_coefficients_nd
@@ -51,6 +52,10 @@ def _compose_bezier(outer: Bezier, inner: Bezier) -> Bezier:
             exactness envelope of the binomial-coefficient kernel (see
             :data:`~pantr.bspline._bspline_degree_core._BINCOEFF_MAX_N`).
     """
+    # Ensure the background JIT warmup has finished before calling Numba kernels that use
+    # parallel=True: numba's workqueue layer aborts the process rather than raising.
+    wait_for_jit_warmup()
+
     if outer.is_rational:
         raise TypeError("Composition is not supported for rational Béziers (outer is rational).")
     if inner.is_rational:

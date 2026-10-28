@@ -28,6 +28,7 @@ Covers:
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import numpy as np
@@ -1729,3 +1730,51 @@ def test_factors_validation() -> None:
         ext.factors((0,))
     with pytest.raises(TypeError, match="must be int or sequence"):
         ext.factors("0")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------- numba warmup
+
+
+class TestNumbaWarmup:
+    """The batch apply funnel waits for the import-time JIT warmup, as its siblings do."""
+
+    def test_the_batch_funnel_calls_the_barrier(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``apply_many`` reaches the barrier before it reaches a kernel.
+
+        ``pantr/__init__.py`` compiles its kernels on a background thread, and numba's
+        default workqueue threading layer is not safe against a concurrent
+        ``parallel=True`` call from another thread: the process *aborts* rather than
+        raising, taking the whole session with it. Every other Layer 2 entry point over
+        parallel kernels calls :func:`pantr._numba_compat.wait_for_jit_warmup` first;
+        this one did not, and ``_extraction_kernels`` holds twelve ``parallel=True`` batch
+        kernels reached from the four ``*_many`` public methods.
+
+        Asserting the *call* rather than the absence of the crash follows
+        ``tests/test_bspline_locate.py``, and for the reason given there: the barrier is
+        a once-per-process event, so by the time any in-process test runs the warmup is
+        long finished and nothing in-process can observe the race. What this pins is the
+        contract -- delete the call and this test fails.
+        """
+        calls: list[str] = []
+        module = sys.modules["pantr.bspline._extraction_helpers"]
+        real_dispatch = module._dispatch_apply_many
+
+        def _record_barrier() -> None:
+            calls.append("barrier")
+
+        def _record_dispatch(d: int, op_kind: Any) -> Any:
+            calls.append("dispatch")
+            return real_dispatch(d, op_kind)
+
+        monkeypatch.setattr(module, "wait_for_jit_warmup", _record_barrier)
+        monkeypatch.setattr(module, "_dispatch_apply_many", _record_dispatch)
+
+        ext = SpanwiseElementExtraction(_space_2d(), "bezier")
+        n_in = ext.input_shape_per_dir[0] * ext.input_shape_per_dir[1]
+        operand = RNG.standard_normal((2, n_in)).astype(ext.dtype)
+        ext.apply_many(operand, [0, 1])
+
+        assert "barrier" in calls, "apply_many must wait for the JIT warmup"
+        assert calls.index("barrier") < calls.index("dispatch"), (
+            f"the barrier must precede the kernel lookup; got {calls[:3]}"
+        )
