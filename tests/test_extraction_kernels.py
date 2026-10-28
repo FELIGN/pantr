@@ -17,6 +17,7 @@ from pantr.bspline._extraction_helpers import (
     _dispatch_apply,
     _operation_shapes,
     _prepare_apply_call,
+    _prepare_apply_many_call,
     _required_scratch_size,
     _validate_op_kind,
 )
@@ -357,3 +358,55 @@ def test_bilateral_scratch_size_d1_matches_kernel_usage() -> None:
     # Stage 0 intermediate (only intermediate) is n_in * n_out.
     assert _bilateral_scratch_size((5,), (3,)) == 2 * (5 * 3)
     assert _bilateral_scratch_size((3,), (5,)) == 2 * (3 * 5)
+
+
+# An identity branch copies over a single extent, which equals applying the operator only
+# when it is square. The Layer 2 dispatchers derive the operand and output extents from the
+# operator's shape whatever the flag says, so an identity-flagged non-square operator used to
+# pass validation and let a 1D kernel read past its operand.
+
+
+def test_identity_flagged_nonsquare_operator_raises() -> None:
+    non_square = np.eye(3, 2, dtype=np.float64)
+    v = RNG.standard_normal(2).astype(np.float64)
+    with pytest.raises(ValueError, match="must be square"):
+        _prepare_apply_call((non_square,), (True,), v, None, None, "apply")
+
+
+def test_nonsquare_operator_not_flagged_identity_is_accepted() -> None:
+    # The refusal keys on the flag: the same operator unflagged is an ordinary rectangular
+    # operator and must still dispatch.
+    non_square = np.eye(3, 2, dtype=np.float64)
+    v = RNG.standard_normal(2).astype(np.float64)
+    _, _, out = _prepare_apply_call((non_square,), (False,), v, None, None, "apply")
+    assert out.shape == (3,)
+
+
+def test_identity_flagged_square_operator_is_accepted() -> None:
+    square = np.eye(3, dtype=np.float64)
+    v = RNG.standard_normal(3).astype(np.float64)
+    _, _, out = _prepare_apply_call((square,), (True,), v, None, None, "apply")
+    assert out.shape == (3,)
+
+
+def _batch_inputs(n_out: int, n_in: int, mask: tuple[bool, ...]) -> tuple[Any, ...]:
+    """Build the 1D ``_prepare_apply_many_call`` arguments for ``len(mask)`` elements."""
+    n_el = len(mask)
+    ops = (np.ones((1, n_out, n_in), dtype=np.float64),)
+    idx_maps = (np.zeros(n_el, dtype=np.intp),)
+    masks = (np.array(mask, dtype=np.bool_),)
+    cells = np.arange(n_el, dtype=np.intp)[:, None]
+    operand = RNG.standard_normal((n_el, n_in)).astype(np.float64)
+    return ops, idx_maps, masks, cells, operand
+
+
+def test_batch_identity_flagged_nonsquare_operators_raise() -> None:
+    ops, idx_maps, masks, cells, operand = _batch_inputs(3, 2, (True, False))
+    with pytest.raises(ValueError, match="must be square"):
+        _prepare_apply_many_call(ops, idx_maps, masks, cells, operand, None, None, "apply")
+
+
+def test_batch_nonsquare_operators_without_identity_flag_are_accepted() -> None:
+    ops, idx_maps, masks, cells, operand = _batch_inputs(3, 2, (False, False))
+    _, _, out = _prepare_apply_many_call(ops, idx_maps, masks, cells, operand, None, None, "apply")
+    assert out.shape == (2, 3)
