@@ -481,9 +481,8 @@ def _control_point_magnitude(ctrl_2d: npt.NDArray[np.float32 | np.float64]) -> f
     aggregates a Euclidean distance over the stacked directions -- which is also why it
     is paired there with an explicit ``sqrt(num_stacked)``. Here the array has already
     been flattened to ``(n, rank * n_other)``, so a row 2-norm would sum over every
-    other parametric direction and inflate the budget by ``sqrt(rank * n_other)``:
-    measured at 35x on a net with 1024 control points in the other directions, against
-    a quantity that did not grow at all.
+    other parametric direction and inflate the budget by ``sqrt(rank * n_other)``, which
+    grows with the size of the net while the graded quantity does not.
 
     What it is relative to is the **whole net**, not the neighbourhood of the seam. A
     small feature sitting beside a large one is therefore graded against the large one,
@@ -517,10 +516,9 @@ def _seam_deviation_budget(ctrl_2d: npt.NDArray[np.float32 | np.float64]) -> flo
     as many words that an absolute parametric length "is *not* the factor to scale a
     physical coordinate or a spline coefficient by". Grading a value-space deviation
     against it makes the verdict track the knot vector's magnitude rather than the
-    function's -- measured on one spline evaluated at three parametric scales, an
-    endpoint mismatch of ``1e-4`` was refused at knot scale ``1e0`` and ``1e6`` and
-    *accepted* at ``1e12``, where the accepted spline then differed from the input by a
-    large fraction of the input's whole range (48% of it, on a 201-point sweep).
+    function's: the same endpoint mismatch, refused at unit knot scale, is *accepted*
+    once the knot vector is scaled up far enough, and the accepted spline then differs
+    from the input by a large fraction of the input's whole range.
 
     ``get_conservative``, the same tier as :func:`_closure_deviation_budget`, and the
     argument is consistency rather than a count of operations. The two grade the *same*
@@ -631,9 +629,8 @@ def _to_periodic_bspline_1d_impl(  # noqa: PLR0913
             whose input is only approximately periodic by design. It raises the
             **closure** budget only: the C0 seam test keeps its derived floor, because
             an approximate caller does not thereby move the two end control points --
-            measured across sixty-four degree reductions, the seam deviation stayed
-            below one epsilon of the control-point scale, and the reduction operator's
-            first and last rows are exact unit vectors, so the boundary points arrive
+            the reduction operator's first and last rows are exact unit vectors, so the
+            boundary points arrive
             bit for bit unchanged. Defaults to ``None``.
 
     Returns:
