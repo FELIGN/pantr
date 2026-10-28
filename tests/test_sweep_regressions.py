@@ -53,6 +53,7 @@ from pantr.bspline import (
     Bspline,
     BsplineSpace,
     BsplineSpace1D,
+    create_cardinal_knots,
     create_uniform_open_knots,
     create_uniform_periodic_knots,
     find_roots,
@@ -603,46 +604,45 @@ def test_tanh_sinh_nodes_are_interior_and_distinct() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Zero intervals is documented as legal and produces a malformed knot vector
+# Zero intervals was documented as legal and produced a malformed knot vector
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="num_intervals=0 is documented as legal but the knot-vector factories either "
-    "return NaN and inf or silently produce one interval instead of none",
-)
 def test_knot_factories_agree_on_zero_intervals() -> None:
-    # `create_uniform_open_knots` and `create_uniform_periodic_knots` both document
-    # `num_intervals` as "must be non-negative" and both validate only `>= 0`, so zero is
-    # inside their stated contract. `create_cardinal_knots` rejects it with
+    # FIXED by requiring at least one interval in `_validate_knot_input`, the validator
+    # both accepting factories already called. Kept as a regression guard with its
+    # original triggering data, per this repository's convention that the fix PR
+    # un-xfails the tests it closes.
+    #
+    # `create_uniform_open_knots` and `create_uniform_periodic_knots` both documented
+    # `num_intervals` as "must be non-negative" and both validated only `>= 0`, so zero
+    # was inside their stated contract. `create_cardinal_knots` rejected it with
     # "num_intervals must be at least 1". Three factories in one module, two answers to
-    # whether the input is legal, and neither of the accepting two returns a usable vector:
+    # whether the input was legal, and neither of the accepting two returned a usable
+    # vector:
     #
     #   create_uniform_periodic_knots(0, 1) -> [nan, 0.0, inf]
     #   create_uniform_periodic_knots(0, 3) -> [nan, nan, nan, 0.0, inf, inf, inf]
     #   create_uniform_open_knots(0, 3)     -> [0,0,0,0, 1,1,1,1]   (one interval, not zero)
     #
-    # The periodic case comes from `np.linspace` over a zero-length span with a division by
-    # the interval count; it emits only `RuntimeWarning: invalid value encountered in add`,
-    # which nothing raises on, and the caller receives a knot vector full of NaN and inf.
-    # `BsplineSpace1D` then rejects it for the wrong reason ("at least 2*degree+2
-    # elements"), so the origin of the NaN is never reported.
+    # The periodic case came from `np.linspace` over a zero-length span with a division
+    # by the interval count; it emitted only `RuntimeWarning: invalid value encountered
+    # in add`, which nothing raises on, and the caller received a knot vector full of NaN
+    # and inf. `BsplineSpace1D` then rejected it for the wrong reason ("at least
+    # 2*degree+2 elements"), so the origin of the NaN was never reported.
     #
-    # Either answer would be defensible -- reject zero as the cardinal factory does, or
-    # return an empty-domain vector -- but the three must agree, and none may return NaN.
+    # Of the two defensible answers -- refuse zero as the cardinal factory already did,
+    # or return an empty-domain vector -- the first was taken: a mesh of zero intervals
+    # has no cell, so nothing is defined over it, and one of the three factories was
+    # already saying so.
     for degree in (1, 2, 3):
-        periodic = np.asarray(create_uniform_periodic_knots(0, degree))
-        assert np.all(np.isfinite(periodic)), (
-            f"create_uniform_periodic_knots(0, {degree}) returned non-finite knots: "
-            f"{periodic.tolist()}"
-        )
-        open_knots = np.asarray(create_uniform_open_knots(0, degree))
-        spans = int(np.unique(open_knots).size) - 1
-        assert spans == 0, (
-            f"create_uniform_open_knots(0, {degree}) returned {spans} interval(s): "
-            f"{open_knots.tolist()}"
-        )
+        for factory in (
+            create_uniform_open_knots,
+            create_uniform_periodic_knots,
+            create_cardinal_knots,
+        ):
+            with pytest.raises(ValueError, match="num_intervals must be at least 1"):
+                factory(0, degree)
 
 
 # ---------------------------------------------------------------------------

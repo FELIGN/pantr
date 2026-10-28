@@ -13,6 +13,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
+from ..tolerance import get_conservative
 from ._bspline_knot_insertion_core import _compute_oslo_matrix_1d_core, _insert_knots_1d_core
 from ._bspline_knots import (
     _get_Bspline_num_basis_1D_impl,
@@ -468,12 +469,142 @@ def _build_periodic_knot_vector(
     return np.concatenate([left_arr, in_domain, right_arr])
 
 
-def _to_periodic_bspline_1d_impl(
+def _control_point_magnitude(ctrl_2d: npt.NDArray[np.float32 | np.float64]) -> float:
+    """Get the magnitude the periodic admissibility tests are relative to.
+
+    ``max |c|`` over every entry, and an inf-norm on purpose: both quantities graded
+    below are inf-norms, so the scale has to be one too.
+
+    This is deliberately *not*
+    :func:`~pantr.bspline._bspline_knot_removal._control_point_scale`, which builds
+    2-norms over the rows. That is right where it is used, because the kernel it serves
+    aggregates a Euclidean distance over the stacked directions -- which is also why it
+    is paired there with an explicit ``sqrt(num_stacked)``. Here the array has already
+    been flattened to ``(n, rank * n_other)``, so a row 2-norm would sum over every
+    other parametric direction and inflate the budget by ``sqrt(rank * n_other)``:
+    measured at 35x on a net with 1024 control points in the other directions, against
+    a quantity that did not grow at all.
+
+    What it is relative to is the **whole net**, not the neighbourhood of the seam. A
+    small feature sitting beside a large one is therefore graded against the large one,
+    which is loose for the small feature; the tighter statement would use the ``2(p+1)``
+    control points in the boundary supports. That is a real limitation and it is stated
+    rather than fixed here, because narrowing it changes which splines convert.
+
+    Computed on the array as given, so for a rational spline it is the scale of the
+    *homogeneous* control points -- the space these tests measure in, matching the
+    convention :func:`~pantr.bspline._bspline_knot_removal._roundoff_deviation_floor`
+    states for the same reason.
+
+    Args:
+        ctrl_2d (npt.NDArray[np.float32 | np.float64]): Control points, shape
+            ``(n, rank)``.
+
+    Returns:
+        float: The magnitude, zero only for an identically-zero net.
+    """
+    return float(np.max(np.abs(ctrl_2d))) if ctrl_2d.size else 0.0
+
+
+def _seam_deviation_budget(ctrl_2d: npt.NDArray[np.float32 | np.float64]) -> float:
+    """Get how far the two end control points may sit apart and still close the seam.
+
+    ``get_conservative(dtype) * _control_point_magnitude(ctrl_2d)``.
+
+    The magnitude is a control-point one because the quantity graded is a distance
+    between two control points. It is emphatically *not* the parametric ``tol`` this
+    function's caller also takes: :attr:`~pantr.bspline.BsplineSpace1D.tolerance` says in
+    as many words that an absolute parametric length "is *not* the factor to scale a
+    physical coordinate or a spline coefficient by". Grading a value-space deviation
+    against it makes the verdict track the knot vector's magnitude rather than the
+    function's -- measured on one spline evaluated at three parametric scales, an
+    endpoint mismatch of ``1e-4`` was refused at knot scale ``1e0`` and ``1e6`` and
+    *accepted* at ``1e12``, where the accepted spline then differed from the input by a
+    large fraction of the input's whole range (48% of it, on a 201-point sweep).
+
+    ``get_conservative``, the same tier as :func:`_closure_deviation_budget`, and the
+    argument is consistency rather than a count of operations. The two grade the *same*
+    defect -- a least-squares closure splits a seam mismatch across the two boundary
+    rows -- and measurements over the reachable range put the seam deviation at 1.3 to
+    2.0 times the residual that follows it. A budget that is *tighter* than the one
+    grading the same quantity downstream can only produce refusals the downstream test
+    would not have made, and it did: at 64 epsilons this test refused
+    ``derivative()`` on a genuinely periodic NURBS at degree 6 over 64 elements,
+    reporting that a spline built on a periodic space was "not periodic".
+
+    The 64-epsilon budget was argued from the values having come "through a short
+    chain". On the plain conversion they have; on the rational derivative's path they
+    have not -- the quotient rule runs at degree ``2p`` through
+    :meth:`~pantr.bspline.Bspline.multiply` and a refinement to a common space first.
+    A budget for this site has to cover its longest caller.
+
+    Args:
+        ctrl_2d (npt.NDArray[np.float32 | np.float64]): Control points, shape
+            ``(n, rank)``.
+
+    Returns:
+        float: The budget, in the units of a control-point distance.
+    """
+    return get_conservative(ctrl_2d.dtype) * _control_point_magnitude(ctrl_2d)
+
+
+def _closure_deviation_budget(
+    ctrl_2d: npt.NDArray[np.float32 | np.float64],
+    ctrl_per: npt.NDArray[np.float64],
+    tol_deviation: float | None,
+) -> float:
+    """Get how far the open form may sit from the periodic subspace and still convert.
+
+    ``get_conservative(dtype) * max(magnitude(ctrl_2d), magnitude(ctrl_per))``, raised to
+    ``tol_deviation`` when the caller supplies one.
+
+    **Why both vectors.** The graded quantity is the residual of a least-squares solve,
+    ``max|M x - b|``, and Householder QR is backward stable with a constant polynomial in
+    the shape and free of ``cond(M)``: the bound is ``c(m, n) * eps * ||M|| * ||x||``.
+    Here ``M = oslo @ W`` is entrywise non-negative with unit row sums, so ``||M||_inf``
+    is exactly 1 and drops out -- but the bound is against ``x``, the periodic control
+    points, not against ``b``. Normalising by ``b`` alone would re-import the
+    conditioning through ``||x|| / ||b||``, which is what the earlier wording described
+    as paying "for the conditioning of ``M``". Taking the larger of the two removes
+    conditioning from the argument instead of budgeting for it.
+
+    ``get_conservative``'s 4096 epsilons then cover the shape constant and the Oslo
+    chain's own accumulation. Measured over the reachable space, the residual stayed
+    below 267 epsilons of the scale even on the rational derivative's chain.
+
+    Both budgets read ``eps`` from the control points' own dtype. The expression they
+    replace read it from ``float64`` unconditionally, which for a float32 spline demanded
+    of the data a precision it does not carry.
+
+    A caller whose input is only approximately periodic *by design* passes its own
+    budget, in the same control-point units, which is why the ``max`` here is legitimate
+    where the one it replaces was not: both operands are control-point distances rather
+    than one of each kind. For a rational spline those units are **homogeneous**, as the
+    floor is; a caller holding a projected distance has to convert, exactly as
+    :func:`~pantr.bspline._bspline_knot_removal._homogeneous_deviation_tolerance` does.
+
+    Args:
+        ctrl_2d (npt.NDArray[np.float32 | np.float64]): Open-form control points, the
+            right-hand side of the solve.
+        ctrl_per (npt.NDArray[np.float64]): Periodic control points, its solution.
+        tol_deviation (float | None): Caller's budget in control-point units, or ``None``
+            for the round-off floor alone.
+
+    Returns:
+        float: The budget, in the units of a control-point distance.
+    """
+    scale = max(_control_point_magnitude(ctrl_2d), _control_point_magnitude(ctrl_per))
+    floor = get_conservative(ctrl_2d.dtype) * scale
+    return floor if tol_deviation is None else max(tol_deviation, floor)
+
+
+def _to_periodic_bspline_1d_impl(  # noqa: PLR0913
     open_knots: npt.NDArray[np.float32 | np.float64],
     degree: int,
     ctrl_2d: npt.NDArray[np.float32 | np.float64],
     m_bdy: int,
     tol: float,
+    tol_deviation: float | None = None,
 ) -> tuple[npt.NDArray[np.float32 | np.float64], npt.NDArray[np.float32 | np.float64]]:
     """Convert an open (clamped) 1D B-spline to periodic form.
 
@@ -491,7 +622,19 @@ def _to_periodic_bspline_1d_impl(
             ``(n_open, rank)``.
         m_bdy (int): Target boundary multiplicity for the periodic knot vector.
             Must satisfy ``1 <= m_bdy <= degree``.
-        tol (float): Knot comparison tolerance.
+        tol (float): Knot comparison tolerance. Parametric, and used only for knot
+            comparisons; the two admissibility tests below measure control-point
+            distances and take ``tol_deviation`` instead.
+        tol_deviation (float | None): How far the open form may sit from the periodic
+            subspace, in control-point units (homogeneous ones for a rational spline),
+            or ``None`` for the round-off floor alone. Pass ``np.inf`` from a caller
+            whose input is only approximately periodic by design. It raises the
+            **closure** budget only: the C0 seam test keeps its derived floor, because
+            an approximate caller does not thereby move the two end control points --
+            measured across sixty-four degree reductions, the seam deviation stayed
+            below one epsilon of the control-point scale, and the reduction operator's
+            first and last rows are exact unit vectors, so the boundary points arrive
+            bit for bit unchanged. Defaults to ``None``.
 
     Returns:
         tuple[npt.NDArray, npt.NDArray]: ``(periodic_knots, periodic_ctrl)`` where
@@ -522,9 +665,7 @@ def _to_periodic_bspline_1d_impl(
     m_right = int(np.sum(np.abs(open_knots[-p - 1 :] - b) <= tol))
     is_clamped = m_left == p + 1 and m_right == p + 1
     if is_clamped:
-        eps = float(np.finfo(np.float64).eps)
-        scale = max(float(np.max(np.abs(ctrl_2d))), 1.0)
-        c0_tol = max(tol, 100.0 * eps * scale)
+        c0_tol = _seam_deviation_budget(ctrl_2d)
         c0_dev = float(np.max(np.abs(ctrl_2d[0] - ctrl_2d[-1])))
         if c0_dev > c0_tol:
             raise ValueError(
@@ -584,12 +725,7 @@ def _to_periodic_bspline_1d_impl(
     ctrl_per = np.linalg.solve(R, Q.T @ ctrl_2d.astype(np.float64))
 
     # --- Residual check ---
-    # Use a tolerance relative to the control point magnitude, but at least
-    # 100 * machine epsilon for the working dtype to absorb floating-point
-    # noise from the QR solve and Oslo chain.
-    eps = float(np.finfo(np.float64).eps)
-    scale = max(float(np.max(np.abs(ctrl_2d))), 1.0)
-    residual_tol = max(tol, 100.0 * eps * scale)
+    residual_tol = _closure_deviation_budget(ctrl_2d, ctrl_per, tol_deviation)
     residual = float(np.max(np.abs(M @ ctrl_per - ctrl_2d.astype(np.float64))))
     if residual > residual_tol:
         raise ValueError(

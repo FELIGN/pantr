@@ -387,17 +387,19 @@ class Bspline:
         all other directions (or ``p`` when ``keep_degree=True``).
 
         For rational B-splines (NURBS), the quotient rule is applied, producing
-        a rational B-spline of degree ``2p`` in direction ``d`` (or the
-        original degree when ``keep_degree=True``).
+        a rational B-spline of degree ``2p`` in direction ``d``. That already
+        exceeds ``p``, so ``keep_degree`` has no effect on a rational B-spline:
+        both settings return degree ``2p``.
 
         Args:
             direction (int): Parametric direction for differentiation.
                 Must be in ``[0, dim)``. Defaults to 0.
-            keep_degree (bool): If ``True``, the result preserves the same
-                degree as the original B-spline by applying degree elevation
-                after differentiation. This is useful, for instance, when
-                computing derivatives of rational polynomials (in the
-                numerator). Defaults to ``False``.
+            keep_degree (bool): If ``True``, a non-rational result preserves the
+                degree of the original B-spline by applying degree elevation after
+                differentiation. This is useful, for instance, when computing
+                derivatives of rational polynomials (in the numerator). It is
+                ignored for a rational B-spline, whose derivative is already of
+                higher degree than the original. Defaults to ``False``.
 
         Returns:
             Bspline: A new B-spline representing the derivative.
@@ -405,6 +407,20 @@ class Bspline:
         Raises:
             ValueError: If ``direction`` is out of range ``[0, dim)``.
             ValueError: If the degree in the given direction is 0.
+            ValueError: If the degree the result has to be built at exceeds the
+                exactness envelope of the binomial-coefficient kernel
+                (``_BINCOEFF_MAX_N``). Reachable with ``keep_degree=True``, and
+                for a rational B-spline with either setting, since that path
+                always re-elevates.
+            ValueError: If the call re-elevates and the differentiated direction's
+                knot vector is not clamped, meaning a run of ``degree + 1`` equal
+                knots at each end. Re-elevating is ``keep_degree=True`` and any
+                rational field; it runs Piegl and Tiller A5.9, which assumes those
+                runs and without them returns a different function. Two things stay
+                available on an unclamped direction: a non-rational
+                ``keep_degree=False``, which asks nothing of the ends, and a
+                direction of degree 1, whose hodograph is degree 0 and so has no
+                end runs to lack.
 
         Example:
             >>> import numpy as np
@@ -451,6 +467,15 @@ class Bspline:
             ValueError: If any degree increment is negative.
             ValueError: If all degree increments are zero.
             ValueError: If the number of increments does not match the dimension.
+            ValueError: If an elevated degree would exceed the exactness envelope
+                of the binomial-coefficient kernel (``_BINCOEFF_MAX_N``).
+            ValueError: If a direction to be elevated is not periodic and its knot
+                vector is not clamped, meaning a run of ``degree + 1`` equal knots
+                at each end. Elevation is Piegl and Tiller A5.9, which assumes those
+                runs: without the closing one its segment walk reads past the
+                control points, and without the opening one it returns a different
+                function. A periodic direction is converted to its open form first
+                and is unaffected.
 
         References:
             Degree elevation of spline curves :cite:p:`piegl1997nurbs`.
@@ -489,9 +514,18 @@ class Bspline:
         bit and the stitch is exactly C0, with neither side moved off its own
         optimum.  Knots are then removed to restore the original continuity
         structure, and that step, not the reduction, is what sets the final
-        error: it is a forced removal with no deviation bound, so the exact
-        per-segment figure :meth:`~pantr.bezier.Bezier.degree_reduction_error`
-        reports does not carry over to the assembled spline.
+        error on an open direction: it is a forced removal with no deviation
+        bound, so the exact per-segment figure
+        :meth:`~pantr.bezier.Bezier.degree_reduction_error` reports does not
+        carry over to the assembled spline.
+
+        A **periodic** direction has a second such step. The reduction runs on
+        the open form and the periodic seam is then closed by a least-squares
+        projection, also with no deviation bound, because the reduced spline no
+        longer lies in the periodic subspace exactly -- for a smooth periodic
+        spline that projection is percent-level, not round-off. So on a periodic
+        direction neither of the two unbounded steps dominates by construction,
+        and the error has to be measured rather than attributed.
 
         Args:
             degree_decrements (int | Sequence[int]): Number of degrees to

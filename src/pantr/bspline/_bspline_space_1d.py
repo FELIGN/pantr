@@ -130,7 +130,10 @@ class BsplineSpace1D:
                 that had more than one distinct knot onto that single point, which
                 means the requested spacing is finer than the dtype resolves at that
                 coordinate magnitude. ``snap_knots=False`` bypasses the merging and
-                the snapping diagnosis, but not the interval requirement.
+                the snapping diagnosis, but not the interval requirement. Also, at
+                positive degree, if the last knot repeats more than ``degree + 1``
+                times, which leaves a space whose basis does not sum to one at the
+                right endpoint.
             TypeError: If knots cannot be converted to a numpy array.
         """
         BsplineSpace1D._validate_input(knots, degree, periodic)
@@ -160,6 +163,36 @@ class BsplineSpace1D:
             _check_snapping_kept_an_interval(knots_arr, self._knots, self._tol)
 
         _check_space_has_an_interval(self._knots, self._degree, self.num_intervals, self._tol)
+
+        # Last, and deliberately: the two checks above name a mesh that has no
+        # interval at all, which is the more useful diagnosis and the one a caller can
+        # act on. This one owns what is left -- a vector whose interval structure is
+        # sound while its LAST knot repeats more than it may.
+        #
+        # The rule is exactly as wide as what was measured. At `degree + 2` copies of
+        # the last knot, `tabulate_basis` sums to 0 instead of 1 at the right endpoint
+        # and `tabulate_basis_derivatives` raises `ZeroDivisionError` there. A
+        # periodic space fails identically, so it is not exempt.
+        #
+        # Three neighbouring cases were measured and are deliberately NOT refused,
+        # because none of them shows that failure. An excess at the FIRST knot: the
+        # partition of unity holds and the derivatives are clean, and all it adds is an
+        # identically zero basis function -- which `[0, 0, 1, 1]` at degree 0 also has
+        # and this library accepts. An excess in the interior: the ordinary way to
+        # lower continuity. Degree 0 at any multiplicity: that recurrence has no
+        # denominator, so there is nothing to divide by zero.
+        #
+        # The multiplicity is read after snapping, so this and `_snap_knots` cannot
+        # disagree about which knots are the same knot.
+        if self._degree > 0:
+            max_last_multiplicity = self._degree + 1
+            last_multiplicity = int(
+                _get_unique_knots_and_multiplicity_impl(
+                    self._knots, self._degree, self._tol, False
+                )[1][-1]
+            )
+            if last_multiplicity > max_last_multiplicity:
+                raise ValueError(f"the last knot may repeat at most {max_last_multiplicity} times")
 
         self._knots.flags.writeable = False
 

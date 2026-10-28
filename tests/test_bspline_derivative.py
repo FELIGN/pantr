@@ -210,6 +210,94 @@ class TestNonRationalNonOpen1D:
         f_prime = f.derivative()
         assert f_prime.space.spaces[0].degree == 2
 
+    def test_the_unclamped_degree_preserving_derivative_is_refused(self) -> None:
+        """``keep_degree=True`` refuses an unclamped direction; ``False`` still serves it.
+
+        ``keep_degree=True`` re-elevates through Piegl and Tiller A5.9, which assumes a
+        clamped knot vector, and the differentiated vector ``knots[1:-1]`` of an
+        unclamped one is unclamped too.  What that used to return was a *different
+        function*: no exception, no warning, a well-formed :class:`~pantr.bspline.Bspline`
+        whose disagreement with the finite difference was of order one where the
+        difference's own floor is around ``1e-10``.
+
+        The **clamped row is the control**, and it is what isolates the cause from its
+        confound.  Same degree, same coefficient draw, same probe layout: there both
+        settings agree with the finite difference, so what separates them is the
+        unclamped vector and not ``keep_degree``.
+
+        ``keep_degree=False`` on a **non-rational** field is the other half of the rule
+        and the one an over-broad condition would break.  The difference quotient is
+        elementwise and assumes nothing about the ends, so it serves an unclamped
+        direction correctly and must keep doing so.  A *rational* field is the exception,
+        refused under either setting because its quotient rule re-elevates regardless;
+        :class:`TestKeepDegreeRational` pins that separately.
+        """
+        rng = np.random.default_rng(7)
+        degree = 2
+        for knots, clamped in (
+            (np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]), False),
+            (np.array([0.2, 0.2, 0.2, 0.3, 0.4, 0.4, 0.4]), True),
+        ):
+            space_1d = BsplineSpace1D(knots, degree)
+            space = BsplineSpace([space_1d])
+            f = Bspline(space, rng.uniform(-1.0, 1.0, size=space.num_total_basis))
+            assert space_1d.has_open_knots() == clamped
+            assert not space_1d.periodic
+
+            a, b = (float(x) for x in space_1d.domain)
+            pts = np.linspace(a + 0.02, b - 0.02, 50)
+            # Inside the domain, and clear of every breakpoint by far more than the
+            # difference's own step, for the reason `_interior_probe_points` gives.
+            # Checked rather than argued: a probe landing on the interior knot would make
+            # the difference quotient an invalid oracle there, not the code wrong.
+            assert np.min(np.abs(pts[:, None] - knots[None, :])) > 1e-6
+
+            # `atol` is the finite difference's floor rather than the hodograph's: at
+            # h = 1e-6 the cancellation in `(f(x+h) - f(x-h)) / 2h` costs eps/(2h), about
+            # 1e-10 times the coefficient scale, and this file's usual 1e-8 sits two
+            # decades above it.
+            _assert_derivative_matches_central_difference(f, 0, pts, keep_degree=False, atol=1e-8)
+
+            if clamped:
+                _assert_derivative_matches_central_difference(
+                    f, 0, pts, keep_degree=True, atol=1e-8
+                )
+            else:
+                with pytest.raises(ValueError, match="needs a clamped knot vector"):
+                    f.derivative(keep_degree=True)
+
+    def test_an_unclamped_degree_1_direction_is_still_served(self) -> None:
+        """``keep_degree=True`` on an unclamped **degree-1** direction is not refused.
+
+        The precondition is checked on the vector A5.9 actually receives, which is the
+        hodograph's -- ``knots[1:-1]`` at degree ``p - 1``.  At ``p == 1`` that is a
+        degree-0 vector, whose domain is the whole vector, so A5.9 asks nothing of its
+        ends and re-elevating it is right whatever the original's ends were.  The check
+        therefore passes, and it should: this is the one unclamped shape of the
+        degree-preserving derivative that was never wrong in the first place.
+
+        Testing the *original* direction's ends instead would have refused this call, so
+        this is the case that pins the check against being written one level too high.
+        """
+        knots = np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
+        space_1d = BsplineSpace1D(knots, 1)
+        space = BsplineSpace([space_1d])
+        assert not space_1d.has_open_knots()
+        rng = np.random.default_rng(3)
+        f = Bspline(space, rng.uniform(-1.0, 1.0, size=space.num_total_basis))
+
+        a, b = (float(x) for x in space_1d.domain)
+        pts = np.linspace(a + 0.02, b - 0.02, 41)
+        # A degree-1 spline is only C^0 at a breakpoint, so its second derivative jumps
+        # there and a central difference is no oracle within `h` of one.  Drop those.
+        pts = pts[np.min(np.abs(pts[:, None] - knots[None, :]), axis=1) > 1e-3]
+        assert pts.size > 10
+
+        f_prime = _assert_derivative_matches_central_difference(
+            f, 0, pts, keep_degree=True, atol=1e-8
+        )
+        assert f_prime.space.spaces[0].degree == 1
+
 
 # ---------------------------------------------------------------------------
 # Non-rational 1D periodic tests
@@ -559,6 +647,44 @@ class TestKeepDegreeNonRational:
         assert f_prime.space.spaces[0].degree == 2
         assert f_prime.space.spaces[1].degree == 3  # unchanged
 
+    def test_2d_periodic_keeps_other_direction_periodic(self) -> None:
+        """Differentiating direction 0 leaves direction 1 periodic."""
+        knots0 = create_uniform_periodic_knots(4, 2, domain=(0.0, 1.0))
+        knots1 = create_uniform_periodic_knots(5, 2, domain=(0.0, 1.0))
+        s0 = BsplineSpace1D(knots0, 2, periodic=True)
+        s1 = BsplineSpace1D(knots1, 2, periodic=True)
+        space = BsplineSpace([s0, s1])
+        rng = np.random.default_rng(7)
+        ctrl = rng.standard_normal((*space.num_basis, 2))
+        f = Bspline(space, ctrl)
+
+        f_prime = _assert_keep_degree_matches_evaluate(f, direction=0, atol=1e-8)
+
+        # Direction 1 is untouched: same knot vector, still periodic.
+        assert f_prime.space.spaces[1].periodic
+        np.testing.assert_array_equal(f_prime.space.spaces[1].knots, knots1)
+        # Direction 0 is the one that degree elevation needs open.
+        assert not f_prime.space.spaces[0].periodic
+        assert f_prime.space.spaces[1].degree == 2
+
+    def test_2d_periodic_keeps_other_direction_unclamped(self) -> None:
+        """Differentiating a periodic direction 0 leaves an unclamped direction 1 alone."""
+        knots0 = create_uniform_periodic_knots(4, 2, domain=(0.0, 1.0))
+        knots1 = create_uniform_periodic_knots(5, 2, domain=(0.0, 1.0))
+        s0 = BsplineSpace1D(knots0, 2, periodic=True)
+        s1 = BsplineSpace1D(knots1, 2, periodic=False)
+        space = BsplineSpace([s0, s1])
+        rng = np.random.default_rng(11)
+        ctrl = rng.standard_normal((*space.num_basis, 1))
+        f = Bspline(space, ctrl)
+
+        f_prime = _assert_keep_degree_matches_evaluate(f, direction=0, atol=1e-8)
+
+        # Direction 1 is untouched: still unclamped, same knot vector.
+        assert not f_prime.space.spaces[1].has_open_knots()
+        assert not f_prime.space.spaces[1].periodic
+        np.testing.assert_array_equal(f_prime.space.spaces[1].knots, knots1)
+
 
 class TestKeepDegreeRational:
     """Derivative with keep_degree=True for rational (NURBS) B-splines.
@@ -577,6 +703,296 @@ class TestKeepDegreeRational:
         d_keep = f.derivative(keep_degree=True)
         pts = eval_pts()
         np.testing.assert_allclose(d_keep.evaluate(pts), d_normal.evaluate(pts), atol=1e-14)
+
+    def test_an_unclamped_rational_direction_is_refused_either_way(self) -> None:
+        """An unclamped rational direction is refused for both values of ``keep_degree``.
+
+        This is the one place where ``keep_degree=False`` does **not** stay available on
+        an unclamped direction, and it is worth pinning because the reason is invisible
+        at the call site: the quotient rule differentiates the numerator and the weight
+        with :func:`~pantr.bspline._bspline_derivative._derivative_keep_degree_nonrational`
+        whatever ``keep_degree`` says, so a rational field re-elevates through A5.9 either
+        way and inherits its precondition either way.
+
+        Before the precondition landed this call did not return a wrong answer -- it
+        raised a parametric-domain mismatch from further downstream, because the elevation
+        had quietly widened one operand's domain.  So what moves here is the diagnosis,
+        from an internal-looking symptom to the precondition that actually failed.
+        """
+        knots = np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+        space = BsplineSpace([BsplineSpace1D(knots, 2)])
+        rng = np.random.default_rng(19)
+        ctrl = rng.random((space.num_total_basis, 2))
+        ctrl[:, -1] += 1.0  # positive, distinct weights
+        f = Bspline(space, ctrl, is_rational=True)
+        assert f.is_rational
+
+        for keep_degree in (False, True):
+            with pytest.raises(ValueError, match="needs a clamped knot vector"):
+                f.derivative(keep_degree=keep_degree)
+
+
+# ---------------------------------------------------------------------------
+# Periodic rational derivative (round-trip through open form)
+# ---------------------------------------------------------------------------
+
+
+def _make_periodic_rational(
+    num_intervals: int, degree: int, weight_amplitude: float = 0.3
+) -> Bspline:
+    """Build a periodic NURBS whose homogeneous CPs sample a weighted unit circle.
+
+    Args:
+        num_intervals (int): Number of elements of the periodic knot vector.
+        degree (int): B-spline degree.
+        weight_amplitude (float): Modulation of the weight column, so the weights are
+            non-constant and the quotient rule's product terms are non-trivial.
+            Defaults to 0.3.
+
+    Returns:
+        Bspline: A periodic rational (NURBS) 1D B-spline of rank 2.
+    """
+    knots = create_uniform_periodic_knots(num_intervals, degree)
+    space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
+    n = space.num_total_basis
+    t = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    w = 1.0 + weight_amplitude * np.cos(t)
+    xyw = np.column_stack([np.cos(t) * w, np.sin(t) * w, w])
+    return Bspline(space, xyw, is_rational=True)
+
+
+def _interior_probe_points(
+    num_intervals: int, h: float, frac: float = 0.37
+) -> npt.NDArray[np.float64]:
+    """Get one point per element, offset from every breakpoint by at least ``h``.
+
+    A central finite difference evaluated exactly *at* a spline knot is not a valid
+    oracle: below the spline's continuity order, higher derivatives can jump there, so
+    the O(h^2) truncation term is unbounded even though the code under test is correct.
+    Placing points at a fixed interior fraction of each element keeps them at least
+    ``frac`` (here 0.37) of an element width from the nearest knot, which for the
+    ``num_intervals`` and ``h`` used in this file is comfortably more than ``h``.
+
+    Args:
+        num_intervals (int): Number of elements over the unit domain ``[0, 1]``.
+        h (float): The finite-difference step that will be used at these points.
+        frac (float): Fractional offset into each element. Defaults to 0.37.
+
+    Returns:
+        npt.NDArray[np.float64]: One probe point per element, shape ``(num_intervals,)``.
+    """
+    width = 1.0 / num_intervals
+    assert frac * width > h and (1 - frac) * width > h
+    return np.linspace(0.0, 1.0, num_intervals, endpoint=False) + frac * width
+
+
+def _assert_derivative_matches_central_difference(
+    f: Bspline, direction: int, pts: npt.NDArray[np.float64], *, keep_degree: bool, atol: float
+) -> Bspline:
+    """Assert ``f.derivative()`` matches a central finite difference of ``f.evaluate``.
+
+    The finite difference is an oracle independent of the hodograph construction under
+    test: it never builds a derivative B-spline, only evaluates ``f`` itself at ``pts
+    +/- h``.
+
+    Returns:
+        Bspline: The derivative B-spline, for further checks by the caller.
+    """
+    h = 1e-6
+    f_prime = f.derivative(direction=direction, keep_degree=keep_degree)
+    analytic = f_prime.evaluate(pts)
+    fd = (f.evaluate(pts + h) - f.evaluate(pts - h)) / (2 * h)
+    np.testing.assert_allclose(analytic, fd, atol=atol, rtol=0)
+    return f_prime
+
+
+class TestRationalPeriodic1D:
+    """Derivative of a periodic rational (NURBS) B-spline.
+
+    Regression for a defect where differentiating a periodic rational raised
+    ``ValueError: Inserting these knots would exceed the maximum multiplicity of 7.
+    Maximum multiplicity found: 10.`` four frames down, for both values of
+    ``keep_degree`` (the dispatcher routes both to the same rational path). The fix
+    routes the differentiated direction through open form and closes the seam again
+    afterwards; these tests exercise that round trip.
+
+    The finite-difference tolerance is dominated by the oracle's own round-off floor
+    (``eps / h`` with ``h = 1e-6``, about ``2.2e-10``), not by the derivative's error --
+    that is deliberate: making ``h`` much smaller would trade truncation error for
+    round-off noise in the *oracle*, which would make the bound meaningless as a check
+    on the code under test.
+    """
+
+    @pytest.mark.parametrize("degree", [2, 3, 4])
+    @pytest.mark.parametrize(
+        "keep_degree", [False, True], ids=["keep_degree=False", "keep_degree=True"]
+    )
+    def test_matches_central_difference_and_stays_periodic(
+        self, degree: int, keep_degree: bool
+    ) -> None:
+        """The rational round trip is correct and periodic for both ``keep_degree`` values."""
+        num_intervals = 6
+        f = _make_periodic_rational(num_intervals, degree)
+        pts = _interior_probe_points(num_intervals, h=1e-6)
+
+        f_prime = _assert_derivative_matches_central_difference(
+            f, direction=0, pts=pts, keep_degree=keep_degree, atol=1e-8
+        )
+
+        assert f_prime.is_rational
+        assert f_prime.space.spaces[0].periodic
+
+    @pytest.mark.parametrize(
+        ("degree", "num_intervals"),
+        [(6, 64), (4, 256), (3, 128)],
+        ids=["degree=6,64 elements", "degree=4,256 elements", "degree=3,128 elements"],
+    )
+    def test_a_finely_resolved_periodic_nurbs_is_not_called_aperiodic(
+        self, degree: int, num_intervals: int
+    ) -> None:
+        """A spline built on a periodic space must never be refused as "not periodic".
+
+        Its periodicity is structural, not approximate, so this failure mode is
+        definitionally a false refusal however large the round trip's round-off grows.
+        Regression for a seam budget that was one tier tighter than the closure budget
+        grading the same defect downstream: at 64 epsilons of the control-point scale
+        this raised ``Function values do not match at the domain endpoints (max deviation
+        7.82e-13, tolerance 4.78e-13)`` here, while the residual check that follows it
+        would have passed.
+
+        The sizes matter and small ones do not reproduce it: the endpoint deviation grows
+        with both the degree and the element count, so a six-element curve stays far
+        inside even the tight budget. The weight amplitude is large for the same reason,
+        to make the quotient rule's product terms carry weight.
+        """
+        knots = create_uniform_periodic_knots(num_intervals, degree)
+        space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
+        n = space.num_total_basis
+        t = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+        w = 1.0 + 0.9 * np.cos(t)
+        f = Bspline(space, np.column_stack([np.cos(t) * w, np.sin(t) * w, w]), is_rational=True)
+
+        f_prime = f.derivative()
+
+        assert f_prime.is_rational
+        assert f_prime.space.spaces[0].periodic
+
+    def test_nonrational_periodic_control_is_unaffected(self) -> None:
+        """Control: a non-rational periodic derivative was never on the fixed path.
+
+        Pins that the round-trip added for the rational case did not change this
+        (already-working) path.
+        """
+        num_intervals = 6
+        degree = 3
+        f = _make_periodic(num_intervals, degree)
+        pts = _interior_probe_points(num_intervals, h=1e-6)
+
+        f_prime = _assert_derivative_matches_central_difference(
+            f, direction=0, pts=pts, keep_degree=False, atol=1e-8
+        )
+
+        assert f_prime.space.spaces[0].periodic
+
+    def test_open_rational_control_is_unaffected(self) -> None:
+        """Control: an open (non-periodic) rational derivative never took the round trip.
+
+        Pins the ``if not space_1d.periodic: return _derivative_rational_open(...)``
+        early exit -- the code path every pre-existing rational test in this file
+        already covers -- stays untouched by the periodic round trip added for the fix.
+        """
+        num_intervals = 6
+        degree = 3
+        knots = create_uniform_open_knots(num_intervals, degree)
+        space = BsplineSpace([BsplineSpace1D(knots, degree)])
+        n = space.num_total_basis
+        t = np.linspace(0.0, 2.0 * np.pi / 3.0, n)  # open arc, not a full period
+        w = 1.0 + 0.3 * np.cos(t)
+        xyw = np.column_stack([np.cos(t) * w, np.sin(t) * w, w])
+        f = Bspline(space, xyw, is_rational=True)
+        pts = _interior_probe_points(num_intervals, h=1e-6)
+
+        f_prime = _assert_derivative_matches_central_difference(
+            f, direction=0, pts=pts, keep_degree=False, atol=1e-8
+        )
+
+        assert f_prime.is_rational
+        assert not f_prime.space.spaces[0].periodic
+
+
+class TestRationalPeriodicND:
+    """A rational surface with one periodic and one open direction.
+
+    The 1D class above covers the round trip; this covers the part of it that is
+    written in terms of ``direction`` and that a 1D case cannot exercise at all --
+    flattening and unflattening about an axis that is not the first, and leaving the
+    *other* direction's space and periodicity untouched. The defect this whole change
+    fixes was found in exactly the gap one dimension below: before it, the only periodic
+    multi-dimensional case in the suite was non-rational.
+    """
+
+    @staticmethod
+    def _surface() -> Bspline:
+        """Build a rational surface, open in direction 0 and periodic in direction 1.
+
+        Returns:
+            Bspline: A degree ``(2, 3)`` rational surface: a circle of ``u``-dependent
+            radius, with a ``v``-dependent weight so the quotient rule's product terms
+            are non-trivial.
+        """
+        degrees = (2, 3)
+        space = BsplineSpace(
+            [
+                BsplineSpace1D(create_uniform_open_knots(4, degrees[0]), degrees[0]),
+                BsplineSpace1D(
+                    create_uniform_periodic_knots(6, degrees[1]), degrees[1], periodic=True
+                ),
+            ]
+        )
+        n_u, n_v = (sp.num_basis for sp in space.spaces)
+        u = np.linspace(0.0, 1.0, n_u)[:, None]
+        v = np.linspace(0.0, 2.0 * np.pi, n_v, endpoint=False)[None, :]
+        w = (1.0 + 0.3 * np.cos(v)) * np.ones_like(u)
+        radius = 1.0 + 0.5 * u
+        xyw = np.stack([np.cos(v) * radius * w, np.sin(v) * radius * w, w], axis=-1)
+        return Bspline(space, xyw, is_rational=True)
+
+    @pytest.mark.parametrize("direction", [0, 1], ids=["open direction", "periodic direction"])
+    @pytest.mark.parametrize(
+        "keep_degree", [False, True], ids=["keep_degree=False", "keep_degree=True"]
+    )
+    def test_matches_central_difference_and_keeps_each_direction(
+        self, direction: int, keep_degree: bool
+    ) -> None:
+        """Differentiating either direction is correct and disturbs neither space.
+
+        ``direction=0`` is the control that matters most here: the periodic direction is
+        not the one being differentiated, so the round trip must not run at all and must
+        leave direction 1 periodic. ``direction=1`` is the case the round trip exists
+        for. Both are checked against central finite differences of the surface itself,
+        an oracle that never builds a derivative B-spline.
+        """
+        f = self._surface()
+        rng = np.random.default_rng(99)
+        coords = np.empty((40, 2), dtype=np.float64)
+        for d, space_1d in enumerate(f.space.spaces):
+            lo, hi = (float(x) for x in space_1d.domain)
+            coords[:, d] = rng.uniform(lo + 0.05, hi - 0.05, coords.shape[0])
+
+        f_prime = f.derivative(direction=direction, keep_degree=keep_degree)
+
+        h = 1e-6
+        plus = coords.copy()
+        plus[:, direction] += h
+        minus = coords.copy()
+        minus[:, direction] -= h
+        fd = (f.evaluate(plus) - f.evaluate(minus)) / (2.0 * h)
+        # 1e-8 against a measured 2.9e-10, which is the oracle's own round-off floor
+        # (eps / h), not the derivative's error.
+        np.testing.assert_allclose(f_prime.evaluate(coords), fd, atol=1e-8, rtol=0)
+
+        assert f_prime.is_rational
+        assert [sp.periodic for sp in f_prime.space.spaces] == [False, True]
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,13 @@ from pantr.bezier._bezier_degree import (
     _squared_l2_norm,
     _tensor_gauss_weights,
 )
-from pantr.bspline import Bspline, BsplineSpace, BsplineSpace1D, create_uniform_periodic_knots
+from pantr.bspline import (
+    Bspline,
+    BsplineSpace,
+    BsplineSpace1D,
+    create_uniform_open_knots,
+    create_uniform_periodic_knots,
+)
 from pantr.bspline._bspline_degree_core import _degree_reduce_1d_core
 
 # Several tests here reach `Bezier.evaluate` within milliseconds of the process
@@ -1215,6 +1221,66 @@ class TestBsplineReduceDegreeDiscontinuous:
         assert new_knots.shape[0] == new_ctrl.shape[0] + new_degree + 1
 
 
+class TestBsplineReduceDegreeForcedRemoval:
+    """The coarsening removal is structural: no deviation can veto it.
+
+    ``_coarsen_knots_after_reduction`` passes ``tol_dev = np.inf`` to the removal
+    kernel, whose acceptance test is ``dist <= tol``.  That does not loosen the
+    test, it removes it -- which is the documented contract: the continuity
+    structure is what the step has to restore, and the forced removal is what sets
+    the method's error.  These tests pin that, so replacing the ``inf`` with any
+    finite bound fails here rather than silently returning a spline with a knot
+    vector nobody asked for.
+    """
+
+    def test_a_grossly_inexact_reduction_still_coarsens(self) -> None:
+        """A knot is removed even when the reduced curve misses by more than its range."""
+        bsp = _make_bspline_1d(
+            [0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
+            3,
+            [[0.0], [1.0], [-1.0], [1.0], [0.0]],
+        )
+        assert _bspline_multiplicity(bsp, 0.5) == 1
+
+        reduced = bsp.reduce_degree(1)
+
+        # The deviation is not small, and not small relative to anything: it exceeds
+        # the spline's own peak-to-peak range.  Asserted so the test still means what
+        # it says if the reduction operator is ever changed.
+        pts = np.linspace(0.0, 1.0, 101)
+        values = bsp.evaluate(pts)
+        deviation = float(np.max(np.abs(values - reduced.evaluate(pts))))
+        value_range = float(np.max(values) - np.min(values))
+        assert deviation > value_range
+
+        # Removed anyway, down to the structural target max(1, m - t) = 1.
+        assert reduced.degree == (2,)
+        assert _bspline_multiplicity(reduced, 0.5) == 1
+
+    def test_every_interior_knot_reaches_its_structural_target(self) -> None:
+        """Multiplicities land on max(1, m - t) whatever the fit does."""
+        degree, dec = 4, 2
+        knots = np.concatenate(
+            [
+                np.zeros(degree + 1),
+                [0.2],
+                np.full(3, 0.5),
+                np.full(4, 0.8),
+                np.ones(degree + 1),
+            ]
+        ).tolist()
+        rng = np.random.default_rng(20260911)
+        n_basis = len(knots) - degree - 1
+        bsp = _make_bspline_1d(knots, degree, rng.standard_normal((n_basis, 2)).tolist())
+
+        reduced = bsp.reduce_degree(dec)
+
+        assert reduced.degree == (degree - dec,)
+        for xi, mult in ((0.2, 1), (0.5, 3), (0.8, 4)):
+            assert _bspline_multiplicity(reduced, xi) == max(1, mult - dec)
+        assert reduced.control_points.shape[0] == reduced.space.spaces[0].num_basis
+
+
 class TestBsplineReduceDegreePeriodicSeam:
     """The seam multiplicity is floored at 1, exactly as interior knots are."""
 
@@ -1255,6 +1321,285 @@ class TestBsplineReduceDegreePeriodicSeam:
 
         with pytest.raises(ValueError, match=r"boundary multiplicity in \[1, degree\]"):
             bsp.reduce_degree(1)
+
+
+def _make_periodic_cosine(num_intervals: int, degree: int, freq: int) -> Bspline:
+    """Build a genuinely periodic spline by sampling ``cos(2*pi*freq*t)`` at Greville-like sites.
+
+    Args:
+        num_intervals (int): Number of elements of the periodic knot vector.
+        degree (int): B-spline degree.
+        freq (int): Number of full cosine periods over the unit domain.
+
+    Returns:
+        Bspline: A 1D periodic scalar B-spline that is smooth and periodic by
+        construction (unlike white noise, its interpolant is close to periodic at
+        every continuity order, which is what the closure residual actually measures).
+    """
+    knots = create_uniform_periodic_knots(num_intervals=num_intervals, degree=degree)
+    space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
+    n = space.num_total_basis
+    t = np.linspace(0.0, 1.0, n, endpoint=False)
+    return Bspline(space, np.cos(2 * np.pi * freq * t).reshape(-1, 1))
+
+
+class TestBsplineReduceDegreePeriodicClosureIsApproximate:
+    """The periodic closure after a degree reduction is not required to be exact.
+
+    Regression for a defect distinct from the seam-flooring one above: the closure
+    admissibility test that rebuilds the periodic form after reduction used to grade
+    the reduction's own (approximate, by design) residual against a round-off floor,
+    so it refused every legitimate reduction of a smooth periodic spline. No case in
+    this file caught it, because every other periodic case here is either an
+    ``elevate(d).reduce(d)`` round trip (exactly reducible) or built from white noise,
+    whose closure residual happened to stay under the floor by chance regardless of
+    which expression graded it.
+    """
+
+    @pytest.mark.parametrize(
+        ("degree", "freq", "max_relative_error"),
+        [(3, 1, 0.025), (4, 2, 0.16), (5, 1, 0.0015)],
+        ids=["degree=3,freq=1", "degree=4,freq=2", "degree=5,freq=1"],
+    )
+    def test_reduction_succeeds_and_stays_close_to_the_original(
+        self, degree: int, freq: int, max_relative_error: float
+    ) -> None:
+        """``reduce_degree(1)`` succeeds on a smooth periodic spline and approximates it.
+
+        Before the fix this raised ``ValueError`` at every one of these three cases
+        (measured residuals 2.53e-03 and 1.10e-02 against a floor of 2.22e-14 for the
+        first two).
+
+        ``max_relative_error`` is an **observed envelope, not a derived bound** -- the
+        reduction operator's accuracy is a property of the projection it performs, not
+        something this test establishes. The three cases came out at 0.79%, 5.10% and
+        0.04% of amplitude, and each envelope is about three times its own case, so the
+        test catches a reduction that stopped reducing (it raises) or started returning
+        a badly wrong curve, without pinning the operator's exact constant. The
+        envelopes differ by two orders of magnitude between cases because the cases do:
+        halving the degree of a spline resolving two periods over eight elements is a
+        far harder ask than one period over eight at degree 5.
+        """
+        original = _make_periodic_cosine(num_intervals=8, degree=degree, freq=freq)
+
+        reduced = original.reduce_degree(1)
+
+        assert reduced.degree == (degree - 1,)
+        assert reduced.space.spaces[0].periodic
+
+        pts = np.linspace(1e-3, 1.0 - 1e-3, 201)
+        expected = original.to_open_bspline().evaluate(pts)
+        got = reduced.to_open_bspline().evaluate(pts)
+        amplitude = float(np.max(np.abs(expected)))
+        max_error = float(np.max(np.abs(got - expected)))
+        assert max_error < max_relative_error * amplitude, (
+            f"degree={degree}, freq={freq}: max error {max_error:.3e} "
+            f"({max_error / amplitude:.4%} of amplitude) exceeds the "
+            f"{max_relative_error:.4%} envelope"
+        )
+
+    @pytest.mark.parametrize("degree", [2, 3, 4])
+    def test_elevate_then_reduce_round_trip_stays_exact(self, degree: int) -> None:
+        """The exactly-reducible path is still exact: the fix must not become a rubber stamp.
+
+        ``elevate_degree(1).reduce_degree(1)`` inserts and then removes the same
+        redundant degree, so it round-trips to the original curve to round-off
+        whatever the closure admissibility test does -- that is the control showing
+        the fix loosened only the *approximate* path, not this one. Measured here:
+        max errors of 3.3e-16, 2.2e-16, 5.6e-16 for degrees 2, 3, 4; 1e-12 leaves
+        three orders of magnitude of headroom.
+        """
+        knots = create_uniform_periodic_knots(num_intervals=6, degree=degree)
+        space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
+        rng = np.random.default_rng(7 + degree)
+        original = Bspline(space, rng.standard_normal((space.num_total_basis, 1)))
+
+        round_tripped = original.elevate_degree(1).reduce_degree(1)
+
+        assert round_tripped.space.spaces[0].periodic
+        pts = np.linspace(1e-3, 1.0 - 1e-3, 201)
+        expected = original.to_open_bspline().evaluate(pts)
+        got = round_tripped.to_open_bspline().evaluate(pts)
+        np.testing.assert_allclose(got, expected, atol=1e-12, rtol=0)
+
+
+class TestRationalReductionRefusesAnInvertedWeight:
+    """A rational reduction must not return a control net with a non-positive weight.
+
+    The endpoint-interpolating reduction operator is not a convex combination, and it
+    acts on the weight column like any other. A weight driven through zero is not an
+    approximation error: the denominator can vanish on the domain, so the result is not
+    a NURBS. Before the guard, 45 of 600 forced reductions across degrees 2 to 5 returned
+    such a net with no error and no warning, the worst weight at -1.187.
+    """
+
+    @staticmethod
+    def _net_that_inverts_a_weight() -> npt.NDArray[np.float64]:
+        """Build the cubic net whose reduction inverts a weight, from the operator itself.
+
+        Constructed rather than searched, so it explains why it works:
+        ``_interpolating_reduction_operator(3, 1)`` has its most negative entry, -0.25,
+        in the column of the first control point, so putting a large weight *there* is
+        what drives the reduced weight negative. It comes out at -1.75.
+
+        Returns:
+            npt.NDArray[np.float64]: Homogeneous control net of shape ``(4, 3)``.
+        """
+        weights = np.array([[12.0], [1.0], [1.0], [1.0]])
+        points = np.array([[0.0, 0.0], [1.0, 2.0], [2.0, -1.0], [3.0, 0.0]])
+        return np.concatenate([points * weights, weights], axis=-1)
+
+    def test_bezier_reduction_refuses_rather_than_returning_a_pole(self) -> None:
+        """The Bézier path raises, naming the weight and the reason."""
+        curve = Bezier(self._net_that_inverts_a_weight(), is_rational=True)
+
+        with pytest.raises(ValueError, match="not strictly positive"):
+            curve.reduce_degree((1,))
+
+    def test_the_error_of_a_refused_reduction_is_still_reported(self) -> None:
+        """``degree_reduction_error`` measures the reduction; it does not perform it.
+
+        The L2 error of a reduction is a number even when the reduced net is not a valid
+        NURBS, and a caller asking how bad a reduction would be must not be refused for
+        the reason that makes it bad.  Pins that the guard sits on the reduction proper
+        and not on the operator application the error measure shares with it.
+        """
+        curve = Bezier(self._net_that_inverts_a_weight(), is_rational=True)
+
+        with pytest.raises(ValueError, match="not strictly positive"):
+            curve.reduce_degree((1,))
+        error = curve.degree_reduction_error((1,))
+
+        assert np.isfinite(error)
+        assert error > 0.0
+
+    def test_bspline_reduction_refuses_the_same_way(self) -> None:
+        """The B-spline path raises too, so the guard is not Bézier-only.
+
+        A single-element open cubic space carries exactly the Bézier net above, which is
+        what makes this the same case rather than a similar one.
+        """
+        space = BsplineSpace([BsplineSpace1D(create_uniform_open_knots(1, 3), 3)])
+        spline = Bspline(space, self._net_that_inverts_a_weight(), is_rational=True)
+
+        with pytest.raises(ValueError, match="not strictly positive"):
+            spline.reduce_degree(1)
+
+    def test_each_type_is_told_something_true_of_itself(self) -> None:
+        """The remedy differs by type, and both halves are checked against the API.
+
+        A single shared sentence got this wrong: it told every caller to use
+        ``minimize_degree``, and :class:`~pantr.bspline.Bspline` has no such method, so a
+        B-spline caller who followed the advice got an ``AttributeError``. An error that
+        misdirects is worse than one that only reports, so the remedy is now the caller's
+        to supply and this pins that each one names something its own type has.
+        """
+        net = self._net_that_inverts_a_weight()
+        curve = Bezier(net, is_rational=True)
+        space = BsplineSpace([BsplineSpace1D(create_uniform_open_knots(1, 3), 3)])
+        spline = Bspline(space, net, is_rational=True)
+
+        with pytest.raises(ValueError, match="Use minimize_degree"):
+            curve.reduce_degree((1,))
+        assert hasattr(curve, "minimize_degree")
+
+        with pytest.raises(ValueError, match="to_bezier or to_beziers"):
+            spline.reduce_degree(1)
+        assert not hasattr(spline, "minimize_degree")
+        assert hasattr(spline, "to_bezier")
+        assert hasattr(spline, "to_beziers")
+
+        # The advice has to work, not merely resolve: minimize_degree declines this net
+        # rather than inverting its weight, which is the whole point of pointing at it.
+        assert curve.minimize_degree().degree == curve.degree
+
+    def test_the_guard_reaches_the_periodic_path(self) -> None:
+        """A periodic rational reduction is refused too, and that path is not the open one.
+
+        A periodic reduction does not return where the open one does: it round-trips
+        through the open form and closes the seam with a least-squares projection whose
+        movement this module documents as percent-level rather than round-off. That is
+        exactly the kind of step that can push a weight through zero *after* the reduction
+        proper, so the guard has to sit downstream of it -- and nothing else in this file
+        combines periodic with rational.
+
+        The net is a search result rather than a construction, unlike the open case above:
+        the seam closure stands between the operator and the output, so which control
+        weights end up negative is not something the operator's rows predict on their own.
+        It is pinned here so the test is deterministic.
+        """
+        net = np.array(
+            [
+                [0.29484479, -0.30101078, 0.35133832],
+                [0.12110540, -0.13289075, 0.14312307],
+                [-2.36085034, -2.14206315, 2.86144109],
+                [-0.00846728, -0.04746556, 0.18985614],
+                [-2.08751332, 0.63840206, 2.63117622],
+                [0.05916635, 0.59788792, 2.51624568],
+            ]
+        )
+        space = BsplineSpace(
+            [BsplineSpace1D(create_uniform_periodic_knots(6, 3), 3, periodic=True)]
+        )
+        spline = Bspline(space, net, is_rational=True)
+
+        with pytest.raises(ValueError, match="not strictly positive"):
+            spline.reduce_degree(1)
+
+    @pytest.mark.parametrize("degree", [3, 4])
+    @pytest.mark.parametrize("num_intervals", [6, 8])
+    def test_a_smooth_periodic_rational_still_reduces(
+        self, degree: int, num_intervals: int
+    ) -> None:
+        """Control: the guard must not refuse a well-conditioned periodic rational.
+
+        The refusal above is real but it must not be the normal outcome, or the guard has
+        replaced one defect with another. These four reduce cleanly, with the smallest
+        output weight between 0.14 and 0.23.
+        """
+        knots = create_uniform_periodic_knots(num_intervals, degree)
+        space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
+        n = space.num_total_basis
+        t = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+        w = 1.0 + 0.95 * np.cos(t)
+        spline = Bspline(
+            space, np.column_stack([np.cos(t) * w, np.sin(t) * w, w]), is_rational=True
+        )
+
+        reduced = spline.reduce_degree(1)
+
+        assert reduced.space.spaces[0].periodic
+        assert float(np.asarray(reduced.control_points)[..., -1].min()) > 0.0
+
+    def test_a_valid_rational_reduction_still_succeeds(self) -> None:
+        """Control: the guard must not refuse a reduction that keeps every weight positive.
+
+        An exactly reducible rational curve is the case the guard has to leave alone, and
+        it is also the one a too-eager check would break first.
+        """
+        points = np.array([[0.0, 0.0], [1.0, 2.0], [2.0, 0.0]])
+        weights = np.array([[1.0], [0.6], [1.4]])
+        curve = Bezier(np.concatenate([points * weights, weights], axis=-1), is_rational=True)
+
+        elevated = curve.elevate_degree((1,))
+        reduced = elevated.reduce_degree((1,))
+
+        assert reduced.degree == (2,)
+        assert float(reduced.control_points[..., -1].min()) > 0.0
+
+    def test_a_non_rational_reduction_is_not_checked(self) -> None:
+        """Control: with no weight column there is nothing to invert.
+
+        Pins that the guard reads ``is_rational`` rather than assuming the last column is
+        a weight -- on a non-rational net that column is a coordinate and may legitimately
+        be negative, as it is here.
+        """
+        points = np.array([[0.0, 0.0, -5.0], [1.0, 2.0, -7.0], [2.0, 0.0, -3.0], [3.0, 1.0, -9.0]])
+        curve = Bezier(points)
+
+        reduced = curve.reduce_degree((1,))
+
+        assert reduced.degree == (2,)
 
 
 class TestBsplineReduceDegreeErrors:

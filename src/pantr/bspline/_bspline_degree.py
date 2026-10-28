@@ -15,6 +15,7 @@ import numpy.typing as npt
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
 from ._bspline_degree_core import (
     _check_bincoeff_envelope,
+    _check_clamped_knots,
     _degree_elevate_1d_core,
     _degree_reduce_1d_core,
 )
@@ -41,7 +42,10 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
     Raises:
         ValueError: If an elevated degree would exceed the exactness envelope of the
             binomial-coefficient kernel (see
-            :data:`~pantr.bspline._bspline_degree_core._BINCOEFF_MAX_N`).
+            :data:`~pantr.bspline._bspline_degree_core._BINCOEFF_MAX_N`), or if a
+            direction to be elevated is not periodic and its knot vector is not
+            clamped, which A5.9 assumes (see
+            :func:`~pantr.bspline._bspline_degree_core._check_clamped_knots`).
     """
     dim = bspline.dim
     ctrl = bspline.control_points
@@ -82,7 +86,13 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
                     space_1d.knots, space_1d.degree, pts_2d, True, tol
                 )
 
-                # Degree elevate the open representation.
+                # Degree elevate the open representation.  ``_to_open_bspline_1d_impl``
+                # writes both end runs itself, so the check below states the kernel's
+                # precondition on the vector that actually reaches it rather than
+                # trusting the conversion; a periodic direction cannot fail it.
+                _check_clamped_knots(
+                    open_knots, space_1d.degree, f"Degree elevation in direction {i}"
+                )
                 new_pts_2d, new_knots = _degree_elevate_1d_core(
                     space_1d.degree, open_pts_2d, open_knots, inc
                 )
@@ -98,6 +108,9 @@ def _degree_elevate_bspline(bspline: Bspline, degree_increments: tuple[int, ...]
                 new_space_1d = BsplineSpace1D(per_knots, new_degree, periodic=True)
             else:
                 # Numba kernel
+                _check_clamped_knots(
+                    space_1d.knots, space_1d.degree, f"Degree elevation in direction {i}"
+                )
                 new_pts_2d, new_knots = _degree_elevate_1d_core(
                     space_1d.degree, pts_2d, space_1d.knots, inc
                 )
@@ -164,7 +177,12 @@ def _coarsen_knots_after_reduction(  # noqa: PLR0913
         num_to_remove = bezier_mult - target_mult
         if num_to_remove <= 0:
             continue
-        # Use a large tolerance for deviation since reduction is approximate.
+        # `inf` does not loosen the kernel's acceptance test (`dist <= tol`), it
+        # removes it.  That is deliberate: this removal is structural, restoring the
+        # continuity the original spline had, so the requested count is what must
+        # hold and the deviation is not a criterion.  `Bspline.reduce_degree`
+        # documents that this forced removal, not the per-segment reduction, is what
+        # sets the final error.
         tol_dev = np.inf
         knots, ctrl, _removed = _remove_knot_bspline_1d_impl(
             knots, new_degree, ctrl, knot_val, num_to_remove, tol_space, tol_dev
@@ -190,7 +208,10 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
     """
     # Deferred to break the import cycle: pantr.bezier._bezier_core imports
     # _bincoeff from this package's Layer 3.
-    from ..bezier._bezier_degree import _interpolating_reduction_operator  # noqa: PLC0415
+    from ..bezier._bezier_degree import (  # noqa: PLC0415
+        _interpolating_reduction_operator,
+        _refuse_a_reduction_that_inverts_a_weight,
+    )
 
     dim = bspline.dim
     ctrl = bspline.control_points
@@ -256,8 +277,24 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
                 # smooth periodic spline (``m_bdy = 1``) asks for multiplicity 0 and
                 # the reduction fails on a knot vector it never had to build.
                 m_bdy_new = max(1, m_bdy - dec)
+                # `inf` removes the closure's least-squares admissibility test rather
+                # than loosening it, for the same reason `_coarsen_knots_after_reduction`
+                # removes the removal kernel's: restoring the seam the original spline
+                # had is structural, so the periodic form is what must come out, and its
+                # distance from the reduced open form is not a criterion. That distance
+                # *is* the reduction's own error. Grading it against a round-off floor
+                # asked an approximation to be exact and refused every legitimate
+                # reduction of a smooth periodic spline: `cos(2*pi*t)` at degree 3 gave a
+                # residual of 2.5e-03 against a floor of 2.2e-14.
+                #
+                # It does NOT remove the C0 seam test, which keeps its own floor. An
+                # approximate reduction does not move the two end control points: the
+                # reduction operator's first and last rows are exact unit vectors and
+                # `_coarsen_knots_after_reduction` touches interior breakpoints only, so
+                # the boundary points arrive bit for bit unchanged, and the seam test
+                # goes on catching what it was there for.
                 per_knots, new_pts_2d = _to_periodic_bspline_1d_impl(
-                    new_knots, new_degree, new_pts_2d, m_bdy_new, tol
+                    new_knots, new_degree, new_pts_2d, m_bdy_new, tol, np.inf
                 )
 
                 new_space_1d = BsplineSpace1D(per_knots, new_degree, periodic=True)
@@ -290,5 +327,15 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
     from . import Bspline  # noqa: PLC0415
 
     new_space = BsplineSpace(new_spaces_1d)
+
+    _refuse_a_reduction_that_inverts_a_weight(
+        ctrl,
+        is_rational=orig_is_rational,
+        remedy=(
+            "Bspline has no minimize_degree; convert to Bezier form with to_bezier or "
+            "to_beziers and use Bezier.minimize_degree on the segments, which reduces "
+            "only as far as it can without changing the sign of the weight function."
+        ),
+    )
 
     return Bspline(new_space, ctrl, is_rational=orig_is_rational)
