@@ -504,8 +504,9 @@ class PointsLattice:
 
     Immutable once constructed: each coordinate array is copied on the way in
     and the stored copies are read-only, so what ``_validate_pts_per_dir``
-    checked at construction stays true for the object's whole life.
-    :class:`QuadratureRule` does the same, and for the same reason.
+    checked at construction stays true for the object's whole life. The arrays are
+    read-only, so the first evaluation on a lattice may compile a Numba kernel
+    specialization for read-only input.
 
     Attributes:
         _pts_per_dir (tuple[npt.NDArray[np.float32 | np.float64], ...]): One

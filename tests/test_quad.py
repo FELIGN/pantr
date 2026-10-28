@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from math import gamma
 from typing import Any, cast
@@ -362,8 +363,6 @@ class TestPointsLattice:
     # Immutability. Three separate holes, and freezing alone closes only two of
     # them: numpy's writeable flag governs the data and not the metadata, so the
     # in-place reshape below needs the property to hand out views instead.
-    # QuadratureRule in the same module has made all three promises since it was
-    # written, which is why these read as catching up rather than as new policy.
 
     def test_the_caller_s_array_is_not_aliased(self) -> None:
         source = np.array([0.0, 0.5, 1.0])
@@ -381,7 +380,11 @@ class TestPointsLattice:
     def test_reshaping_what_the_property_returned_does_not_reach_the_lattice(self) -> None:
         lattice = PointsLattice([np.array([0.0, 0.5, 1.0])])
         borrowed = lattice.pts_per_dir[0]
-        borrowed.shape = (3, 1)
+        with warnings.catch_warnings():
+            # Assigning to ``shape`` is deprecated in newer numpy; the in-place reshape is
+            # exactly the hole under test, so the warning is expected and not the subject.
+            warnings.simplefilter("ignore", DeprecationWarning)
+            borrowed.shape = (3, 1)
         assert lattice.pts_per_dir[0].ndim == 1
         assert lattice.dim == 1
         nptest.assert_array_equal(lattice.get_all_points().ravel(), [0.0, 0.5, 1.0])
