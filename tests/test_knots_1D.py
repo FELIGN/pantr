@@ -47,9 +47,20 @@ class TestValidateKnotInput:
 
     def test_negative_num_intervals_error(self) -> None:
         """Reject negative interval counts."""
-        with pytest.raises(ValueError, match="num_intervals must be non-negative"):
+        with pytest.raises(ValueError, match="num_intervals must be at least 1"):
             _validate_knot_input(
                 num_intervals=-1,
+                degree=2,
+                continuity=1,
+                domain=(np.float64(0.0), np.float64(1.0)),
+                dtype=np.float64,
+            )
+
+    def test_zero_num_intervals_error(self) -> None:
+        """Reject a zero interval count: a mesh with no cell has nothing defined over it."""
+        with pytest.raises(ValueError, match="num_intervals must be at least 1"):
+            _validate_knot_input(
+                num_intervals=0,
                 degree=2,
                 continuity=1,
                 domain=(np.float64(0.0), np.float64(1.0)),
@@ -237,8 +248,13 @@ class TestCreateUniformOpenKnotVector:
 
     def test_negative_num_intervals_error(self) -> None:
         """Reject negative interval counts."""
-        with pytest.raises(ValueError, match="num_intervals must be non-negative"):
+        with pytest.raises(ValueError, match="num_intervals must be at least 1"):
             create_uniform_open_knots(-1, 2)
+
+    def test_zero_num_intervals_error(self) -> None:
+        """Reject a zero interval count, which used to return one interval instead."""
+        with pytest.raises(ValueError, match="num_intervals must be at least 1"):
+            create_uniform_open_knots(0, 3)
 
     def test_negative_degree_error(self) -> None:
         """Reject negative degrees."""
@@ -317,8 +333,13 @@ class TestCreateUniformPeriodicKnotVector:
 
     def test_negative_num_intervals_error(self) -> None:
         """Reject negative interval counts."""
-        with pytest.raises(ValueError, match="num_intervals must be non-negative"):
+        with pytest.raises(ValueError, match="num_intervals must be at least 1"):
             create_uniform_periodic_knots(-1, 2)
+
+    def test_zero_num_intervals_error(self) -> None:
+        """Reject a zero interval count, which used to return NaN and inf knots."""
+        with pytest.raises(ValueError, match="num_intervals must be at least 1"):
+            create_uniform_periodic_knots(0, 3)
 
     def test_negative_degree_error(self) -> None:
         """Reject negative degrees."""
