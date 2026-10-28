@@ -475,12 +475,38 @@ def get_tanh_sinh_1d(
     return _scale_and_cast_nodes_and_weights(data[:, 0], data[:, 1], dtype)
 
 
+def _frozen_copy(
+    pts: npt.NDArray[np.float32 | np.float64],
+) -> npt.NDArray[np.float32 | np.float64]:
+    """Take a read-only, C-contiguous copy of one direction's coordinates.
+
+    The dimensionality is preserved, so a 0-D or 2-D input is still there for the
+    lattice's own validation to reject.
+
+    Args:
+        pts (npt.NDArray[np.float32 | np.float64]): The caller's coordinate array.
+
+    Returns:
+        npt.NDArray[np.float32 | np.float64]: A copy the caller cannot reach and
+            nobody can write to.
+    """
+    frozen = np.array(pts, order="C", copy=True)
+    frozen.flags.writeable = False
+    return frozen
+
+
 class PointsLattice:
     """A tensor-product grid of evaluation points in multiple dimensions.
 
     Stores one 1D array of coordinates per spatial direction and provides
     helpers for constructing the full set of grid points or querying grid
     metadata.
+
+    Immutable once constructed: each coordinate array is copied on the way in
+    and the stored copies are read-only, so what
+    :meth:`_validate_pts_per_dir` checked at construction stays true for the
+    object's whole life. :class:`QuadratureRule` does the same, and for the same
+    reason.
 
     Attributes:
         _pts_per_dir (tuple[npt.NDArray[np.float32 | np.float64], ...]): One
@@ -498,7 +524,15 @@ class PointsLattice:
         Raises:
             ValueError: If the dimension is less than 1 or the points have different dtypes.
         """
-        self._pts_per_dir: tuple[npt.NDArray[np.float32 | np.float64], ...] = tuple(pts_per_dir)
+        # Snapshot, then freeze, in that order. ``tuple()`` copies the container
+        # and not the arrays, so without the copy the caller keeps a live handle
+        # on the lattice's coordinates, and without the freeze so does anyone
+        # who reads :attr:`pts_per_dir`. Validation below would then describe a
+        # state the object need not still be in: ``arr.shape = (n, 1)`` reshapes
+        # in place and breaks the 1-D invariant with no error raised.
+        self._pts_per_dir: tuple[npt.NDArray[np.float32 | np.float64], ...] = tuple(
+            _frozen_copy(pts) for pts in pts_per_dir
+        )
         self._validate_pts_per_dir()
 
     def _validate_pts_per_dir(self) -> None:
@@ -544,9 +578,15 @@ class PointsLattice:
 
         Returns:
             tuple[npt.NDArray[np.float32 | np.float64], ...]: One 1D coordinate
-            array for each spatial dimension.
+            array for each spatial dimension, read-only.
         """
-        return self._pts_per_dir
+        # Fresh read-only views rather than the stored arrays themselves, because
+        # ``writeable = False`` stops writes to the data and not changes to the
+        # metadata: ``arr.shape = (n, 1)`` reshapes a read-only array in place and
+        # would leave the lattice holding a 2-D array while :attr:`dim` still
+        # reported 1. A view carries its own shape, so that lands on the caller's
+        # copy and not on ours.
+        return tuple(pts.view() for pts in self._pts_per_dir)
 
     def get_all_points(
         self, order: Literal["C", "F"] = "C"
