@@ -97,7 +97,7 @@ def test_the_ceiling_is_degree_plus_one_at_every_degree_and_dtype(
 @pytest.mark.parametrize("multiplicity", [1, 2, 3, 4])
 def test_degree_zero_is_not_subject_to_the_rule(multiplicity: int) -> None:
     # Measured before the rule existed: at degree 0 the basis sums to one everywhere
-    # and the derivatives are clean at every multiplicity tried, on both backends.
+    # and the derivatives are clean at every multiplicity tried.
     # The recurrence has no denominator, so the failure the rule guards cannot occur
     # and a ceiling here would refuse spaces that compute correctly.
     knots = np.concatenate([np.zeros(1), np.full(multiplicity, 1.0)])

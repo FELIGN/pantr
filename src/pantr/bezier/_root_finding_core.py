@@ -33,19 +33,20 @@ _DBL_EPSILON: float = 2.2204460492503131e-16
 # though one operand vanished. Comparing the signs needs no product and cannot
 # underflow or overflow.
 #
-# Each is exactly equivalent to the product form it replaces on every IEEE
-# input, infinities and NaN included, which is what lets them be substituted
-# without a parity claim. That equivalence is asserted exhaustively over a
-# special-value matrix in tests/test_root_finding.py rather than argued here.
+# Each is equivalent to the product form it replaces on every IEEE input,
+# infinities and NaN included, except where the product underflows to zero:
+# there the product form is wrong and these are right. The equivalence is
+# asserted exhaustively over a special-value matrix in tests/test_root_finding.py
+# rather than argued here.
 
 
 @nb_jit(nopython=True, cache=True)
 def _have_same_sign(a: float, b: float) -> bool:
     """Test whether two values are both strictly positive or both strictly negative.
 
-    Exactly equivalent to ``a * b > 0.0``, without forming the product. A zero
-    or a NaN operand makes both forms false, and ``inf * 0.0`` is NaN, which is
-    not greater than zero either.
+    Equivalent to ``a * b > 0.0`` except where the product underflows to zero,
+    without forming the product. A zero or a NaN operand makes both forms false,
+    and ``inf * 0.0`` is NaN, which is not greater than zero either.
 
     Args:
         a (float): First value.
@@ -64,8 +65,8 @@ def _have_same_sign(a: float, b: float) -> bool:
 def _have_opposite_signs(a: float, b: float) -> bool:
     """Test whether two values have strictly opposite signs.
 
-    Exactly equivalent to ``a * b < 0.0``, without forming the product. A zero
-    or a NaN operand makes both forms false.
+    Equivalent to ``a * b < 0.0`` except where the product underflows to zero,
+    without forming the product. A zero or a NaN operand makes both forms false.
 
     Args:
         a (float): First value.
@@ -84,9 +85,9 @@ def _have_opposite_signs(a: float, b: float) -> bool:
 def _spans_zero(a: float, b: float) -> bool:
     """Test whether two bracket values span zero, counting an exact zero as spanned.
 
-    Exactly equivalent to ``a * b <= 0.0``, without forming the product. The
-    finiteness guards are what make the equivalence exact rather than
-    approximate: ``a * b`` is a signed zero when one operand is zero and the
+    Equivalent to ``a * b <= 0.0`` except where the product underflows to zero,
+    without forming the product. The finiteness guards are what keep the
+    equivalence everywhere else: ``a * b`` is a signed zero when one operand is zero and the
     other is finite, but it is NaN when the other is an infinity, and NaN is
     not less than or equal to zero. Dropping the guards would report a spanned
     bracket for ``(0.0, inf)``, where the product form reports none.
