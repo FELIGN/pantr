@@ -405,6 +405,15 @@ class Bspline:
         Raises:
             ValueError: If ``direction`` is out of range ``[0, dim)``.
             ValueError: If the degree in the given direction is 0.
+            ValueError: If the call re-elevates and the differentiated direction's
+                knot vector is not clamped, meaning a run of ``degree + 1`` equal
+                knots at each end. Re-elevating is ``keep_degree=True`` and any
+                rational field; it runs Piegl and Tiller A5.9, which assumes those
+                runs and without them returns a different function. Two things stay
+                available on an unclamped direction: a non-rational
+                ``keep_degree=False``, which asks nothing of the ends, and a
+                direction of degree 1, whose hodograph is degree 0 and so has no
+                end runs to lack.
 
         Example:
             >>> import numpy as np
@@ -451,6 +460,13 @@ class Bspline:
             ValueError: If any degree increment is negative.
             ValueError: If all degree increments are zero.
             ValueError: If the number of increments does not match the dimension.
+            ValueError: If a direction to be elevated is not periodic and its knot
+                vector is not clamped, meaning a run of ``degree + 1`` equal knots
+                at each end. Elevation is Piegl and Tiller A5.9, which assumes those
+                runs: without the closing one its segment walk reads past the
+                control points, and without the opening one it returns a different
+                function. A periodic direction is converted to its open form first
+                and is unaffected.
 
         References:
             Degree elevation of spline curves :cite:p:`piegl1997nurbs`.
