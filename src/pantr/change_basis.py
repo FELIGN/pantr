@@ -301,7 +301,11 @@ def compute_bernstein_to_lagrange_1d(
 
     The inverse direction of :func:`compute_lagrange_to_bernstein_1d`: with ``C`` from
     that function, this returns ``L`` solving ``C @ L = I``, computed by one LU solve
-    against the identity (:func:`numpy.linalg.solve`). No explicit inverse is formed.
+    against the identity (:func:`numpy.linalg.solve`), which **is** an explicit inverse:
+    it is Du Croz and Higham's Method A (IMA J. Numer. Anal. 12 (1992) 1-19, sec. 3.1)
+    and numpy makes it bitwise identical to :func:`numpy.linalg.inv`. That bounds the
+    residual ``A X - I`` and not ``X A - I``; the round trip below is shown in the
+    bounded direction for that reason.
 
     Note:
         Both Bernstein and Lagrange bases follow the standard ordering
@@ -530,7 +534,11 @@ def compute_cardinal_to_bernstein_1d(
 
     The inverse direction of :func:`compute_bernstein_to_cardinal_1d`: with ``A`` from
     that function, this returns ``B`` solving ``A @ B = I``, computed by one LU solve
-    against the identity (:func:`numpy.linalg.solve`). No explicit inverse is formed.
+    against the identity (:func:`numpy.linalg.solve`), which **is** an explicit inverse:
+    it is Du Croz and Higham's Method A (IMA J. Numer. Anal. 12 (1992) 1-19, sec. 3.1)
+    and numpy makes it bitwise identical to :func:`numpy.linalg.inv`. That bounds the
+    residual ``A X - I`` and not ``X A - I``; the round trip below is shown in the
+    bounded direction for that reason.
 
     Note:
         A second Gram projection -- swapping the two evaluators and solving with the
@@ -688,8 +696,11 @@ def compute_cardinal_to_legendre_1d(
 
     The inverse direction of :func:`compute_legendre_to_cardinal_1d`: with ``A``
     from that function, this returns ``W`` solving ``A @ W = I``, computed by one
-    LU solve against the identity (:func:`numpy.linalg.solve`). No explicit
-    inverse is formed.
+    LU solve against the identity (:func:`numpy.linalg.solve`), which **is** an
+    explicit inverse: Du Croz and Higham's Method A, bounding the residual
+    ``A W - I`` and not ``W A - I``. At degree 12, the last this builder accepts, the
+    two residuals differ by many orders of magnitude. The round trip in the example
+    below is shown in the bounded direction for that reason.
 
     Note:
         A second Gram projection -- swapping the two evaluators and solving with
