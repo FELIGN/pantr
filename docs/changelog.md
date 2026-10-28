@@ -23,6 +23,58 @@
   argument still has a name: the constructor could only report that the vector it was
   handed spans no interval, which for the periodic case was not even the reason it
   failed.
+- **A knot vector whose last knot repeats more than `degree + 1` times is refused by
+  `BsplineSpace1D`** at positive degree. It used to build a space whose basis does not sum
+  to 1 at the right endpoint. An excess at the first knot, an interior repeat and degree 0
+  are still accepted.
+- **`Bspline.elevate_degree` refuses a direction that is not clamped** (a run of
+  `degree + 1` equal knots at each end) unless it is periodic, which is converted to open
+  form first. It used to fail on a coefficient count or return a different function.
+  `Bspline.to_open_bspline` is the way forward.
+- **`Bspline.derivative(keep_degree=True)` refuses an unclamped direction**, and so does a
+  rational `derivative()` in either setting, since both re-elevate. It used to return a
+  function that disagrees with the true derivative. A non-rational `derivative()` with
+  `keep_degree=False`, and a direction of degree 1, are unaffected.
+- **A rational `derivative()` on a periodic direction with a C^0 seam is refused**
+  (seam multiplicity equal to the degree). The derivative is discontinuous at the seam and
+  has no periodic form; the error says so. Before, the same input raised a misleading
+  "The B-spline is not periodic" error.
+- **`reduce_degree` on a rational `Bezier` or `Bspline` refuses a reduction that makes a
+  control weight zero or negative.** The result would have a pole on the domain and would
+  not be a NURBS. `Bezier.minimize_degree` already declined such reductions.
+- **The extraction dispatchers refuse an identity-flagged operator that is not square.**
+  The identity branch of the kernels assumes a square operator and used to read past the
+  operand. No public path builds such an operator; direct callers of the Layer 2 helpers
+  were exposed.
+
+### Changed
+- `PointsLattice` copies the arrays it is given and freezes the copies, so a later change
+  to the caller's arrays no longer alters the lattice. Its arrays are read-only, and
+  `pts_per_dir` returns fresh read-only views on each access. Code that wrote through
+  `lattice.pts_per_dir[0][:] = ...` now raises `ValueError`.
+- `Bspline.derivative(keep_degree=True)` on a B-spline with several directions converts
+  only the differentiated direction to open form. The other directions keep their
+  periodicity and their knot vectors; before, every direction came back open and clamped.
+- `to_periodic` grades the seam in control-point units, from the control points' scale and
+  dtype. The budget no longer depends on the knot vector's magnitude or on the parametric
+  `tol`.
+- Every Layer 2 entry point over a `parallel=True` kernel now waits for the JIT warmup
+  thread before its first call, which avoids a process abort when a call races the warmup.
+
+### Fixed
+- `reduce_degree` on a periodic B-spline now succeeds for a smooth spline. The closure
+  step used to compare the reduction's own approximation error against round-off and
+  refused nearly every case.
+- `derivative()` of a periodic rational B-spline now works, for both values of
+  `keep_degree`. It used to raise "Inserting these knots would exceed the maximum
+  multiplicity" from deep inside the knot insertion.
+- An `out` array in Fortran order (or any layout whose reshape is a copy) is now written.
+  The basis and basis-derivative functions used to fill a copy and leave the caller's
+  array as allocated.
+- Bezier root finding no longer loses roots to underflow. Sign tests compare signs instead
+  of multiplying the two values, which flushed to zero for tiny coefficients, and the
+  test for a vanishing coefficient no longer carries an absolute floor, so rescaling a
+  polynomial no longer changes its roots.
 
 ## 0.7.0 (2026-08-19)
 
