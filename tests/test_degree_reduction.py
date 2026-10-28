@@ -1366,16 +1366,15 @@ class TestBsplineReduceDegreePeriodicClosureIsApproximate:
     ) -> None:
         """``reduce_degree(1)`` succeeds on a smooth periodic spline and approximates it.
 
-        Before the fix this raised ``ValueError`` at every one of these three cases
-        (measured residuals 2.53e-03 and 1.10e-02 against a floor of 2.22e-14 for the
-        first two).
+        Before the fix this raised ``ValueError`` at every one of these three cases, because
+        the closure test graded the reduction's own approximation error against round-off.
 
         ``max_relative_error`` is an **observed envelope, not a derived bound** -- the
         reduction operator's accuracy is a property of the projection it performs, not
-        something this test establishes. The three cases came out at 0.79%, 5.10% and
-        0.04% of amplitude, and each envelope is about three times its own case, so the
-        test catches a reduction that stopped reducing (it raises) or started returning
-        a badly wrong curve, without pinning the operator's exact constant. The
+        something this test establishes. Each envelope is a few times its own case's
+        observed error, so the test catches a reduction that stopped reducing (it raises)
+        or started returning a badly wrong curve, without pinning the operator's exact
+        constant. The
         envelopes differ by two orders of magnitude between cases because the cases do:
         halving the degree of a spline resolving two periods over eight elements is a
         far harder ask than one period over eight at degree 5.
@@ -1405,9 +1404,8 @@ class TestBsplineReduceDegreePeriodicClosureIsApproximate:
         ``elevate_degree(1).reduce_degree(1)`` inserts and then removes the same
         redundant degree, so it round-trips to the original curve to round-off
         whatever the closure admissibility test does -- that is the control showing
-        the fix loosened only the *approximate* path, not this one. Measured here:
-        max errors of 3.3e-16, 2.2e-16, 5.6e-16 for degrees 2, 3, 4; 1e-12 leaves
-        three orders of magnitude of headroom.
+        the fix loosened only the *approximate* path, not this one. The tolerance of 1e-12
+        leaves wide headroom over round-off at these degrees.
         """
         knots = create_uniform_periodic_knots(num_intervals=6, degree=degree)
         space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
@@ -1429,8 +1427,8 @@ class TestRationalReductionRefusesAnInvertedWeight:
     The endpoint-interpolating reduction operator is not a convex combination, and it
     acts on the weight column like any other. A weight driven through zero is not an
     approximation error: the denominator can vanish on the domain, so the result is not
-    a NURBS. Before the guard, 45 of 600 forced reductions across degrees 2 to 5 returned
-    such a net with no error and no warning, the worst weight at -1.187.
+    a NURBS. Without the guard such a reduction returns the net with no error and no
+    warning.
     """
 
     @staticmethod
@@ -1488,11 +1486,10 @@ class TestRationalReductionRefusesAnInvertedWeight:
     def test_each_type_is_told_something_true_of_itself(self) -> None:
         """The remedy differs by type, and both halves are checked against the API.
 
-        A single shared sentence got this wrong: it told every caller to use
-        ``minimize_degree``, and :class:`~pantr.bspline.Bspline` has no such method, so a
-        B-spline caller who followed the advice got an ``AttributeError``. An error that
-        misdirects is worse than one that only reports, so the remedy is now the caller's
-        to supply and this pins that each one names something its own type has.
+        :class:`~pantr.bezier.Bezier` has ``minimize_degree`` and
+        :class:`~pantr.bspline.Bspline` does not, so a shared message naming it would send a
+        B-spline caller to an ``AttributeError``. Each caller supplies the remedy, and this
+        pins that each one names something its own type has.
         """
         net = self._net_that_inverts_a_weight()
         curve = Bezier(net, is_rational=True)
@@ -1554,8 +1551,8 @@ class TestRationalReductionRefusesAnInvertedWeight:
         """Control: the guard must not refuse a well-conditioned periodic rational.
 
         The refusal above is real but it must not be the normal outcome, or the guard has
-        replaced one defect with another. These four reduce cleanly, with the smallest
-        output weight between 0.14 and 0.23.
+        replaced one defect with another. These four reduce cleanly, with a comfortably
+        positive smallest output weight.
         """
         knots = create_uniform_periodic_knots(num_intervals, degree)
         space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
