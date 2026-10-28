@@ -210,7 +210,7 @@ def _find_roots_at_level(
     # Scale-relative boundary tolerance for detecting near-zero values.
     #
     # No absolute floor. One used to sit here as `max(..., 1e-30)` and it broke
-    # scale invariance: below a coefficient range of about 5.6e-16 the floor won
+    # scale invariance: for a problem with small enough coefficients the floor won
     # the maximum, every coefficient of the problem read as zero however well
     # separated they were, and the same polynomial rescaled got a different
     # answer (FELIGN/pantr#352). Scaling a root-finding problem by a positive

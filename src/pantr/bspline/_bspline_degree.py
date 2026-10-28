@@ -284,8 +284,8 @@ def _degree_reduce_bspline(bspline: Bspline, degree_decrements: tuple[int, ...])
                 # distance from the reduced open form is not a criterion. That distance
                 # *is* the reduction's own error. Grading it against a round-off floor
                 # asked an approximation to be exact and refused every legitimate
-                # reduction of a smooth periodic spline: `cos(2*pi*t)` at degree 3 gave a
-                # residual of 2.5e-03 against a floor of 2.2e-14.
+                # reduction of a smooth periodic spline, `cos(2*pi*t)` at degree 3 among
+                # them, whose residual sits many orders of magnitude above that floor.
                 #
                 # It does NOT remove the C0 seam test, which keeps its own floor. An
                 # approximate reduction does not move the two end control points: the
