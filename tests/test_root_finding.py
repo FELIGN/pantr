@@ -728,7 +728,11 @@ class TestBoundaryEpsScaleInvariance(unittest.TestCase):
                 self.assertAlmostEqual(roots[0], 0.5, places=12)
 
     def test_no_root_is_scale_invariant(self) -> None:
-        """A strictly positive Bezier reports no root at every scale."""
+        """Control: a strictly positive Bezier reports no root at every scale.
+
+        This passes without the floor removal as well, so it does not pin the fix. It
+        guards the other side, that no scale invents a root where there is none.
+        """
         for exponent in range(-25, -36, -1):
             a = 10.0**exponent
             with self.subTest(a=f"1e{exponent}"):
