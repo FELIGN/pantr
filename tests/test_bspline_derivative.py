@@ -559,6 +559,44 @@ class TestKeepDegreeNonRational:
         assert f_prime.space.spaces[0].degree == 2
         assert f_prime.space.spaces[1].degree == 3  # unchanged
 
+    def test_2d_periodic_keeps_other_direction_periodic(self) -> None:
+        """Differentiating direction 0 leaves direction 1 periodic."""
+        knots0 = create_uniform_periodic_knots(4, 2, domain=(0.0, 1.0))
+        knots1 = create_uniform_periodic_knots(5, 2, domain=(0.0, 1.0))
+        s0 = BsplineSpace1D(knots0, 2, periodic=True)
+        s1 = BsplineSpace1D(knots1, 2, periodic=True)
+        space = BsplineSpace([s0, s1])
+        rng = np.random.default_rng(7)
+        ctrl = rng.standard_normal((*space.num_basis, 2))
+        f = Bspline(space, ctrl)
+
+        f_prime = _assert_keep_degree_matches_evaluate(f, direction=0, atol=1e-8)
+
+        # Direction 1 is untouched: same knot vector, still periodic.
+        assert f_prime.space.spaces[1].periodic
+        np.testing.assert_array_equal(f_prime.space.spaces[1].knots, knots1)
+        # Direction 0 is the one that degree elevation needs open.
+        assert not f_prime.space.spaces[0].periodic
+        assert f_prime.space.spaces[1].degree == 2
+
+    def test_2d_periodic_keeps_other_direction_unclamped(self) -> None:
+        """Differentiating a periodic direction 0 leaves an unclamped direction 1 alone."""
+        knots0 = create_uniform_periodic_knots(4, 2, domain=(0.0, 1.0))
+        knots1 = create_uniform_periodic_knots(5, 2, domain=(0.0, 1.0))
+        s0 = BsplineSpace1D(knots0, 2, periodic=True)
+        s1 = BsplineSpace1D(knots1, 2, periodic=False)
+        space = BsplineSpace([s0, s1])
+        rng = np.random.default_rng(11)
+        ctrl = rng.standard_normal((*space.num_basis, 1))
+        f = Bspline(space, ctrl)
+
+        f_prime = _assert_keep_degree_matches_evaluate(f, direction=0, atol=1e-8)
+
+        # Direction 1 is untouched: still unclamped, same knot vector.
+        assert not f_prime.space.spaces[1].has_open_knots()
+        assert not f_prime.space.spaces[1].periodic
+        np.testing.assert_array_equal(f_prime.space.spaces[1].knots, knots1)
+
 
 class TestKeepDegreeRational:
     """Derivative with keep_degree=True for rational (NURBS) B-splines.
