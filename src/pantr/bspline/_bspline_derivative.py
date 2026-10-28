@@ -18,8 +18,11 @@ import numpy as np
 import numpy.typing as npt
 
 from .._array_utils import _flatten_along_axis, _unflatten_along_axis
-from ._bspline_knot_insertion import _to_open_bspline_1d_impl
-from ._bspline_knots import _get_Bspline_num_basis_1D_impl
+from ._bspline_knot_insertion import _to_open_bspline_1d_impl, _to_periodic_bspline_1d_impl
+from ._bspline_knots import (
+    _get_Bspline_num_basis_1D_impl,
+    _get_unique_knots_and_multiplicity_impl,
+)
 from ._bspline_space_1d import BsplineSpace1D
 from ._bspline_space_nd import BsplineSpace
 
@@ -372,6 +375,84 @@ def _tile_scalar_bspline(w: Bspline, target_rank: int) -> Bspline:
 def _derivative_rational(bspline: Bspline, direction: int) -> Bspline:
     """Compute the partial derivative of a rational (NURBS) B-spline.
 
+    Delegates to :func:`_derivative_rational_open`, converting ``direction`` to open
+    form first when it is periodic and closing the seam again afterwards.
+
+    **Why the round-trip.** The quotient rule raises the degree to ``2p`` through
+    :meth:`~pantr.bspline.Bspline.multiply`, and the seam multiplicity that product
+    needs does not fit a periodic knot vector: differentiating a periodic rational
+    used to fail with ``Inserting these knots would exceed the maximum multiplicity``,
+    raised four frames down with nothing naming the cause, for both values of
+    ``keep_degree`` since the dispatcher routes both here. Going through the open form
+    is what :func:`~pantr.bspline._bspline_degree._degree_elevate_bspline` and its
+    reduction counterpart already do for the same reason.
+
+    **The seam multiplicity to close back to.** Continuity is the invariant to carry
+    across, not multiplicity, because the degree changes. A periodic spline of degree
+    ``p`` whose seam has multiplicity ``m`` is ``C^(p - m)`` there. The numerator
+    ``A'w - Aw'`` carries one differentiation, so it is ``C^(p - m - 1)``; the
+    denominator ``w^2`` is still ``C^(p - m)``; refined to their common space the pair
+    carries the weaker of the two. At degree ``2p`` that continuity is multiplicity
+    ``2p - (p - m - 1) = p + m + 1``, capped at ``2p`` so a seam that has run out of
+    smoothness asks for a discontinuity rather than an impossible knot vector.
+
+    Args:
+        bspline (~pantr.bspline.Bspline): Rational B-spline to differentiate.
+        direction (int): Parametric direction, in ``[0, dim)``.
+
+    Returns:
+        ~pantr.bspline.Bspline: Rational derivative B-spline, periodic in ``direction``
+        exactly when the input was.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+        For general use, call :func:`_derivative_bspline` instead.
+    """
+    from . import Bspline as BsplineCls  # noqa: PLC0415
+
+    space_1d = bspline.space.spaces[direction]
+    if not space_1d.periodic:
+        return _derivative_rational_open(bspline, direction)
+
+    p_deg = space_1d.degree
+    tol = float(space_1d.tolerance)
+    _, mults = _get_unique_knots_and_multiplicity_impl(space_1d.knots, p_deg, tol, in_domain=True)
+    m_bdy = int(mults[0])
+
+    # --- to open form in this direction only ---
+    pts_2d, trailing_shape = _flatten_along_axis(bspline.control_points, direction)
+    open_knots, open_pts_2d = _to_open_bspline_1d_impl(space_1d.knots, p_deg, pts_2d, True, tol)
+    open_spaces = list(bspline.space.spaces)
+    open_spaces[direction] = BsplineSpace1D(open_knots, p_deg)
+    open_bspline = BsplineCls(
+        BsplineSpace(open_spaces),
+        _unflatten_along_axis(open_pts_2d, trailing_shape, direction),
+        is_rational=True,
+    )
+
+    result = _derivative_rational_open(open_bspline, direction)
+
+    # --- and back to periodic ---
+    res_space_1d = result.space.spaces[direction]
+    res_degree = res_space_1d.degree
+    m_bdy_new = min(res_degree, p_deg + m_bdy + 1)
+    res_tol = float(res_space_1d.tolerance)
+    res_pts_2d, res_trailing = _flatten_along_axis(result.control_points, direction)
+    per_knots, per_pts_2d = _to_periodic_bspline_1d_impl(
+        res_space_1d.knots, res_degree, res_pts_2d, m_bdy_new, res_tol
+    )
+    per_spaces = list(result.space.spaces)
+    per_spaces[direction] = BsplineSpace1D(per_knots, res_degree, periodic=True)
+    return BsplineCls(
+        BsplineSpace(per_spaces),
+        _unflatten_along_axis(per_pts_2d, res_trailing, direction),
+        is_rational=True,
+    )
+
+
+def _derivative_rational_open(bspline: Bspline, direction: int) -> Bspline:
+    """Compute the partial derivative of a rational (NURBS) B-spline.
+
     Applies the quotient rule: for ``f = A/w``,
     ``f' = (A'w - Aw') / w^2``.
 
@@ -391,7 +472,12 @@ def _derivative_rational(bspline: Bspline, direction: int) -> Bspline:
         ~pantr.bspline.Bspline: Rational derivative B-spline.
 
     Note:
-        Inputs are assumed to be correct (no validation performed).
+        ``direction`` must not be periodic: the quotient rule below raises the degree
+        to ``2p`` through :meth:`~pantr.bspline.Bspline.multiply`, and a periodic knot
+        vector cannot carry the seam multiplicity that product needs.
+        :func:`_derivative_rational` is what enforces that, by converting the direction
+        to open form first.
+        Inputs are otherwise assumed to be correct (no validation performed).
         For general use, call :func:`_derivative_bspline` instead.
     """
     from . import Bspline as BsplineCls  # noqa: PLC0415
