@@ -1,7 +1,8 @@
 """Bézier composition.
 
-This module provides :func:`_compose_bezier`, which computes the exact
-composition of two non-rational Bézier objects: ``outer(inner(t))``.
+This module provides :func:`_compose_bezier`, which computes the
+composition of two non-rational Bézier objects: ``outer(inner(t))``. The
+result's degree is exact; its control points carry floating-point roundoff.
 
 The algorithm decomposes each scalar component of the inner Bézier into
 Bernstein basis evaluations of the outer's degree, then combines them

@@ -1,8 +1,9 @@
 """Bézier pointwise product.
 
-This module provides :func:`_multiply_bezier`, which computes the exact
-pointwise product of two Bézier objects via the Bernstein product formula.
-The result is a Bézier of degree ``p_d + q_d`` per direction.
+This module provides :func:`_multiply_bezier`, which computes the pointwise
+product of two Bézier objects via the Bernstein product formula.
+The result is a Bézier of degree ``p_d + q_d`` per direction: the degree is
+exact, the control points carry floating-point roundoff.
 
 The core Bernstein product formulas (:func:`_bernstein_product_coefficients`
 and :func:`_bernstein_product_coefficients_nd`) are also used by the B-spline
@@ -157,7 +158,7 @@ def _bernstein_product_coefficients_nd(
 
 
 def _multiply_bezier(a: Bezier, b: Bezier) -> Bezier:
-    """Compute the exact pointwise product of two Bézier objects.
+    """Compute the pointwise product of two Bézier objects.
 
     Validates that both operands have matching dimension, dtype, and rank,
     then dispatches to the non-rational or rational implementation.

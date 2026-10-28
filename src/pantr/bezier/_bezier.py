@@ -360,6 +360,8 @@ class Bezier:
             ValueError: If the number of decrements does not match the dimension.
             ValueError: If any decrement exceeds the current degree in that
                 direction.
+            ValueError: If the object is rational and the reduction drives a
+                control weight to zero or below.
         """
         return _degree_reduce_bezier(self, self._checked_decrements(degree_decrements))
 
