@@ -26,6 +26,87 @@ _DBL_EPSILON: float = 2.2204460492503131e-16
 """Machine epsilon for IEEE 754 double precision."""
 
 
+# The three predicates below replace sign tests written as ``a * b`` compared
+# against zero. The product is the defect: at ``float32`` two operands of
+# magnitude 1e-23 are perfectly representable while their product falls under
+# that format's minimum subnormal and flushes to zero, so the test answers as
+# though one operand vanished. Comparing the signs needs no product and cannot
+# underflow or overflow.
+#
+# Each is exactly equivalent to the product form it replaces on every IEEE
+# input, infinities and NaN included, which is what lets them be substituted
+# without a parity claim. That equivalence is asserted exhaustively over a
+# special-value matrix in tests/test_root_finding.py rather than argued here.
+
+
+@nb_jit(nopython=True, cache=True)
+def _have_same_sign(a: float, b: float) -> bool:
+    """Test whether two values are both strictly positive or both strictly negative.
+
+    Exactly equivalent to ``a * b > 0.0``, without forming the product. A zero
+    or a NaN operand makes both forms false, and ``inf * 0.0`` is NaN, which is
+    not greater than zero either.
+
+    Args:
+        a (float): First value.
+        b (float): Second value.
+
+    Returns:
+        bool: True if both are strictly positive or both strictly negative.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    return (a > 0.0 and b > 0.0) or (a < 0.0 and b < 0.0)
+
+
+@nb_jit(nopython=True, cache=True)
+def _have_opposite_signs(a: float, b: float) -> bool:
+    """Test whether two values have strictly opposite signs.
+
+    Exactly equivalent to ``a * b < 0.0``, without forming the product. A zero
+    or a NaN operand makes both forms false.
+
+    Args:
+        a (float): First value.
+        b (float): Second value.
+
+    Returns:
+        bool: True if one value is strictly positive and the other strictly negative.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    return (a > 0.0 and b < 0.0) or (a < 0.0 and b > 0.0)
+
+
+@nb_jit(nopython=True, cache=True)
+def _spans_zero(a: float, b: float) -> bool:
+    """Test whether two bracket values span zero, counting an exact zero as spanned.
+
+    Exactly equivalent to ``a * b <= 0.0``, without forming the product. The
+    finiteness guards are what make the equivalence exact rather than
+    approximate: ``a * b`` is a signed zero when one operand is zero and the
+    other is finite, but it is NaN when the other is an infinity, and NaN is
+    not less than or equal to zero. Dropping the guards would report a spanned
+    bracket for ``(0.0, inf)``, where the product form reports none.
+
+    Args:
+        a (float): Value at one end of the bracket.
+        b (float): Value at the other end.
+
+    Returns:
+        bool: True if the two values have opposite signs or either is an exact
+            zero paired with a finite partner.
+
+    Note:
+        Inputs are assumed to be correct (no validation performed).
+    """
+    if (a > 0.0 and b < 0.0) or (a < 0.0 and b > 0.0):
+        return True
+    return (a == 0.0 and np.isfinite(b)) or (b == 0.0 and np.isfinite(a))
+
+
 @nb_jit(nopython=True, cache=True)
 def _de_casteljau_eval_scalar(
     coeff: npt.NDArray[np.float32 | np.float64],
@@ -285,7 +366,7 @@ def _clip_hull_to_zero(  # noqa: PLR0912, PLR0915
         ib = upper[k + 1]
         da = coeff[ia]
         db = coeff[ib]
-        if da * db < 0.0:
+        if _have_opposite_signs(da, db):
             ta = ia * inv_n
             tb = ib * inv_n
             t_cross = ta + (-da) / (db - da) * (tb - ta)
@@ -326,7 +407,7 @@ def _clip_hull_to_zero(  # noqa: PLR0912, PLR0915
         ib = lower[k + 1]
         da = coeff[ia]
         db = coeff[ib]
-        if da * db < 0.0:
+        if _have_opposite_signs(da, db):
             ta = ia * inv_n
             tb = ib * inv_n
             t_cross = ta + (-da) / (db - da) * (tb - ta)
