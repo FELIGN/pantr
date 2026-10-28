@@ -382,12 +382,10 @@ def _refuse_a_reduction_that_inverts_a_weight(
     :func:`_sample_projected` records the rest of the library as already requiring of
     knot removal, ``locate`` and ``find_roots``.
 
-    The remedy is the caller's to supply, because the two callers have different ones and
-    a shared message got this wrong: it named
-    :meth:`~pantr.bezier.Bezier.minimize_degree` unconditionally, and
-    :class:`~pantr.bspline.Bspline` has no such method, so a B-spline caller who followed
-    the advice got an ``AttributeError``. An error that misdirects is worse than one that
-    only reports.
+    The remedy is the caller's to supply, because the two callers have different ones:
+    :meth:`~pantr.bezier.Bezier.minimize_degree` exists on a Bezier, and
+    :class:`~pantr.bspline.Bspline` has no such method, so a shared message naming it
+    would send a B-spline caller to an ``AttributeError``.
 
     Args:
         ctrl (npt.NDArray[np.floating[Any]]): Reduced control points, the last column the

@@ -854,15 +854,13 @@ class TestRationalPeriodic1D:
 
         Its periodicity is structural, not approximate, so this failure mode is
         definitionally a false refusal however large the round trip's round-off grows.
-        Regression for a seam budget that was one tier tighter than the closure budget
-        grading the same defect downstream: at 64 epsilons of the control-point scale
-        this raised ``Function values do not match at the domain endpoints (max deviation
-        7.82e-13, tolerance 4.78e-13)`` here, while the residual check that follows it
-        would have passed.
+        The seam budget has to be as loose as the closure budget grading the same defect
+        downstream: a tighter one refuses a spline the residual check that follows would
+        accept, with ``Function values do not match at the domain endpoints``.
 
-        The sizes matter and small ones do not reproduce it: the endpoint deviation grows
+        The sizes matter and small ones do not exercise it: the endpoint deviation grows
         with both the degree and the element count, so a six-element curve stays far
-        inside even the tight budget. The weight amplitude is large for the same reason,
+        inside even a tight budget. The weight amplitude is large for the same reason,
         to make the quotient rule's product terms carry weight.
         """
         knots = create_uniform_periodic_knots(num_intervals, degree)
@@ -1006,8 +1004,8 @@ class TestRationalPeriodicND:
         minus = coords.copy()
         minus[:, direction] -= h
         fd = (f.evaluate(plus) - f.evaluate(minus)) / (2.0 * h)
-        # 1e-8 against a measured 2.9e-10, which is the oracle's own round-off floor
-        # (eps / h), not the derivative's error.
+        # 1e-8 sits above the oracle's own round-off floor (eps / h), which is what
+        # limits the comparison, not the derivative's error.
         np.testing.assert_allclose(f_prime.evaluate(coords), fd, atol=1e-8, rtol=0)
 
         assert f_prime.is_rational

@@ -523,18 +523,16 @@ def _seam_deviation_budget(ctrl_2d: npt.NDArray[np.float32 | np.float64]) -> flo
     ``get_conservative``, the same tier as :func:`_closure_deviation_budget`, and the
     argument is consistency rather than a count of operations. The two grade the *same*
     defect -- a least-squares closure splits a seam mismatch across the two boundary
-    rows -- and measurements over the reachable range put the seam deviation at 1.3 to
-    2.0 times the residual that follows it. A budget that is *tighter* than the one
-    grading the same quantity downstream can only produce refusals the downstream test
-    would not have made, and it did: at 64 epsilons this test refused
-    ``derivative()`` on a genuinely periodic NURBS at degree 6 over 64 elements,
-    reporting that a spline built on a periodic space was "not periodic".
+    rows -- so the seam deviation is of the same order as the residual that follows it.
+    A budget that is *tighter* than the one grading the same quantity downstream can
+    only produce refusals the downstream test would not have made, such as refusing
+    ``derivative()`` of a genuinely periodic NURBS of high degree over many elements as
+    "not periodic".
 
-    The 64-epsilon budget was argued from the values having come "through a short
-    chain". On the plain conversion they have; on the rational derivative's path they
-    have not -- the quotient rule runs at degree ``2p`` through
-    :meth:`~pantr.bspline.Bspline.multiply` and a refinement to a common space first.
-    A budget for this site has to cover its longest caller.
+    The control points reach this test through a short chain on the plain conversion,
+    but not on the rational derivative's path: the quotient rule runs at degree ``2p``
+    through :meth:`~pantr.bspline.Bspline.multiply` and a refinement to a common space
+    first. A budget for this site has to cover its longest caller.
 
     Args:
         ctrl_2d (npt.NDArray[np.float32 | np.float64]): Control points, shape
@@ -562,13 +560,11 @@ def _closure_deviation_budget(
     Here ``M = oslo @ W`` is entrywise non-negative with unit row sums, so ``||M||_inf``
     is exactly 1 and drops out -- but the bound is against ``x``, the periodic control
     points, not against ``b``. Normalising by ``b`` alone would re-import the
-    conditioning through ``||x|| / ||b||``, which is what the earlier wording described
-    as paying "for the conditioning of ``M``". Taking the larger of the two removes
+    conditioning through ``||x|| / ||b||``. Taking the larger of the two removes
     conditioning from the argument instead of budgeting for it.
 
     ``get_conservative``'s 4096 epsilons then cover the shape constant and the Oslo
-    chain's own accumulation. Measured over the reachable space, the residual stayed
-    below 267 epsilons of the scale even on the rational derivative's chain.
+    chain's own accumulation, the rational derivative's chain included.
 
     Both budgets read ``eps`` from the control points' own dtype. The expression they
     replace read it from ``float64`` unconditionally, which for a float32 spline demanded

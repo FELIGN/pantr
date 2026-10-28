@@ -1806,8 +1806,7 @@ class HierarchicalGrid(Grid):
             ``2e-308`` both terms underflow to exactly zero while the difference they
             bound is still a nonzero subnormal: the expression stops implementing the
             inequality, though the inequality itself still holds in the reals.
-            Measured with breakpoints near ``1e-320``. Nothing excludes that domain, so
-            this is a hypothesis and not a guarantee.
+            Nothing excludes that domain, so this is a hypothesis and not a guarantee.
 
         Warning:
             Materializes ``O(num_cells * 2 ** ndim * ndim)`` integers before
