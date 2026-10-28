@@ -421,6 +421,10 @@ class Bspline:
                 ``keep_degree=False``, which asks nothing of the ends, and a
                 direction of degree 1, whose hodograph is degree 0 and so has no
                 end runs to lack.
+            ValueError: If the B-spline is rational and the differentiated direction
+                is periodic with a C^0 seam (seam multiplicity equal to the degree).
+                The derivative is discontinuous at the seam, so it has no periodic
+                form.
 
         Example:
             >>> import numpy as np

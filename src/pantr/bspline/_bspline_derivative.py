@@ -413,8 +413,9 @@ def _derivative_rational(bspline: Bspline, direction: int) -> Bspline:
     ``A'w - Aw'`` carries one differentiation, so it is ``C^(p - m - 1)``; the
     denominator ``w^2`` is still ``C^(p - m)``; refined to their common space the pair
     carries the weaker of the two. At degree ``2p`` that continuity is multiplicity
-    ``2p - (p - m - 1) = p + m + 1``, capped at ``2p`` so a seam that has run out of
-    smoothness asks for a discontinuity rather than an impossible knot vector.
+    ``2p - (p - m - 1) = p + m + 1``, which is at most ``2p`` because a C^0 seam
+    (``m == p``) is refused first: the derivative of such a spline is discontinuous at
+    the seam, so it has no periodic form.
 
     Args:
         bspline (~pantr.bspline.Bspline): Rational B-spline to differentiate.
@@ -423,6 +424,10 @@ def _derivative_rational(bspline: Bspline, direction: int) -> Bspline:
     Returns:
         ~pantr.bspline.Bspline: Rational derivative B-spline, periodic in ``direction``
         exactly when the input was.
+
+    Raises:
+        ValueError: If ``direction`` is periodic and its seam has multiplicity equal to
+            the degree (C^0 at the seam), where the derivative is discontinuous.
 
     Note:
         Inputs are assumed to be correct (no validation performed).
@@ -438,6 +443,12 @@ def _derivative_rational(bspline: Bspline, direction: int) -> Bspline:
     tol = float(space_1d.tolerance)
     _, mults = _get_unique_knots_and_multiplicity_impl(space_1d.knots, p_deg, tol, in_domain=True)
     m_bdy = int(mults[0])
+    if m_bdy >= p_deg:
+        raise ValueError(
+            "Cannot differentiate a periodic rational B-spline whose seam is C^0 "
+            f"(seam multiplicity {m_bdy} equals the degree {p_deg}): its derivative is "
+            "discontinuous at the seam and has no periodic representation."
+        )
 
     # --- to open form in this direction only ---
     pts_2d, trailing_shape = _flatten_along_axis(bspline.control_points, direction)
@@ -455,7 +466,7 @@ def _derivative_rational(bspline: Bspline, direction: int) -> Bspline:
     # --- and back to periodic ---
     res_space_1d = result.space.spaces[direction]
     res_degree = res_space_1d.degree
-    m_bdy_new = min(res_degree, p_deg + m_bdy + 1)
+    m_bdy_new = p_deg + m_bdy + 1
     res_tol = float(res_space_1d.tolerance)
     res_pts_2d, res_trailing = _flatten_along_axis(result.control_points, direction)
     per_knots, per_pts_2d = _to_periodic_bspline_1d_impl(

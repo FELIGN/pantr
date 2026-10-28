@@ -850,7 +850,7 @@ class TestRationalPeriodic1D:
     def test_a_finely_resolved_periodic_nurbs_is_not_called_aperiodic(
         self, degree: int, num_intervals: int
     ) -> None:
-        """A spline built on a periodic space must never be refused as "not periodic".
+        """A spline with a differentiable seam must never be refused as "not periodic".
 
         Its periodicity is structural, not approximate, so this failure mode is
         definitionally a false refusal however large the round trip's round-off grows.
@@ -876,6 +876,25 @@ class TestRationalPeriodic1D:
 
         assert f_prime.is_rational
         assert f_prime.space.spaces[0].periodic
+
+    @pytest.mark.parametrize(
+        ("degree", "num_intervals"), [(1, 5), (2, 5), (3, 6)], ids=["p=1", "p=2", "p=3"]
+    )
+    def test_a_c0_seam_is_refused_as_discontinuous(self, degree: int, num_intervals: int) -> None:
+        """A C^0 seam (multiplicity equal to the degree) has a discontinuous derivative.
+
+        The derivative of such a curve jumps across the seam, so it has no periodic
+        representation. The refusal must say that, not report the input as "not periodic".
+        """
+        knots = create_uniform_periodic_knots(num_intervals, degree, continuity=0)
+        space = BsplineSpace([BsplineSpace1D(knots, degree, periodic=True)])
+        n = space.num_total_basis
+        t = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+        w = 1.0 + 0.3 * np.cos(t)
+        f = Bspline(space, np.column_stack([np.cos(t) * w, np.sin(t) * w, w]), is_rational=True)
+
+        with pytest.raises(ValueError, match="discontinuous at the seam"):
+            f.derivative()
 
     def test_nonrational_periodic_control_is_unaffected(self) -> None:
         """Control: a non-rational periodic derivative was never on the fixed path.
