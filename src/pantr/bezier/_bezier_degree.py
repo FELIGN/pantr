@@ -362,16 +362,73 @@ def _reduce_along_axis(
     return _unflatten_along_axis(reduced, trailing_shape, axis)
 
 
-def _degree_reduce_bezier(
+def _refuse_a_reduction_that_inverts_a_weight(
+    ctrl: npt.NDArray[np.floating[Any]], *, is_rational: bool, remedy: str
+) -> None:
+    """Raise if a rational reduction produced a control weight that is not positive.
+
+    The endpoint-interpolating reduction operator is **not** a convex combination --
+    :func:`_interpolating_reduction_operator` at degree 3 has minimum entry ``-0.25`` --
+    and it is applied to every homogeneous column, the weight column included. A weight
+    driven through zero is not an approximation error: the denominator can vanish on the
+    domain and the mapping acquires a pole, so what comes back is not a NURBS at all.
+
+    The test is on the **control** weights rather than on samples of ``w(t)``, and that
+    is conservative in the right direction: strict positivity of the control weights
+    implies strict positivity of ``w`` by positivity of the basis, so nothing with a pole
+    is ever accepted. It can refuse a net whose ``w`` happens to stay positive despite a
+    negative control weight, and that is the intended contract -- the strictly-positive
+    weight convention is a statement about the representation, which
+    :func:`_sample_projected` records the rest of the library as already requiring of
+    knot removal, ``locate`` and ``find_roots``.
+
+    The remedy is the caller's to supply, because the two callers have different ones and
+    a shared message got this wrong: it named
+    :meth:`~pantr.bezier.Bezier.minimize_degree` unconditionally, and
+    :class:`~pantr.bspline.Bspline` has no such method, so a B-spline caller who followed
+    the advice got an ``AttributeError``. An error that misdirects is worse than one that
+    only reports.
+
+    Args:
+        ctrl (npt.NDArray[np.floating[Any]]): Reduced control points, the last column the
+            weights.
+        is_rational (bool): Whether that last column is a weight column. A non-rational
+            reduction has no weight to invert and is not checked.
+        remedy (str): One sentence naming what this caller's type can do instead. Must be
+            true of that type.
+
+    Raises:
+        ValueError: If any weight of a rational result is not strictly positive.
+    """
+    if not is_rational:
+        return
+    weights = np.asarray(ctrl, dtype=np.float64)[..., -1]
+    smallest = float(weights.min())
+    if smallest > 0.0:
+        return
+    raise ValueError(
+        f"Degree reduction drove a control weight to {smallest:.3e}, which is not "
+        "strictly positive, so the reduced rational spline is not a valid NURBS: its "
+        "denominator can vanish on the domain. The reduction operator is not a convex "
+        f"combination and acts on the weight column too. {remedy}"
+    )
+
+
+def _apply_reduction_operators(
     bezier: Bezier,
     decrements: tuple[int, ...],
 ) -> Bezier:
-    """Degree-reduce a Bézier in one or more parametric directions.
+    """Apply the reduction operators to a Bézier, without judging the result.
 
     For each direction with a positive decrement, applies the
     endpoint-interpolating :math:`L^2`-optimal reduction operator.  The result is
     an approximation (not exact in general), but it reproduces the original
     exactly at the boundary of the parametric domain.
+
+    A rational result may carry a control weight that is not positive, and this
+    function returns it anyway: that is what :func:`_degree_reduction_l2_error` needs,
+    since the error of such a reduction is still a number.  :func:`_degree_reduce_bezier`
+    is the one that refuses it.
 
     Args:
         bezier (~pantr.bezier.Bezier): The Bézier to reduce.
@@ -399,6 +456,46 @@ def _degree_reduce_bezier(
         ctrl = _reduce_along_axis(ctrl, d, operator)
 
     return BezierCls(ctrl, is_rational=bezier.is_rational)
+
+
+def _degree_reduce_bezier(
+    bezier: Bezier,
+    decrements: tuple[int, ...],
+) -> Bezier:
+    """Degree-reduce a Bézier in one or more parametric directions.
+
+    Applies :func:`_apply_reduction_operators` and refuses a rational result whose
+    control weights are not all strictly positive: such a net has a denominator that
+    can vanish on the domain, so it is not a NURBS (see
+    :func:`_refuse_a_reduction_that_inverts_a_weight`).
+
+    Args:
+        bezier (~pantr.bezier.Bezier): The Bézier to reduce.
+        decrements (tuple[int, ...]): Degree decrement per direction. All
+            values must be non-negative; at least one must be positive.  No
+            decrement may exceed the current degree in that direction.
+
+    Returns:
+        ~pantr.bezier.Bezier: New Bézier with reduced degrees and updated
+        control points.
+
+    Raises:
+        ValueError: If ``bezier`` is rational and the reduction drives a control
+            weight to zero or below.
+
+    Note:
+        Inputs are assumed to be validated by the caller (Layer 1).
+    """
+    reduced = _apply_reduction_operators(bezier, decrements)
+    _refuse_a_reduction_that_inverts_a_weight(
+        reduced.control_points,
+        is_rational=bezier.is_rational,
+        remedy=(
+            "Use minimize_degree, which reduces only as far as it can without changing "
+            "the sign of the weight function."
+        ),
+    )
+    return reduced
 
 
 def _bernstein_gram_matrix_1d(degree: int) -> npt.NDArray[np.float64]:
@@ -665,7 +762,7 @@ def _degree_reduction_l2_error(bezier: Bezier, decrements: tuple[int, ...]) -> f
     Note:
         Inputs are assumed to be validated by the caller (Layer 1).
     """
-    reduced = _degree_reduce_bezier(bezier, decrements)
+    reduced = _apply_reduction_operators(bezier, decrements)
     restored = _degree_elevate_bezier(reduced, decrements)
 
     diff = restored.control_points - bezier.control_points
